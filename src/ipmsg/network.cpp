@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include <Lmcons.h>  // UNLEN
 #include <regex>
+#include <algorithm>
 
 namespace ipmsg {
 
@@ -97,8 +98,24 @@ std::string GetBroadcastAddress(const std::string& ip) {
 
 std::vector<std::string> GetAllBroadcastAddresses() {
     std::vector<std::string> broadcasts;
+
+    // Always include limited broadcast (works within same subnet)
     broadcasts.push_back("255.255.255.255");
-    LogMessage("NETWORK", "", "[Network] Using limited broadcast address only: 255.255.255.255");
+
+    // Calculate directed broadcast for each local interface
+    auto localIPs = GetLocalIPAddresses();
+    for (const auto& ip : localIPs) {
+        std::string bc = GetBroadcastAddress(ip);
+        if (!bc.empty() && bc != "255.255.255.255") {
+            // Avoid duplicates
+            if (std::find(broadcasts.begin(), broadcasts.end(), bc) == broadcasts.end()) {
+                broadcasts.push_back(bc);
+                LogMessage("NETWORK", "", "[Network] Directed broadcast for " + ip + " -> " + bc);
+            }
+        }
+    }
+
+    LogMessage("NETWORK", "", "[Network] Broadcast addresses: " + std::to_string(broadcasts.size()));
     return broadcasts;
 }
 

@@ -95,6 +95,16 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         }
       }
 
+      // Apply saved segments to backend
+      if (config.segments && config.segments.length > 0) {
+        console.log('[ConfigStore] Applying saved segments to backend:', config.segments);
+        try {
+          await invoke('config.set', { segments: config.segments });
+        } catch (e) {
+          console.error('[ConfigStore] Failed to set segments on backend:', e);
+        }
+      }
+
     } catch (err) {
       console.error('[ConfigStore] Failed to load config:', err);
       set({ loaded: true });
@@ -143,6 +153,13 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       if (group !== undefined) {
         console.log('[ConfigStore] Notifying backend of group change:', group);
         await invoke('config.set', { group });
+      }
+
+      // Notify backend of segments changes
+      const segments = partial.segments;
+      if (segments !== undefined) {
+        console.log('[ConfigStore] Notifying backend of segments change:', segments);
+        await invoke('config.set', { segments });
       }
     } catch (err) {
       console.error('[ConfigStore] Failed to save config:', err);

@@ -159,11 +159,9 @@ bool MsgMng::Init(int portNo, const std::string& userName,
     }
     LogMessage("MSGMNG", "", "[MsgMng] UDP socket created and bound to port " + std::to_string(portNo_));
 
-    // Auto-detect broadcast segments
-    auto broadcasts = GetAllBroadcastAddresses();
-    for (const auto& bc : broadcasts) {
-        segments_.push_back(bc);
-    }
+    // Broadcast segments start empty; auto-detected addresses are used
+    // directly in UdpBroadcast() via GetAllBroadcastAddresses().
+    // Custom segments from user config are added via AddSegment().
 
     LogMessage("MSGMNG", "", "[MsgMng] Broadcast segments configured:");
     for (const auto& seg : segments_) {

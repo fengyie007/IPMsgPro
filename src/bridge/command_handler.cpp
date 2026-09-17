@@ -1075,7 +1075,24 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         notificationSound_ = args.value("notificationSound", true);
         LogMessage("BRIDGE", "", "Config updated: notificationSound=" + std::string(notificationSound_ ? "true" : "false"));
     }
-    
+
+    // Sync custom broadcast segments from frontend config
+    if (args.contains("segments") && args["segments"].is_array()) {
+        // Clear existing custom segments (auto-detected ones are rebuilt by GetAllBroadcastAddresses)
+        auto current = msgMng_->GetSegments();
+        for (const auto& seg : current) {
+            msgMng_->RemoveSegment(seg);
+        }
+        // Add new segments from config
+        for (const auto& seg : args["segments"]) {
+            if (seg.is_string()) {
+                msgMng_->AddSegment(seg.get<std::string>());
+            }
+        }
+        LogMessage("BRIDGE", "", "Config updated: segments synced (" +
+                   std::to_string(args["segments"].size()) + " entries)");
+    }
+
     return {{"success", true}};
 }
 
