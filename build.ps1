@@ -57,13 +57,125 @@ if (-not $SkipFrontend) {
     Write-Host "`n[1/4] Skipping frontend build (-SkipFrontend)" -ForegroundColor DarkGray
 }
 
-# Step 2: CMake configure
-Write-Host "`n[2/4] CMake configure (VS2022 $Arch)..." -ForegroundColor Yellow
-# VS2022 uses "Win32" for x86, "x64" for x64
+# Step 2: CMake configure — auto-detect compiler environment
+Write-Host "`n[2/4] CMake configure ($Arch)..." -ForegroundColor Yellow
 $cmakeArch = if ($Arch -eq "x86") { "Win32" } else { "x64" }
-$cmakeArgs = @("-B", $BuildDir, "-G", "Visual Studio 17 2022", "-A", $cmakeArch)
-cmake @cmakeArgs 2>&1
-if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+
+# --- Detect VS / Build Tools ---
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsGenMap = @{
+    "2015" = 14; "2017" = 15; "2019" = 16; "2022" = 17
+    "2025" = 18; "2026" = 19; "2027" = 20
+}
+
+# 1) Try vswhere to detect full VS installation
+$generator = $null
+$cmakeExe = "cmake"
+$useNinja = $false
+$vcvarsall = $null
+$buildToolsCmake = $null
+
+if (Test-Path $vswhere) {
+    $vsVersion = & $vswhere -latest -property catalog_productLineVersion 2>$null
+    if ($vsVersion -match "^\d{4}$") {
+        $vsMajor = $vsGenMap[$vsVersion]
+        if ($vsMajor) {
+            $candidate = "Visual Studio $vsMajor $vsVersion"
+            $cmakeHelp = cmake --help 2>$null
+            if ($cmakeHelp -match [regex]::Escape($candidate)) {
+                $generator = $candidate
+                Write-Host "Detected: $generator (via vswhere, system cmake)" -ForegroundColor DarkGray
+            } else {
+                Write-Host "Detected $candidate via vswhere, but system cmake doesn't support it" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
+# 2) If no generator yet, look for Build Tools vcvarsall.bat
+if (-not $generator) {
+    $searchPaths = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\18\*\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\18\*\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles}\Microsoft Visual Studio\18\*\VC\Auxiliary\Build\vcvarsall.bat"
+    )
+    foreach ($pattern in $searchPaths) {
+        $found = Get-Item $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) {
+            $vcvarsall = $found.FullName
+            # Check if this is VS Build Tools 18 (VS2025/2026)
+            if ($vcvarsall -match "Microsoft Visual Studio\\18\\") {
+                $btCmake = $vcvarsall.Replace("\VC\Auxiliary\Build\vcvarsall.bat", "\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe")
+                if (Test-Path $btCmake) {
+                    $buildToolsCmake = $btCmake
+                    $cmakeExe = $btCmake
+                    $generator = "Visual Studio 18 2026"
+                    Write-Host "Found VS Build Tools v18 at: $vcvarsall" -ForegroundColor DarkGray
+                    Write-Host "Using Build Tools cmake: $buildToolsCmake" -ForegroundColor DarkGray
+                    Write-Host "Generator: $generator" -ForegroundColor DarkGray
+                    break
+                }
+            }
+            break
+        }
+    }
+    if (-not $generator -and $vcvarsall) {
+        Write-Host "Found vcvarsall.bat: $vcvarsall (will use ninja fallback)" -ForegroundColor DarkGray
+        $useNinja = $true
+    } elseif (-not $vcvarsall) {
+        Write-Host "WARNING: No VS installation or Build Tools found" -ForegroundColor Yellow
+    }
+}
+
+# 3) Configure with detected toolchain
+if ($generator -and $buildToolsCmake) {
+    # Use Build Tools cmake with VS2026 generator — clean build dir to avoid generator conflict
+    if (Test-Path $BuildDir) { Remove-Item $BuildDir -Recurse -Force -ErrorAction SilentlyContinue }
+    $cmakeArgs = @("-B", $BuildDir, "-G", $generator, "-A", $cmakeArch)
+    & $buildToolsCmake @cmakeArgs 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (Build Tools cmake)" }
+} elseif ($generator) {
+    # Use system cmake with detected VS generator
+    $cmakeArgs = @("-B", $BuildDir, "-G", $generator, "-A", $cmakeArch)
+    cmake @cmakeArgs 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+} elseif ($useNinja) {
+    # Use Ninja + MSVC via vcvarsall.bat + system cmake
+    $archArg = if ($Arch -eq "x86") { "x86" } else { "x64" }
+    $buildType = if ($Config -eq "Debug") { "Debug" } else { "Release" }
+
+    # Find ninja.exe full path
+    $ninjaPath = (Get-Command ninja -ErrorAction SilentlyContinue).Source
+    if (-not $ninjaPath) {
+        $ninjaPath = "C:\Program Files\CMake\bin\ninja.exe"
+        if (-not (Test-Path $ninjaPath)) {
+            throw "ninja.exe not found. Install CMake or add ninja to PATH."
+        }
+    }
+    $ninjaDir = Split-Path $ninjaPath
+
+    # Write temp batch file for configure
+    $batFile = Join-Path $BuildDir "_configure.bat"
+    @"
+call "`"$vcvarsall`" $archArg" >nul 2>&1
+set "PATH=$ninjaDir;%PATH%"
+cmake -B "`"$BuildDir`"" -G Ninja -DCMAKE_BUILD_TYPE=$buildType -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded`$<$<CONFIG:Debug>:Debug>"
+"@ | Set-Content -Path $batFile -Encoding ASCII
+
+    cmd /c $batFile 2>&1 | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (ninja)" }
+    Remove-Item $batFile -ErrorAction SilentlyContinue
+
+    $env:IPMSGPRO_VCARSALL = $vcvarsall
+    $env:IPMSGPRO_ARCH = $archArg
+    $env:IPMSGPRO_NINJA = $ninjaPath
+} else {
+    throw "No supported compiler found. Install VS2022 or Build Tools."
+}
+
 Write-Host "CMake configure OK" -ForegroundColor Green
 
 # Step 3: Build (ensure frontend resources are repacked)
@@ -78,10 +190,33 @@ if ((Test-Path $packScript) -and (Test-Path $frontendDist)) {
     & python $packScript $frontendDist -o $resourcesRc -t "TAURI_RES" 2>&1 | Out-Null
 }
 
-if ($Clean) {
-    cmake --build $BuildDir --config $Config --clean-first
+if ($buildToolsCmake -and $generator -like "Visual Studio 18*") {
+    # Build with Build Tools cmake (uses VS generator, not ninja)
+    $cleanFlag = if ($Clean) { " --clean-first" } else { "" }
+    $buildArgs = @("--build", $BuildDir, "--config", $Config) + $cleanFlag.Split(" ", [StringSplitOptions]::RemoveEmptyEntries)
+    & $buildToolsCmake @buildArgs 2>&1 | ForEach-Object { Write-Host $_ }
+} elseif ($useNinja -and $env:IPMSGPRO_VCARSALL) {
+    # Ninja build needs vcvarsall environment
+    $vcvarsall = $env:IPMSGPRO_VCARSALL
+    $archArg = $env:IPMSGPRO_ARCH
+    $ninjaDir = Split-Path $env:IPMSGPRO_NINJA
+    $cleanFlag = if ($Clean) { " --clean-first" } else { "" }
+
+    $batFile = Join-Path $BuildDir "_build.bat"
+    @"
+call "`"$vcvarsall`" $archArg" >nul 2>&1
+set "PATH=$ninjaDir;%PATH%"
+cmake --build "`"$BuildDir`"" --config $Config$cleanFlag
+"@ | Set-Content -Path $batFile -Encoding ASCII
+
+    cmd /c $batFile 2>&1 | ForEach-Object { Write-Host $_ }
+    Remove-Item $batFile -ErrorAction SilentlyContinue
 } else {
-    cmake --build $BuildDir --config $Config
+    if ($Clean) {
+        cmake --build $BuildDir --config $Config --clean-first
+    } else {
+        cmake --build $BuildDir --config $Config
+    }
 }
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 Write-Host "Build OK" -ForegroundColor Green
