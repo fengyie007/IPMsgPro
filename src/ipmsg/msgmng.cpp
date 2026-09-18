@@ -896,6 +896,11 @@ void MsgMng::AddOrUpdateUser(const UserInfo& user) {
         }
     }
     users_.push_back(user);
+
+    // If we're actively scanning, increment found counter for new users
+    if (scanning_) {
+        scanFoundCount_++;
+    }
 }
 
 void MsgMng::RemoveUser(const std::string& key) {
@@ -904,6 +909,109 @@ void MsgMng::RemoveUser(const std::string& key) {
         std::remove_if(users_.begin(), users_.end(),
             [&key](const UserInfo& u) { return u.Key() == key; }),
         users_.end());
+}
+
+// ============================================================================
+// IP Range Scanner (active scanning for cross-subnet users)
+// ============================================================================
+
+bool MsgMng::ScanIpRange(const std::string& startIp, const std::string& endIp,
+                         int port, int delayMs) {
+    // Check if already scanning
+    bool expected = false;
+    if (!scanning_.compare_exchange_strong(expected, true)) {
+        LogMessage("MSGMNG", "", "[Scanner] Scan already in progress, ignoring");
+        return false;
+    }
+
+    // Parse IP addresses
+    uint32_t start = ipmsg::IPToUint32(startIp);
+    uint32_t end = ipmsg::IPToUint32(endIp);
+
+    if (start == 0 || end == 0 || end < start) {
+        scanning_ = false;
+        LogMessage("MSGMNG", "", "[Scanner] Invalid IP range: " + startIp + " - " + endIp);
+        return false;
+    }
+
+    // Clamp delay
+    if (delayMs < 10) delayMs = 10;
+    if (delayMs > 5000) delayMs = 5000;
+
+    uint32_t total = end - start + 1;
+    LogMessage("MSGMNG", "", "[Scanner] Starting scan: " + startIp + " - " + endIp +
+               " (" + std::to_string(total) + " IPs, port=" + std::to_string(port) +
+               ", delay=" + std::to_string(delayMs) + "ms)");
+
+    // Start scanning thread
+    scanThread_ = std::thread([this, start, end, port, delayMs, total]() {
+        uint32_t current = 0;
+
+        // Reset found counter at start
+        scanFoundCount_ = 0;
+        LogMessage("MSGMNG", "", "[Scanner] Reset found count to 0");
+
+        for (uint32_t ip = start; ip <= end && scanning_; ++ip) {
+            current++;
+            std::string ipStr = ipmsg::Uint32ToIP(ip);  // ip is already in host byte order
+
+            // Skip our own IP
+            if (ipStr == localUser_.ipAddress) {
+                continue;
+            }
+
+            // Send BR_ENTRY to this IP
+            std::string body = localUser_.nickName;
+            std::string extra = localUser_.groupName;
+            auto msg = MakeMsg(MakePacketNo(),
+                IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
+                body, extra);
+
+            LogMessage("MSGMNG", "", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (" + std::to_string(current) + "/" + std::to_string(total) + ")");
+            UdpSend(ipStr, port, msg);
+
+            // Progress callback (every 10 IPs or at end)
+            if ((current % 10 == 0) || (current >= end - start + 1)) {
+                if (scanProgressCallback_) {
+                    scanProgressCallback_(current, end - start + 1, scanFoundCount_.load());
+                }
+            }
+
+            // Small delay to avoid flooding network
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
+
+        // Grace period: wait for async responses (up to 3 seconds)
+        LogMessage("MSGMNG", "", "[Scanner] Sent all BR_ENTRY, waiting for responses...");
+        const int gracePeriodMs = 3000;
+        auto graceStart = std::chrono::steady_clock::now();
+        while (scanning_ && std::chrono::steady_clock::now() - graceStart < std::chrono::milliseconds(gracePeriodMs)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (scanProgressCallback_) {
+                scanProgressCallback_(total, end - start + 1, scanFoundCount_.load());
+            }
+        }
+
+        // Scan complete
+        scanning_ = false;
+        if (scanCompleteCallback_) {
+            scanCompleteCallback_(scanFoundCount_.load());
+        }
+        LogMessage("MSGMNG", "", "[Scanner] Scan complete. Total: " + std::to_string(end - start + 1) +
+                   ", Found: " + std::to_string(scanFoundCount_.load()));
+    });
+
+    return true;
+}
+
+void MsgMng::CancelScan() {
+    if (scanning_) {
+        scanning_ = false;
+        if (scanThread_.joinable()) {
+            scanThread_.join();
+        }
+        LogMessage("MSGMNG", "", "[Scanner] Scan cancelled by user");
+    }
 }
 
 } // namespace ipmsg

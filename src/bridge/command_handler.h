@@ -77,6 +77,8 @@ private:
 
     // --- Network Commands ---
     nlohmann::json HandleNetworkScan(const nlohmann::json& args);
+    nlohmann::json HandleNetworkScanRange(const nlohmann::json& args);
+    nlohmann::json HandleNetworkScanCancel(const nlohmann::json& args);
 
     // --- Config Commands ---
     nlohmann::json HandleConfigSet(const nlohmann::json& args);

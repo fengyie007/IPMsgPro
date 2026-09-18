@@ -122,6 +122,18 @@ public:
     /// Clear all direct users (called when config is updated)
     void ClearDirectUsers();
 
+    /// Scan IP range for active IPMsg users (background)
+    /// @param startIp Start IP (e.g., "10.8.33.1")
+    /// @param endIp End IP (e.g., "10.8.33.254")
+    /// @param port UDP port (default 2425)
+    /// @param delayMs Delay between packets in ms (configurable, default 50)
+    /// @return true if scan started, false if already scanning
+    bool ScanIpRange(const std::string& startIp, const std::string& endIp,
+                     int port = IPMSG_DEFAULT_PORT, int delayMs = 50);
+
+    /// Cancel ongoing IP range scan
+    void CancelScan();
+
     // ---------- Message Sending ----------
 
     /// Send a text message to a specific user
@@ -165,6 +177,10 @@ public:
     void SetUserLeftCallback(UserLeftCallback cb) { onUserLeft_ = std::move(cb); }
     void SetMessageReceivedCallback(MessageReceivedCallback cb) { onMessageReceived_ = std::move(cb); }
     void SetUserStatusChangedCallback(UserStatusChangedCallback cb) { onUserStatusChanged_ = std::move(cb); }
+
+    // IP Range Scanner callbacks
+    void SetScanProgressCallback(std::function<void(uint32_t, uint32_t, uint32_t)> cb) { scanProgressCallback_ = std::move(cb); }
+    void SetScanCompleteCallback(std::function<void(uint32_t)> cb) { scanCompleteCallback_ = std::move(cb); }
 
 private:
     // ---------- Internal UDP ----------
@@ -223,6 +239,18 @@ private:
     // Receive thread
     std::thread recvThread_;
     std::atomic<bool> running_{false};
+
+    // IP Range Scanner
+    std::atomic<bool> scanning_{false};
+    std::thread scanThread_;
+    int scanDelayMs_ = 50;
+    std::atomic<uint32_t> scanFoundCount_{0};
+
+    // Scanner callbacks
+    using ScanProgressCallback = std::function<void(uint32_t current, uint32_t total, uint32_t found)>;
+    using ScanCompleteCallback = std::function<void(uint32_t found)>;
+    ScanProgressCallback scanProgressCallback_;
+    ScanCompleteCallback scanCompleteCallback_;
 
     // Callbacks
     UserDiscoveredCallback onUserDiscovered_;

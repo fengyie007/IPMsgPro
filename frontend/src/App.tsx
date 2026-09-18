@@ -6,7 +6,7 @@ import Settings from './components/Settings';
 import { useUserStore } from './stores/userStore';
 import { useMessageStore } from './stores/messageStore';
 import { useConfigStore } from './stores/configStore';
-import { invoke } from './services/bridge';
+import { invoke, listen } from './services/bridge';
 
 function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -36,6 +36,16 @@ function App() {
     const unsubMessages = initMessageListeners();
     console.log('[App] Listeners registered successfully');
 
+    // Register scanner event listeners
+    const unsubScanProgress = listen('network.scan_progress', (data: any) => {
+      console.log('[App] Scan progress:', data);
+      // Could show toast or update a global scan state
+    });
+    const unsubScanComplete = listen('network.scan_complete', (data: any) => {
+      console.log('[App] Scan complete:', data);
+      // Could show toast notification
+    });
+
     // Then do async init: load config, users, discover
     const init = async () => {
       try {
@@ -58,6 +68,10 @@ function App() {
     init();
 
     return () => {
+      unsubUsers();
+      unsubMessages();
+      unsubScanProgress();
+      unsubScanComplete();
       unsubUsers();
       unsubMessages();
     };

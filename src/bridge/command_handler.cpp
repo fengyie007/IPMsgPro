@@ -600,6 +600,10 @@ void CommandHandler::RegisterAllCommands() {
     // Network
     bridge_->RegisterCommand("network.scan",
         [this](const nlohmann::json& args) { return HandleNetworkScan(args); });
+    bridge_->RegisterCommand("network.scan_range",
+        [this](const nlohmann::json& args) { return HandleNetworkScanRange(args); });
+    bridge_->RegisterCommand("network.scan_cancel",
+        [this](const nlohmann::json& args) { return HandleNetworkScanCancel(args); });
 
     // Config
     bridge_->RegisterCommand("config.set",
@@ -2096,6 +2100,41 @@ nlohmann::json CommandHandler::HandleNetworkScan(const nlohmann::json& args) {
         msgMng_->AddSegment(segment);
     }
     msgMng_->BroadcastEntry();
+    return {{"success", true}};
+}
+
+nlohmann::json CommandHandler::HandleNetworkScanRange(const nlohmann::json& args) {
+    std::string startIp = args.value("startIp", "");
+    std::string endIp = args.value("endIp", "");
+    int port = args.value("port", IPMSG_DEFAULT_PORT);
+    int delayMs = args.value("delayMs", 50);
+
+    if (startIp.empty() || endIp.empty()) {
+        return {{"success", false}, {"error", "startIp and endIp are required"}};
+    }
+
+    // Set up progress callback to emit events to frontend
+    msgMng_->SetScanProgressCallback([this](uint32_t current, uint32_t total, uint32_t found) {
+        bridge_->Emit("network.scan_progress", {
+            {"current", current},
+            {"total", total},
+            {"found", found}
+        });
+    });
+
+    // Set completion callback
+    msgMng_->SetScanCompleteCallback([this](uint32_t found) {
+        bridge_->Emit("network.scan_complete", {
+            {"found", found}
+        });
+    });
+
+    bool ok = msgMng_->ScanIpRange(startIp, endIp, port, delayMs);
+    return {{"success", ok}, {"message", ok ? "Scan started" : "Scan already in progress or invalid range"}};
+}
+
+nlohmann::json CommandHandler::HandleNetworkScanCancel(const nlohmann::json& args) {
+    msgMng_->CancelScan();
     return {{"success", true}};
 }
 

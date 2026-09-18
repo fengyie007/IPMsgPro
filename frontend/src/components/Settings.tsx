@@ -21,6 +21,14 @@ export default function Settings({ onClose }: SettingsProps) {
   const [newSegment, setNewSegment] = useState('');
   const [newDirectUser, setNewDirectUser] = useState('');
 
+  // IP Range Scanner state
+  const [scanStartIp, setScanStartIp] = useState('');
+  const [scanEndIp, setScanEndIp] = useState('');
+  const [scanPort, setScanPort] = useState(2425);
+  const [scanDelayMs, setScanDelayMs] = useState(50);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{current: number, total: number, found: number} | null>(null);
+
   useEffect(() => {
     setLocalConfig({ ...config });
   }, [config]);
@@ -62,6 +70,35 @@ export default function Settings({ onClose }: SettingsProps) {
       ...localConfig,
       directUsers: localConfig.directUsers.filter((_, i) => i !== index),
     });
+  };
+
+  const handleStartScan = async () => {
+    if (!scanStartIp.trim() || !scanEndIp.trim()) return;
+    
+    setIsScanning(true);
+    setScanProgress({ current: 0, total: 0, found: 0 });
+    
+    try {
+      await invoke('network.scan_range', {
+        startIp: scanStartIp.trim(),
+        endIp: scanEndIp.trim(),
+        port: scanPort,
+        delayMs: scanDelayMs
+      });
+    } catch (err) {
+      console.error('[Settings] Scan failed:', err);
+      setIsScanning(false);
+      setScanProgress(null);
+    }
+  };
+
+  const handleCancelScan = async () => {
+    try {
+      await invoke('network.scan_cancel');
+    } catch (err) {
+      console.error('[Settings] Cancel scan failed:', err);
+    }
+    setIsScanning(false);
   };
 
   // Handle git-link clicks: open in default browser via TauriCPP
@@ -231,6 +268,91 @@ export default function Settings({ onClose }: SettingsProps) {
                   <FiUserPlus size={16} />
                 </button>
               </div>
+            </div>
+          </Section>
+
+          {/* IP Range Scanner (cross-subnet active scan) */}
+          <Section title="IP 范围扫描 (跨网段主动发现)">
+            <p className="text-xs text-gray-500 mb-2">
+              适用于路由器不转发广播的场景。主动向指定 IP 范围发送单播 BR_ENTRY 发现用户。
+            </p>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 w-20">起始 IP</label>
+                  <input
+                    type="text"
+                    value={scanStartIp}
+                    onChange={(e) => setScanStartIp(e.target.value)}
+                    className="input-field flex-1"
+                    placeholder="如 10.8.33.1"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 w-20">结束 IP</label>
+                  <input
+                    type="text"
+                    value={scanEndIp}
+                    onChange={(e) => setScanEndIp(e.target.value)}
+                    className="input-field flex-1"
+                    placeholder="如 10.8.33.254"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 w-20">端口</label>
+                  <input
+                    type="number"
+                    value={scanPort}
+                    onChange={(e) => setScanPort(parseInt(e.target.value) || 2425)}
+                    className="input-field flex-1"
+                    min={1}
+                    max={65535}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 w-20">延迟(ms)</label>
+                  <input
+                    type="number"
+                    value={scanDelayMs}
+                    onChange={(e) => setScanDelayMs(Math.max(10, Math.min(5000, parseInt(e.target.value) || 50)))}
+                    className="input-field flex-1"
+                    min={10}
+                    max={5000}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {isScanning ? (
+                  <button
+                    className="px-3 py-1.5 text-sm text-white bg-red-500 rounded hover:bg-red-600 transition-colors"
+                    onClick={handleCancelScan}
+                  >
+                    取消扫描
+                  </button>
+                ) : (
+                  <button
+                    className="px-3 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 transition-colors"
+                    onClick={handleStartScan}
+                  >
+                    开始扫描
+                  </button>
+                )}
+                {scanProgress && (
+                  <span className="text-xs text-gray-500">
+                    {scanProgress.current}/{scanProgress.total} (发现 {scanProgress.found})
+                  </span>
+                )}
+              </div>
+              {scanProgress && scanProgress.current > 0 && (
+                <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary-500 transition-all duration-300"
+                    style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}
+                  />
+                </div>
+              )}
             </div>
           </Section>
 

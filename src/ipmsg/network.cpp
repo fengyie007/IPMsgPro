@@ -121,13 +121,15 @@ std::vector<std::string> GetAllBroadcastAddresses() {
 
 uint32_t IPToUint32(const std::string& ip) {
     uint32_t result = 0;
-    inet_pton(AF_INET, ip.c_str(), &result);
-    return result;
+    int ret = inet_pton(AF_INET, ip.c_str(), &result);
+    if (ret != 1) return 0;
+    return ntohl(result);  // Convert network byte order to host byte order
 }
 
 std::string Uint32ToIP(uint32_t ip) {
+    uint32_t netIp = htonl(ip);  // Convert host byte order to network byte order
     char buf[INET_ADDRSTRLEN] = {};
-    inet_ntop(AF_INET, &ip, buf, sizeof(buf));
+    inet_ntop(AF_INET, &netIp, buf, sizeof(buf));
     return buf;
 }
 
