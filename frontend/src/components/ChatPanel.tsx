@@ -402,6 +402,8 @@ export default function ChatPanel() {
     : currentUser.status === 'away' ? '离开'
     : '离线';
 
+  const groupText = currentUser.group ? ` · ${currentUser.group}` : '';
+
   return (
     <div
       className={`flex-1 flex flex-col bg-white relative ${nativeDragging ? 'ring-2 ring-inset ring-primary-400' : ''}`}
@@ -418,7 +420,7 @@ export default function ChatPanel() {
         <div>
           <h3 className="text-sm font-medium text-gray-800">{currentUser.nickname}</h3>
           <p className="text-xs text-gray-400">
-            {statusText} · {currentUser.ip}:{currentUser.port}
+            {statusText}{groupText} · {currentUser.ip}:{currentUser.port}
           </p>
         </div>
         <div className="ml-auto relative">
