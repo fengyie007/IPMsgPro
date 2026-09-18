@@ -122,6 +122,15 @@ public:
     /// Clear all direct users (called when config is updated)
     void ClearDirectUsers();
 
+    /// Clear all scan ranges (called when config is updated)
+    void ClearScanRanges();
+
+    /// Add an IP scan range (format: "startIp-endIp", e.g., "10.8.33.1-254")
+    void AddScanRange(const std::string& range);
+
+    /// Get all configured scan ranges
+    std::vector<std::string> GetScanRanges() const;
+
     /// Scan IP range for active IPMsg users (background)
     /// @param startIp Start IP (e.g., "10.8.33.1")
     /// @param endIp End IP (e.g., "10.8.33.254")
@@ -133,6 +142,14 @@ public:
 
     /// Cancel ongoing IP range scan
     void CancelScan();
+
+    /// Scan multiple IP ranges for active IPMsg users (background)
+    /// @param ranges Vector of ranges in format "startIp-endIp" (e.g., "10.8.33.1-254")
+    /// @param port UDP port (default 2425)
+    /// @param delayMs Delay between packets in ms (configurable, default 50)
+    /// @return true if scan started, false if already scanning
+    bool ScanIpRanges(const std::vector<std::string>& ranges,
+                      int port = IPMSG_DEFAULT_PORT, int delayMs = 50);
 
     // ---------- Message Sending ----------
 
@@ -228,6 +245,7 @@ private:
     UserInfo localUser_;
     std::vector<std::string> segments_;  // custom broadcast segments
     std::vector<std::pair<std::string, int>> directUsers_;  // cross-subnet users (ip, port)
+    std::vector<std::string> scanRanges_;  // IP scan ranges (format: "startIp-endIp")
 
     // Known users (key = userName@hostName)
     std::vector<UserInfo> users_;

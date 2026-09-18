@@ -1168,6 +1168,21 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
                    std::to_string(args["directUsers"].size()) + " entries)");
     }
 
+    // Sync IP scan ranges — clear first to match config exactly
+    if (args.contains("ipScanRanges") && args["ipScanRanges"].is_array()) {
+        // Clear existing scan ranges
+        msgMng_->ClearScanRanges();
+        // Add new scan ranges from config
+        for (const auto& range : args["ipScanRanges"]) {
+            if (range.is_string()) {
+                std::string rangeStr = range.get<std::string>();
+                msgMng_->AddScanRange(rangeStr);
+            }
+        }
+        LogMessage("BRIDGE", "", "Config updated: ipScanRanges synced (" +
+                   std::to_string(args["ipScanRanges"].size()) + " entries)");
+    }
+
     return {{"success", true}};
 }
 
@@ -1177,6 +1192,13 @@ nlohmann::json CommandHandler::HandleConfigLoaded(const nlohmann::json& args) {
     for (const auto& [ip, port] : msgMng_->GetDirectUsers()) {
         LogMessage("BRIDGE", "", "Config loaded: auto-adding direct user " + ip + ":" + std::to_string(port));
         msgMng_->SendDirectEntry(ip, port);
+    }
+
+    // Auto-scan IP ranges from config
+    auto scanRanges = msgMng_->GetScanRanges();
+    if (!scanRanges.empty()) {
+        LogMessage("BRIDGE", "", "Config loaded: auto-scanning " + std::to_string(scanRanges.size()) + " IP ranges");
+        msgMng_->ScanIpRanges(scanRanges, 2425, 50);  // Use default port and delay
     }
     return {{"success", true}};
 }
@@ -2104,13 +2126,26 @@ nlohmann::json CommandHandler::HandleNetworkScan(const nlohmann::json& args) {
 }
 
 nlohmann::json CommandHandler::HandleNetworkScanRange(const nlohmann::json& args) {
-    std::string startIp = args.value("startIp", "");
-    std::string endIp = args.value("endIp", "");
+    // Support both old format (startIp/endIp) and new format (ranges array)
+    std::vector<std::string> ranges;
     int port = args.value("port", IPMSG_DEFAULT_PORT);
     int delayMs = args.value("delayMs", 50);
 
-    if (startIp.empty() || endIp.empty()) {
-        return {{"success", false}, {"error", "startIp and endIp are required"}};
+    if (args.contains("ranges") && args["ranges"].is_array()) {
+        for (const auto& r : args["ranges"]) {
+            if (r.is_string()) ranges.push_back(r.get<std::string>());
+        }
+    } else {
+        // Backward compatibility
+        std::string startIp = args.value("startIp", "");
+        std::string endIp = args.value("endIp", "");
+        if (!startIp.empty() && !endIp.empty()) {
+            ranges.push_back(startIp + "-" + endIp);
+        }
+    }
+
+    if (ranges.empty()) {
+        return {{"success", false}, {"error", "ranges or startIp/endIp required"}};
     }
 
     // Set up progress callback to emit events to frontend
@@ -2129,7 +2164,7 @@ nlohmann::json CommandHandler::HandleNetworkScanRange(const nlohmann::json& args
         });
     });
 
-    bool ok = msgMng_->ScanIpRange(startIp, endIp, port, delayMs);
+    bool ok = msgMng_->ScanIpRanges(ranges, port, delayMs);
     return {{"success", ok}, {"message", ok ? "Scan started" : "Scan already in progress or invalid range"}};
 }
 

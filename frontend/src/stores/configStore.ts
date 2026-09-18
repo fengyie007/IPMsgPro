@@ -115,6 +115,16 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         }
       }
 
+      // Apply saved ipScanRanges to backend
+      if (config.ipScanRanges && config.ipScanRanges.length > 0) {
+        console.log('[ConfigStore] Applying saved ipScanRanges to backend:', config.ipScanRanges);
+        try {
+          await invoke('config.set', { ipScanRanges: config.ipScanRanges });
+        } catch (e) {
+          console.error('[ConfigStore] Failed to set ipScanRanges on backend:', e);
+        }
+      }
+
     } catch (err) {
       console.error('[ConfigStore] Failed to load config:', err);
       set({ loaded: true });
@@ -177,6 +187,13 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       if (directUsers !== undefined) {
         console.log('[ConfigStore] Notifying backend of directUsers change:', directUsers);
         await invoke('config.set', { directUsers });
+      }
+
+      // Notify backend of ipScanRanges changes
+      const ipScanRanges = partial.ipScanRanges;
+      if (ipScanRanges !== undefined) {
+        console.log('[ConfigStore] Notifying backend of ipScanRanges change:', ipScanRanges);
+        await invoke('config.set', { ipScanRanges });
       }
     } catch (err) {
       console.error('[ConfigStore] Failed to save config:', err);

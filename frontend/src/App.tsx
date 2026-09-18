@@ -52,6 +52,17 @@ function App() {
         await loadConfig();
         // Notify backend that config is loaded, so it can send BR_ENTRY to direct users
         await invoke('config.loaded');
+        
+        // Auto-scan IP ranges if configured
+        const config = useConfigStore.getState().config;
+        if (config.ipScanRanges && config.ipScanRanges.length > 0) {
+          try {
+            await invoke('network.scan_range', { ranges: config.ipScanRanges });
+          } catch (e) {
+            console.error('[App] Auto-scan failed:', e);
+          }
+        }
+        
         await loadUsers();
         await discoverUsers();
         await loadLocalUserId();

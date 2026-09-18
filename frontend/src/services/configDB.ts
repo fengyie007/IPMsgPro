@@ -130,6 +130,9 @@ class ConfigDB {
     const directUsers = await this.get<string[]>('directUsers');
     if (directUsers) config.directUsers = directUsers;
 
+    const ipScanRanges = await this.get<string[]>('ipScanRanges');
+    if (ipScanRanges) config.ipScanRanges = ipScanRanges;
+
     return config;
   }
 

@@ -114,6 +114,7 @@ private:
     // --- Helper: Find user by IP or key ---
     std::optional<UserInfo> FindUserFromArgs(const nlohmann::json& args);
 
+public:
     /// Get the effective data directory (custom or default)
     std::string GetDataDir() const;
 

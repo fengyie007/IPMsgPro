@@ -56,6 +56,7 @@ export interface Config {
   minimizeBehavior: 'taskbar' | 'tray';  // minimize to taskbar or system tray
   notificationSound: boolean;  // play notification sound on new messages
   directUsers: string[]; // cross-subnet users to add directly (format: "ip:port")
+  ipScanRanges: string[]; // IP ranges for auto-scan (format: "10.8.33.1-254")
 }
 
 /** Application version */
@@ -132,7 +133,8 @@ export const DEFAULT_CONFIG: Config = {
   port: 2425,
   autoDiscovery: true,
   dataDir: '',
-  minimizeBehavior: 'taskbar',
+  minimizeBehavior: 'tray',
   notificationSound: true,
   directUsers: [],
+  ipScanRanges: [],
 };

@@ -20,12 +20,9 @@ export default function Settings({ onClose }: SettingsProps) {
   const [localConfig, setLocalConfig] = useState<Config>({ ...config });
   const [newSegment, setNewSegment] = useState('');
   const [newDirectUser, setNewDirectUser] = useState('');
+  const [newScanRange, setNewScanRange] = useState('');
 
   // IP Range Scanner state
-  const [scanStartIp, setScanStartIp] = useState('');
-  const [scanEndIp, setScanEndIp] = useState('');
-  const [scanPort, setScanPort] = useState(2425);
-  const [scanDelayMs, setScanDelayMs] = useState(50);
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{current: number, total: number, found: number} | null>(null);
 
@@ -72,19 +69,31 @@ export default function Settings({ onClose }: SettingsProps) {
     });
   };
 
+  const handleAddScanRange = () => {
+    if (newScanRange.trim() && !localConfig.ipScanRanges.includes(newScanRange.trim())) {
+      setLocalConfig({
+        ...localConfig,
+        ipScanRanges: [...localConfig.ipScanRanges, newScanRange.trim()],
+      });
+      setNewScanRange('');
+    }
+  };
+
+  const handleRemoveScanRange = (index: number) => {
+    setLocalConfig({
+      ...localConfig,
+      ipScanRanges: localConfig.ipScanRanges.filter((_, i) => i !== index),
+    });
+  };
+
   const handleStartScan = async () => {
-    if (!scanStartIp.trim() || !scanEndIp.trim()) return;
+    if (localConfig.ipScanRanges.length === 0) return;
     
     setIsScanning(true);
     setScanProgress({ current: 0, total: 0, found: 0 });
     
     try {
-      await invoke('network.scan_range', {
-        startIp: scanStartIp.trim(),
-        endIp: scanEndIp.trim(),
-        port: scanPort,
-        delayMs: scanDelayMs
-      });
+      await invoke('network.scan_range', { ranges: localConfig.ipScanRanges });
     } catch (err) {
       console.error('[Settings] Scan failed:', err);
       setIsScanning(false);
@@ -274,54 +283,48 @@ export default function Settings({ onClose }: SettingsProps) {
           {/* IP Range Scanner (cross-subnet active scan) */}
           <Section title="IP 范围扫描 (跨网段主动发现)">
             <p className="text-xs text-gray-500 mb-2">
-              适用于路由器不转发广播的场景。主动向指定 IP 范围发送单播 BR_ENTRY 发现用户。
+              适用于路由器不转发广播的场景。主动向指定 IP 范围发送单播 BR_ENTRY 发现用户。格式：起始IP-结束IP，如 10.8.33.1-254
             </p>
             <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-20">起始 IP</label>
-                  <input
-                    type="text"
-                    value={scanStartIp}
-                    onChange={(e) => setScanStartIp(e.target.value)}
-                    className="input-field flex-1"
-                    placeholder="如 10.8.33.1"
-                  />
+              {localConfig.ipScanRanges.map((range, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    {range}
+                  </span>
+                  <button
+                    className="p-1 text-red-400 hover:text-red-600"
+                    onClick={() => handleRemoveScanRange(i)}
+                  >
+                    <FiTrash2 size={14} />
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-20">结束 IP</label>
-                  <input
-                    type="text"
-                    value={scanEndIp}
-                    onChange={(e) => setScanEndIp(e.target.value)}
-                    className="input-field flex-1"
-                    placeholder="如 10.8.33.254"
-                  />
-                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newScanRange}
+                  onChange={(e) => setNewScanRange(e.target.value)}
+                  className="input-field flex-1"
+                  placeholder="输入 IP 范围，如 10.8.33.1-254"
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddScanRange()}
+                />
+                <button
+                  className="p-1.5 text-primary-500 hover:text-primary-600"
+                  onClick={handleAddScanRange}
+                >
+                  <FiPlus size={16} />
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-20">端口</label>
-                  <input
-                    type="number"
-                    value={scanPort}
-                    onChange={(e) => setScanPort(parseInt(e.target.value) || 2425)}
-                    className="input-field flex-1"
-                    min={1}
-                    max={65535}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-20">延迟(ms)</label>
-                  <input
-                    type="number"
-                    value={scanDelayMs}
-                    onChange={(e) => setScanDelayMs(Math.max(10, Math.min(5000, parseInt(e.target.value) || 50)))}
-                    className="input-field flex-1"
-                    min={10}
-                    max={5000}
-                  />
-                </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-500 w-20">端口</label>
+                <input
+                  type="number"
+                  value={localConfig.port}
+                  onChange={(e) => setLocalConfig({ ...localConfig, port: parseInt(e.target.value) || 2425 })}
+                  className="input-field w-24"
+                  min={1}
+                  max={65535}
+                />
               </div>
               <div className="flex items-center gap-2">
                 {isScanning ? (
@@ -335,6 +338,7 @@ export default function Settings({ onClose }: SettingsProps) {
                   <button
                     className="px-3 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 transition-colors"
                     onClick={handleStartScan}
+                    disabled={localConfig.ipScanRanges.length === 0}
                   >
                     开始扫描
                   </button>

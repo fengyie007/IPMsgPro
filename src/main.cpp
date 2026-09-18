@@ -967,6 +967,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
             LOG_INFO("Auto-adding direct user from config: " + ip + ":" + std::to_string(port));
             g_msgMng->SendDirectEntry(ip, port);
         }
+
+        // Auto-scan IP ranges from config
+        auto scanRanges = g_msgMng->GetScanRanges();
+        if (!scanRanges.empty()) {
+            LOG_INFO("Auto-scanning " + std::to_string(scanRanges.size()) + " IP ranges from config");
+            // Use default port and delay
+            g_msgMng->ScanIpRanges(scanRanges, cliArgs.port, 50);
+        }
     });
 
     LOG_INFO("Starting app event loop...");
