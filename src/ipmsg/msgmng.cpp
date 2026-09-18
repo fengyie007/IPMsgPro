@@ -773,6 +773,20 @@ std::vector<std::string> MsgMng::GetSegments() const {
     return segments_;
 }
 
+void MsgMng::AddDirectUser(const std::string& ip, int port) {
+    // Check if already exists
+    auto it = std::find_if(directUsers_.begin(), directUsers_.end(),
+                           [&](const auto& p) { return p.first == ip && p.second == port; });
+    if (it == directUsers_.end()) {
+        directUsers_.emplace_back(ip, port);
+        LogMessage("MSGMNG", "", "[MsgMng] Added direct user: " + ip + ":" + std::to_string(port));
+    }
+}
+
+std::vector<std::pair<std::string, int>> MsgMng::GetDirectUsers() const {
+    return directUsers_;
+}
+
 // ---------- Message Sending ----------
 
 bool MsgMng::SendMessage(const UserInfo& target, const std::string& message,

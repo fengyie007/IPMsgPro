@@ -55,6 +55,7 @@ export interface Config {
   dataDir: string;      // chat history & data directory (debug dir follows this)
   minimizeBehavior: 'taskbar' | 'tray';  // minimize to taskbar or system tray
   notificationSound: boolean;  // play notification sound on new messages
+  directUsers: string[]; // cross-subnet users to add directly (format: "ip:port")
 }
 
 /** Application version */
@@ -133,4 +134,5 @@ export const DEFAULT_CONFIG: Config = {
   dataDir: '',
   minimizeBehavior: 'taskbar',
   notificationSound: true,
+  directUsers: [],
 };

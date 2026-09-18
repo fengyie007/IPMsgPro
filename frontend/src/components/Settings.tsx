@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, FiVolume2, FiVolumeX } from 'react-icons/fi';
+import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, FiVolume2, FiVolumeX, FiUserPlus, FiUsers } from 'react-icons/fi';
 import { useConfigStore } from '../stores/configStore';
 import { Config, DEFAULT_CONFIG, APP_VERSION } from '../types';
 import { invoke } from '../services/bridge';
@@ -19,6 +19,7 @@ export default function Settings({ onClose }: SettingsProps) {
   const saveConfig = useConfigStore((s) => s.saveConfig);
   const [localConfig, setLocalConfig] = useState<Config>({ ...config });
   const [newSegment, setNewSegment] = useState('');
+  const [newDirectUser, setNewDirectUser] = useState('');
 
   useEffect(() => {
     setLocalConfig({ ...config });
@@ -43,6 +44,23 @@ export default function Settings({ onClose }: SettingsProps) {
     setLocalConfig({
       ...localConfig,
       segments: localConfig.segments.filter((_, i) => i !== index),
+    });
+  };
+
+  const handleAddDirectUser = () => {
+    if (newDirectUser.trim() && !localConfig.directUsers.includes(newDirectUser.trim())) {
+      setLocalConfig({
+        ...localConfig,
+        directUsers: [...localConfig.directUsers, newDirectUser.trim()],
+      });
+      setNewDirectUser('');
+    }
+  };
+
+  const handleRemoveDirectUser = (index: number) => {
+    setLocalConfig({
+      ...localConfig,
+      directUsers: localConfig.directUsers.filter((_, i) => i !== index),
     });
   };
 
@@ -173,6 +191,44 @@ export default function Settings({ onClose }: SettingsProps) {
                   onClick={handleAddSegment}
                 >
                   <FiPlus size={16} />
+                </button>
+              </div>
+            </div>
+          </Section>
+
+          {/* Direct Users (cross-subnet) */}
+          <Section title="跨网段直接添加用户">
+            <p className="text-xs text-gray-500 mb-2">
+              适用于不同网段（广播穿透不了路由器）的场景。格式：IP:端口，如 10.8.33.50:2425
+            </p>
+            <div className="space-y-2">
+              {localConfig.directUsers.map((user, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    {user}
+                  </span>
+                  <button
+                    className="p-1 text-red-400 hover:text-red-600"
+                    onClick={() => handleRemoveDirectUser(i)}
+                  >
+                    <FiTrash2 size={14} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newDirectUser}
+                  onChange={(e) => setNewDirectUser(e.target.value)}
+                  className="input-field flex-1"
+                  placeholder="输入 IP:端口，如 10.8.33.50:2425"
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddDirectUser()}
+                />
+                <button
+                  className="p-1.5 text-primary-500 hover:text-primary-600"
+                  onClick={handleAddDirectUser}
+                >
+                  <FiUserPlus size={16} />
                 </button>
               </div>
             </div>

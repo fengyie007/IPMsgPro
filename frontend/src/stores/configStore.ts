@@ -105,6 +105,16 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         }
       }
 
+      // Apply saved directUsers to backend
+      if (config.directUsers && config.directUsers.length > 0) {
+        console.log('[ConfigStore] Applying saved directUsers to backend:', config.directUsers);
+        try {
+          await invoke('config.set', { directUsers: config.directUsers });
+        } catch (e) {
+          console.error('[ConfigStore] Failed to set directUsers on backend:', e);
+        }
+      }
+
     } catch (err) {
       console.error('[ConfigStore] Failed to load config:', err);
       set({ loaded: true });
@@ -160,6 +170,13 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       if (segments !== undefined) {
         console.log('[ConfigStore] Notifying backend of segments change:', segments);
         await invoke('config.set', { segments });
+      }
+
+      // Notify backend of directUsers changes
+      const directUsers = partial.directUsers;
+      if (directUsers !== undefined) {
+        console.log('[ConfigStore] Notifying backend of directUsers change:', directUsers);
+        await invoke('config.set', { directUsers });
       }
     } catch (err) {
       console.error('[ConfigStore] Failed to save config:', err);

@@ -1093,6 +1093,23 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
                    std::to_string(args["segments"].size()) + " entries)");
     }
 
+    // Sync direct users (cross-subnet)
+    if (args.contains("directUsers") && args["directUsers"].is_array()) {
+        for (const auto& user : args["directUsers"]) {
+            if (user.is_string()) {
+                std::string entry = user.get<std::string>();
+                size_t colonPos = entry.find(':');
+                if (colonPos != std::string::npos) {
+                    std::string ip = entry.substr(0, colonPos);
+                    int port = std::stoi(entry.substr(colonPos + 1));
+                    msgMng_->AddDirectUser(ip, port);
+                }
+            }
+        }
+        LogMessage("BRIDGE", "", "Config updated: directUsers synced (" +
+                   std::to_string(args["directUsers"].size()) + " entries)");
+    }
+
     return {{"success", true}};
 }
 

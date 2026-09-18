@@ -113,6 +113,12 @@ public:
     /// Get current list of broadcast segments
     std::vector<std::string> GetSegments() const;
 
+    /// Add a cross-subnet user to send direct BR_ENTRY on startup
+    void AddDirectUser(const std::string& ip, int port);
+
+    /// Get list of direct users (for startup auto-discovery)
+    std::vector<std::pair<std::string, int>> GetDirectUsers() const;
+
     // ---------- Message Sending ----------
 
     /// Send a text message to a specific user
@@ -202,6 +208,7 @@ private:
 
     UserInfo localUser_;
     std::vector<std::string> segments_;  // custom broadcast segments
+    std::vector<std::pair<std::string, int>> directUsers_;  // cross-subnet users (ip, port)
 
     // Known users (key = userName@hostName)
     std::vector<UserInfo> users_;

@@ -941,6 +941,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
             // can discover each other (different ports can't discover via broadcast alone)
             g_msgMng->SendDirectEntry(ip, port);
         }
+
+        // Auto-add direct users from config (cross-subnet)
+        for (const auto& [ip, port] : g_msgMng->GetDirectUsers()) {
+            LOG_INFO("Auto-adding direct user from config: " + ip + ":" + std::to_string(port));
+            g_msgMng->SendDirectEntry(ip, port);
+        }
     });
 
     LOG_INFO("Starting app event loop...");
