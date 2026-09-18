@@ -118,6 +118,9 @@ class ConfigDB {
     const dataDir = await this.get<string>('dataDir');
     if (dataDir) config.dataDir = dataDir;
 
+    const group = await this.get<string>('group');
+    if (group) config.group = group;
+
     const minimizeBehavior = await this.get<string>('minimizeBehavior');
     if (minimizeBehavior === 'taskbar' || minimizeBehavior === 'tray') config.minimizeBehavior = minimizeBehavior;
 

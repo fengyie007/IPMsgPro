@@ -135,6 +135,32 @@
 
 ---
 
+## 修复：分组设置重启后丢失
+
+**问题**：设置中配置「分组」后重启丢失。
+
+**根因**：`configDB.ts` `loadConfig()` 缺少 `group` 字段加载。
+
+### 修改 12：`configDB.ts` 加载 group 字段
+- `frontend/src/services/configDB.ts` `loadConfig()` 增加 `group` 字段从 IndexedDB 读取
+- 状态：✅ 已完成
+
+---
+
+## 修复：启动时对话列表不显示历史聊天
+
+**问题**：启动时对话列表为空，不显示历史聊天对象。
+
+**根因**：对话列表仅显示 `userStore` 中在线用户，历史记录中的离线用户被忽略。
+
+### 修改 13：对话列表显示所有有消息的用户
+- `UserListPanel.tsx`：遍历 `messageStore` 中所有有消息的 partner，创建虚拟 User 对象补充到对话列表
+- `loadRecentConversations` 运行顺序调整：在 `loadLocalUserId` 之后执行（确保 localUserId 就绪）
+- 移除 7 天过滤，显示所有有历史记录的对话
+- 状态：✅ 已完成
+
+---
+
 ## 注意事项
 
 - 用户仍需在设置中输入**广播地址**（如 `10.8.33.255`），而非 CIDR（`10.8.33.0/24`）。CIDR 转换可作为后续优化。

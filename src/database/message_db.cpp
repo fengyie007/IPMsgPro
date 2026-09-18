@@ -228,4 +228,55 @@ int MessageDB::GetMessageCount(const std::string& userId) {
     return count;
 }
 
+bool MessageDB::GetRecentConversations(const std::string& localUserId, int limit, std::vector<MessageRecord>& messages) {
+    if (!db_) return false;
+
+    // Get latest message per conversation partner
+    // We need to find the "other party" for each conversation
+    const char* sql = R"(
+        SELECT m.id, m.from_id, m.to_id, m.content, m.type, m.timestamp, m.status
+        FROM messages m
+        INNER JOIN (
+            SELECT 
+                CASE 
+                    WHEN from_id = ? THEN to_id 
+                    ELSE from_id 
+                END as partner_id,
+                MAX(timestamp) as max_ts
+            FROM messages
+            GROUP BY partner_id
+        ) latest ON (
+            (m.from_id = ? AND m.to_id = latest.partner_id) OR 
+            (m.from_id = latest.partner_id AND m.to_id = ?)
+        ) AND m.timestamp = latest.max_ts
+        ORDER BY m.timestamp DESC
+        LIMIT ?
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, localUserId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, localUserId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, localUserId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        MessageRecord msg;
+        msg.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        msg.fromId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        msg.toId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        msg.content = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        msg.type = sqlite3_column_int(stmt, 4);
+        msg.timestamp = sqlite3_column_int64(stmt, 5);
+        msg.status = sqlite3_column_int(stmt, 6);
+        messages.push_back(std::move(msg));
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 } // namespace ipmsg

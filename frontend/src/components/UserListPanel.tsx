@@ -19,24 +19,45 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   const loading = useUserStore((s) => s.loading);
   const messages = useMessageStore((s) => s.messages);
 
-  // Get conversation users - users with messages in the last 7 days, sorted by latest message
+  // Get conversation users - users with any messages, sorted by latest message
   const conversationUsers = useMemo(() => {
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const userLastMsg: { user: User; lastTimestamp: number; lastContent: string }[] = [];
 
+    // First, add users from userStore who have messages
     for (const user of users) {
       const userMsgs = messages.get(user.id);
       if (userMsgs && userMsgs.length > 0) {
-        // Find the latest message within 7 days
-        const recentMsgs = userMsgs.filter(m => m.timestamp >= sevenDaysAgo);
-        if (recentMsgs.length > 0) {
-          const lastMsg = recentMsgs[recentMsgs.length - 1];
-          userLastMsg.push({
-            user,
-            lastTimestamp: lastMsg.timestamp,
-            lastContent: lastMsg.content,
-          });
-        }
+        const lastMsg = userMsgs[userMsgs.length - 1];
+        userLastMsg.push({
+          user,
+          lastTimestamp: lastMsg.timestamp,
+          lastContent: lastMsg.content,
+        });
+      }
+    }
+
+    // Also add users who have messages but aren't in userStore (from history)
+    for (const [partnerId, userMsgs] of messages) {
+      if (userMsgs && userMsgs.length > 0 && !users.some(u => u.id === partnerId)) {
+        const lastMsg = userMsgs[userMsgs.length - 1];
+        // Create a minimal user object from the partner ID
+        const [username, hostname] = partnerId.split('@');
+        const virtualUser: User = {
+          id: partnerId,
+          nickname: username || partnerId,
+          username: username || '',
+          hostname: hostname || '',
+          group: '',
+          ip: '',
+          port: 0,
+          status: 'offline',
+          version: '',
+        };
+        userLastMsg.push({
+          user: virtualUser,
+          lastTimestamp: lastMsg.timestamp,
+          lastContent: lastMsg.content,
+        });
       }
     }
 
@@ -55,7 +76,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   const filteredConversations = conversationUsers.filter(({ user }) =>
     user.nickname.toLowerCase().includes(searchText.toLowerCase()) ||
     user.username.toLowerCase().includes(searchText.toLowerCase()) ||
-    user.ip.includes(searchText)
+    (user.ip && user.ip.includes(searchText))
   );
 
   const handleRefresh = async () => {

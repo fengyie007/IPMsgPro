@@ -55,11 +55,31 @@ static ipmsg::MessageDB* g_msgDb = nullptr;
 static ipmsg::FileTransferManager* g_fileTransfer = nullptr;
 
 /// Get the application data directory for storing database etc.
-/// Uses USERPROFILE\.speedipmsg (user home directory)
+/// Uses USERPROFILE\.speedipmsg (user home directory), or custom path from registry
 static std::string GetAppDataDir(int port) {
+    // First, try to read custom dataDir from registry
+    HKEY hKey = nullptr;
+    std::string customDir;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char buffer[MAX_PATH] = {};
+        DWORD size = sizeof(buffer);
+        if (RegQueryValueExA(hKey, "DataDir", nullptr, nullptr, (LPBYTE)buffer, &size) == ERROR_SUCCESS) {
+            customDir = buffer;
+        }
+        RegCloseKey(hKey);
+    }
+
+    if (!customDir.empty()) {
+        if (port != ipmsg::IPMSG_DEFAULT_PORT) {
+            customDir += "_" + std::to_string(port);
+        }
+        CreateDirectoryA(customDir.c_str(), nullptr);
+        return customDir;
+    }
+
+    // Fallback to default
     char userProfile[MAX_PATH] = {};
     if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
-        // Fallback to LOCAL_APPDATA if USERPROFILE is not available
         SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, userProfile);
     }
     std::string dir = std::string(userProfile) + "\\.speedipmsg";

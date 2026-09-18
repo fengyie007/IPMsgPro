@@ -111,6 +111,9 @@ interface MessageStore {
   /** Get messages for a specific user */
   getMessages: (userId: string) => Message[];
 
+  /** Load recent conversations (latest message per user) for conversation list */
+  loadRecentConversations: () => Promise<void>;
+
   /** Load local user ID from backend */
   loadLocalUserId: () => Promise<void>;
 
@@ -584,6 +587,76 @@ updateTransferProgress: (transferId, progress, isSending) => {
       set({ error: err.message });
     } finally {
       set({ loading: false });
+    }
+  },
+
+  loadRecentConversations: async () => {
+    try {
+      console.log('[MessageStore] loadRecentConversations: calling history.get_recent');
+      const result = await invoke<{
+        success: boolean;
+        messages: any[];
+        localUserId?: string;
+      }>('history.get_recent', { limit: 50 });  // Increase limit for 1-month filter
+
+      console.log('[MessageStore] loadRecentConversations result:', result);
+
+      if (result.success && result.messages) {
+        const localUserId = get().localUserId || result.localUserId || '';
+
+        // Filter to last 30 days (1 month)
+        const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+        const msgs: Message[] = result.messages.map((m: any) => {
+          const isSentByMe = m.fromId === localUserId;
+          const msgType = m.type === 0 ? 'text' : m.type === 1 ? 'image' : 'file';
+
+          return {
+            id: m.id,
+            from: isSentByMe ? 'self' : m.fromId,
+            to: isSentByMe ? m.toId : 'self',
+            content: m.content,
+            type: msgType,
+            timestamp: m.timestamp * 1000,
+            status: m.status === 0 ? 'sending' : m.status === 1 ? 'delivered' : m.status === 2 ? 'delivered' : 'failed',
+          };
+        });
+
+        console.log('[MessageStore] Parsed messages:', msgs);
+
+        // Filter to last 1 month
+        const recentMsgs = msgs.filter(m => m.timestamp >= oneMonthAgo);
+        console.log('[MessageStore] Messages after 1-month filter:', recentMsgs);
+
+        // Group by conversation partner
+        const partnerMap = new Map<string, Message>();
+        for (const msg of recentMsgs) {
+          const partnerId = msg.from === 'self' ? msg.to : msg.from;
+          const existing = partnerMap.get(partnerId);
+          if (!existing || msg.timestamp > existing.timestamp) {
+            partnerMap.set(partnerId, msg);
+          }
+        }
+
+        console.log('[MessageStore] Partner map:', Array.from(partnerMap.entries()));
+
+        // Update store with latest message per partner
+        set((state) => {
+          const newMessages = new Map(state.messages);
+          for (const [partnerId, msg] of partnerMap) {
+            const existing = newMessages.get(partnerId) || [];
+            // Only add if not already present (avoid duplicates with real-time messages)
+            const isDuplicate = existing.some(m => m.id === msg.id);
+            if (!isDuplicate) {
+              newMessages.set(partnerId, [msg, ...existing]);
+            }
+          }
+          console.log('[MessageStore] Updated messages map keys:', Array.from(newMessages.keys()));
+          return { messages: newMessages };
+        });
+      }
+    } catch (err: any) {
+      console.error('[MessageStore] loadRecentConversations failed:', err);
     }
   },
 

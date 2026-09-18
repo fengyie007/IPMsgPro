@@ -6,6 +6,7 @@ import Settings from './components/Settings';
 import { useUserStore } from './stores/userStore';
 import { useMessageStore } from './stores/messageStore';
 import { useConfigStore } from './stores/configStore';
+import { invoke } from './services/bridge';
 
 function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -16,6 +17,7 @@ function App() {
   const loadConfig = useConfigStore((s) => s.loadConfig);
   const currentUser = useUserStore((s) => s.currentUser);
   const loadLocalUserId = useMessageStore((s) => s.loadLocalUserId);
+  const loadRecentConversations = useMessageStore((s) => s.loadRecentConversations);
 
   console.log('[App] Rendering, initMessageListeners type:', typeof initMessageListeners);
 
@@ -36,12 +38,21 @@ function App() {
 
     // Then do async init: load config, users, discover
     const init = async () => {
-      await loadConfig();
-      // Notify backend that config is loaded, so it can send BR_ENTRY to direct users
-      await invoke('config.loaded');
-      await loadUsers();
-      await discoverUsers();
-      await loadLocalUserId();
+      try {
+        await loadConfig();
+        // Notify backend that config is loaded, so it can send BR_ENTRY to direct users
+        await invoke('config.loaded');
+        await loadUsers();
+        await discoverUsers();
+        await loadLocalUserId();
+        await loadRecentConversations();  // Load recent conversations for chat list (after localUserId is ready)
+      } catch (err: any) {
+        console.error('[App] Init failed:', err);
+        // Report error to backend for debugging
+        try {
+          await invoke('frontend.error', { message: err.message, stack: err.stack });
+        } catch {}
+      }
     };
 
     init();

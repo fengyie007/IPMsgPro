@@ -73,6 +73,7 @@ private:
     nlohmann::json HandleHistoryGet(const nlohmann::json& args);
     nlohmann::json HandleHistorySearch(const nlohmann::json& args);
     nlohmann::json HandleHistoryClear(const nlohmann::json& args);
+    nlohmann::json HandleHistoryGetRecent(const nlohmann::json& args);
 
     // --- Network Commands ---
     nlohmann::json HandleNetworkScan(const nlohmann::json& args);
@@ -80,6 +81,7 @@ private:
     // --- Config Commands ---
     nlohmann::json HandleConfigSet(const nlohmann::json& args);
     nlohmann::json HandleConfigLoaded(const nlohmann::json& args);
+    nlohmann::json HandleFrontendError(const nlohmann::json& args);
 
     // --- Dialog Commands ---
     nlohmann::json HandleDialogPickFolder(const nlohmann::json& args);

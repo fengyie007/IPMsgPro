@@ -594,6 +594,8 @@ void CommandHandler::RegisterAllCommands() {
         [this](const nlohmann::json& args) { return HandleHistorySearch(args); });
     bridge_->RegisterCommand("history.clear",
         [this](const nlohmann::json& args) { return HandleHistoryClear(args); });
+    bridge_->RegisterCommand("history.get_recent",
+        [this](const nlohmann::json& args) { return HandleHistoryGetRecent(args); });
 
     // Network
     bridge_->RegisterCommand("network.scan",
@@ -604,6 +606,8 @@ void CommandHandler::RegisterAllCommands() {
         [this](const nlohmann::json& args) { return HandleConfigSet(args); });
     bridge_->RegisterCommand("config.loaded",
         [this](const nlohmann::json& args) { return HandleConfigLoaded(args); });
+    bridge_->RegisterCommand("frontend.error",
+        [this](const nlohmann::json& args) { return HandleFrontendError(args); });
 
     // Dialog
     bridge_->RegisterCommand("dialog.pick_folder",
@@ -1061,6 +1065,13 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         CreateDirectoryA(dataDir_.c_str(), nullptr);
         LogMessage("BRIDGE", "", "Config updated: dataDir=" + dataDir_);
 
+        // Save to registry so it's available at next startup before frontend loads
+        HKEY hKey;
+        if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS) {
+            RegSetValueExA(hKey, "DataDir", 0, REG_SZ, (const BYTE*)dataDir_.c_str(), dataDir_.size() + 1);
+            RegCloseKey(hKey);
+        }
+
         // Reinitialize logger to new data directory
         ipmsg::ReinitLogger(dataDir_);
 
@@ -1078,6 +1089,13 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         // dataDir explicitly set to empty -> reset to default
         dataDir_.clear();
         LogMessage("BRIDGE", "", "Config updated: dataDir reset to default");
+
+        // Remove from registry
+        HKEY hKey;
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+            RegDeleteValueA(hKey, "DataDir");
+            RegCloseKey(hKey);
+        }
 
         // Reinitialize logger to default data directory
         std::string defaultDir = GetDataDir();
@@ -1156,6 +1174,13 @@ nlohmann::json CommandHandler::HandleConfigLoaded(const nlohmann::json& args) {
         LogMessage("BRIDGE", "", "Config loaded: auto-adding direct user " + ip + ":" + std::to_string(port));
         msgMng_->SendDirectEntry(ip, port);
     }
+    return {{"success", true}};
+}
+
+nlohmann::json CommandHandler::HandleFrontendError(const nlohmann::json& args) {
+    std::string message = args.value("message", "Unknown error");
+    std::string stack = args.value("stack", "");
+    LogMessage("BRIDGE", "ERROR", "[FRONTEND ERROR] " + message + (stack.empty() ? "" : "\nStack: " + stack));
     return {{"success", true}};
 }
 
@@ -2037,6 +2062,32 @@ nlohmann::json CommandHandler::HandleHistoryClear(const nlohmann::json& args) {
     return {{"success", ok}};
 }
 
+nlohmann::json CommandHandler::HandleHistoryGetRecent(const nlohmann::json& args) {
+    int limit = args.value("limit", 20);
+    if (limit <= 0) limit = 20;
+    if (limit > 100) limit = 100;
+
+    std::string localUserId = msgMng_->GetLocalUser().Key();
+
+    std::vector<MessageRecord> messages;
+    bool ok = msgDb_->GetRecentConversations(localUserId, limit, messages);
+
+    nlohmann::json msgList = nlohmann::json::array();
+    for (const auto& m : messages) {
+        msgList.push_back({
+            {"id", m.id},
+            {"fromId", m.fromId},
+            {"toId", m.toId},
+            {"content", m.content},
+            {"type", m.type},
+            {"timestamp", m.timestamp},
+            {"status", m.status}
+        });
+    }
+
+    return {{"success", ok}, {"messages", msgList}, {"localUserId", localUserId}};
+}
+
 // ---------- Network Commands ----------
 
 nlohmann::json CommandHandler::HandleNetworkScan(const nlohmann::json& args) {
@@ -2142,6 +2193,17 @@ std::string CommandHandler::GetDataDir() const {
     // If custom dataDir is set, use it; otherwise use default (USERPROFILE\.speedipmsg)
     if (!dataDir_.empty()) {
         return dataDir_;
+    }
+    // Try to read from registry first
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char buffer[MAX_PATH] = {};
+        DWORD size = sizeof(buffer);
+        if (RegQueryValueExA(hKey, "DataDir", nullptr, nullptr, (LPBYTE)buffer, &size) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return std::string(buffer);
+        }
+        RegCloseKey(hKey);
     }
     char userProfile[MAX_PATH] = {};
     if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
