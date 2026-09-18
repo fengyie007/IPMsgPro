@@ -194,14 +194,14 @@ endif()
 
 # Determine output name based on architecture
 if(BUILD_ARCH STREQUAL "x64")
-    set(IPMSGPRO_OUTPUT_NAME "IPMsgPro")
+    set(IPMSGPRO_OUTPUT_NAME "SpeedIpMsg")
 else()
-    set(IPMSGPRO_OUTPUT_NAME "IPMsgPro_X86")
+    set(IPMSGPRO_OUTPUT_NAME "SpeedIpMsg_X86")
 endif()
 
-message(STATUS "IPMsgPro output name: ${IPMSGPRO_OUTPUT_NAME}")
+message(STATUS "SpeedIpMsg output name: ${IPMSGPRO_OUTPUT_NAME}")
 
-add_executable(IPMsgPro WIN32
+add_executable(SpeedIpMsg WIN32
     ${IPMSGPRO_SOURCES}
     "${RESOURCE_MAP_CPP}"
     "${RESOURCES_RC}"
@@ -209,9 +209,9 @@ add_executable(IPMsgPro WIN32
 )
 
 # Ensure output name matches architecture
-set_target_properties(IPMsgPro PROPERTIES OUTPUT_NAME "${IPMSGPRO_OUTPUT_NAME}")
+set_target_properties(SpeedIpMsg PROPERTIES OUTPUT_NAME "${IPMSGPRO_OUTPUT_NAME}")
 
-target_include_directories(IPMsgPro PRIVATE
+target_include_directories(SpeedIpMsg PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
     "${GEN_DIR}"
     ${TAURICPP_DIR}/include
@@ -220,7 +220,7 @@ target_include_directories(IPMsgPro PRIVATE
     ${WEBVIEW2_INCLUDE_DIR}
 )
 
-target_link_libraries(IPMsgPro PRIVATE
+target_link_libraries(SpeedIpMsg PRIVATE
     ${TAURICPP_TARGET}
     ${SQLITE3_TARGET}
     ws2_32
@@ -231,17 +231,17 @@ target_link_libraries(IPMsgPro PRIVATE
 
 # Force static CRT linking for the executable
 if(MSVC)
-    set_target_properties(IPMsgPro PROPERTIES
+    set_target_properties(SpeedIpMsg PROPERTIES
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     # Static link all dependencies
-    target_link_options(IPMsgPro PRIVATE
+    target_link_options(SpeedIpMsg PRIVATE
         $<$<CONFIG:Release>:/NODEFAULTLIB:MSVCRT>
         $<$<CONFIG:Release>:/NODEFAULTLIB:MSVCRTD>
     )
 endif()
 
-add_dependencies(IPMsgPro pack_resources)
+add_dependencies(SpeedIpMsg pack_resources)
 
 add_custom_target(pack_resources
     DEPENDS "${RESOURCES_RC}" "${RESOURCE_MAP_CPP}"

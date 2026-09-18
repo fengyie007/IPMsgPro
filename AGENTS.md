@@ -5,8 +5,8 @@
 Requires: VS2022 (C++ desktop workload), CMake 3.15+, Python 3, Node.js 18+.
 
 ```powershell
-.\build.ps1 -Arch x64          # x64 Release → build_x64/Release/IPMsgPro.exe
-.\build.ps1 -Arch x86          # x86 Release → build_x86/Release/IPMsgPro_X86.exe
+.\build.ps1 -Arch x64          # x64 Release → build_x64/Release/SpeedIpMsg.exe
+.\build.ps1 -Arch x86          # x86 Release → build_x86/Release/SpeedIpMsg_X86.exe
 .\build.ps1 -Arch x64 -SkipFrontend   # skip frontend if unchanged
 .\build.ps1 -Arch x64 -Run      # build + launch
 ```
@@ -23,7 +23,7 @@ npx vite build    # or: npm run build (runs tsc -b first)
 - **Backend**: C++17 + Win32 + WebView2 via TauriCPP framework (`TauriCPP/` submodule)
 - **Frontend**: React + TypeScript + Tailwind CSS + Vite (`frontend/`)
 - Frontend `dist/` is packed into the exe as embedded resources by `TauriCPP/tools/pack_resources.py`
-- CMake builds per-architecture static libs (`tauricpp_x64`, `sqlite3_x64`) linked into `IPMsgPro`
+- CMake builds per-architecture static libs (`tauricpp_x64`, `sqlite3_x64`) linked into `SpeedIpMsg`
 - Entry point: `src/main.cpp` (WinMain)
 
 ## Key directories

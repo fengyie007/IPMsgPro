@@ -26,14 +26,14 @@ $FrontendDir = Join-Path $ProjectRoot "frontend"
 
 # Output exe name differs by architecture
 if ($Arch -eq "x64") {
-    $ExeName = "IPMsgPro.exe"
+    $ExeName = "SpeedIpMsg.exe"
 } else {
-    $ExeName = "IPMsgPro_X86.exe"
+    $ExeName = "SpeedIpMsg_X86.exe"
 }
 $ExePath = Join-Path $BuildDir "$Config\$ExeName"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " IPMsgPro Build Script" -ForegroundColor Cyan
+Write-Host " SpeedIpMsg Build Script" -ForegroundColor Cyan
 Write-Host " Config: $Config" -ForegroundColor Cyan
 Write-Host " Arch:   $Arch" -ForegroundColor Cyan
 Write-Host " Output: $ExeName" -ForegroundColor Cyan
