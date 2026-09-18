@@ -260,6 +260,8 @@ bool Window::CreateNativeWindow() {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandle(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIcon(wc.hInstance, MAKEINTRESOURCE(1));
+    wc.hIconSm = LoadIcon(wc.hInstance, MAKEINTRESOURCE(1));
     // 使用配置的背景色作为窗口类背景，消除白色闪烁
     wc.hbrBackground = CreateSolidBrush(config_.bg_color);
     wc.lpszClassName = L"TauriCPPWindowClass";
