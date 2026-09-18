@@ -1,5 +1,5 @@
 // ============================================================================
-// TypeScript Type Definitions for IPMsg Pro
+// TypeScript Type Definitions for SpeedIPMsg
 // ============================================================================
 
 /** User type */

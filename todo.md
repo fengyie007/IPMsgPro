@@ -77,3 +77,66 @@
 2. 输入 `10.8.33.50:2425`（目标 IP + 端口）
 3. 点击保存
 4. 重启程序，自动向该 IP 发送 BR_ENTRY，实现跨网段发现
+
+---
+
+## 修复：直接添加用户重启后丢失 / 刚添加不可见
+
+**问题**：`--adduser` CLI 参数仅启动时生效，重启丢失；Settings 添加后需重启才可见。
+
+### 修改 8：前端配置加载后通知后端
+- `frontend/src/App.tsx`：`loadConfig()` 完成后调用 `invoke('config.loaded')`
+- `src/bridge/command_handler.h/.cpp`：新增 `HandleConfigLoaded` 命令
+- `HandleConfigLoaded` 遍历 `GetDirectUsers()` 发送 BR_ENTRY，无需重启即可见
+
+### 修改 9：配置更新时清理旧 directUsers
+- `command_handler.cpp` `HandleConfigSet`：处理 `directUsers` 前先调用 `ClearDirectUsers()`
+- `msgmng.cpp` 新增 `ClearDirectUsers()` 清空向量
+
+---
+
+## 修复：聊天记录目录修改不生效
+
+**问题**：设置中修改「聊天记录存储目录」后，数据库仍在默认位置。
+
+### 修改 10：`HandleConfigSet` 重新初始化数据库
+- `command_handler.cpp`：`dataDir` 变更时，关闭旧 DB，用新路径 `dataDir + "\ipmsg.db"` 重新 `Init()`
+- `dataDir` 清空（恢复默认）时同理
+- 状态：✅ 已完成
+
+---
+
+## 改进：重命名应用为「迅秋 (SpeedIPMsg)」
+
+### 修改 11：全代码库替换品牌名
+| 文件 | 修改内容 |
+|------|----------|
+| `src/main.cpp` | 窗口标题 `"倍信"` → `"迅秋"`，托盘提示同理 |
+| `frontend/index.html` | `<title>IPMsg Pro - 飞鸽传书</title>` → `"迅秋 (SpeedIPMsg)"` |
+| `resources/app.rc` | `FileDescription` / `ProductName` 更新 |
+| `frontend/src/components/LeftSidebar.tsx` | 底部版权文本更新 |
+| `frontend/src/components/Settings.tsx` | 关于版本显示更新 |
+| `README.md` | 标题更新 |
+| `frontend/src/types/index.ts` | 注释更新 |
+| `frontend/package.json` | `"name": "ipmsgpro"` → `"speedipmsg"` |
+| `configStore.ts` / `Settings.tsx` | 默认数据目录 `~/.ipmsgpro` → `~/.speedipmsg` |
+| `src/main.cpp` `GetAppDataDir` | 默认目录 `.ipmsgpro` → `.speedipmsg` |
+| `command_handler.cpp` `GetDataDir` | 同上 |
+| `TauriCPP/src/bridge.cpp` | 同上 |
+
+---
+
+## 改进：build.ps1 支持 VS2026 Build Tools
+
+**背景**：CMake 4.1.2 不支持 VS2026 generator，但机器安装了 VS Build Tools v18 (VS2026)。
+- 检测到 VS 18 目录时，使用其自带 `cmake.exe` (4.3.1) 与 `Visual Studio 18 2026` generator
+- 生成目录清理避免 generator 冲突
+- 状态：✅ 已完成
+
+---
+
+## 注意事项
+
+- 用户仍需在设置中输入**广播地址**（如 `10.8.33.255`），而非 CIDR（`10.8.33.0/24`）。CIDR 转换可作为后续优化。
+- 跨网段发现：广播需路由器开启 `ip directed-broadcast`；直接添加用户走单播，不依赖路由器转发。
+- 任务栏图标缓存需取消固定重新固定或重启 explorer.exe 刷新。

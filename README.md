@@ -1,4 +1,4 @@
-# 倍信 (IPMsg Pro) v1.4.5
+# 迅秋 (SpeedIPMsg) v1.4.5
 
 基于 [TauriCPP](https://github.com/masonwu21/TauriCPP) 框架和 [ipmsg-master](https://ipmsg.org/) 协议实现的局域网即时通讯应用，兼容飞秋和IPMsg v3.0 协议（UDP 2425 端口）。
 

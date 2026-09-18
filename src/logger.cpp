@@ -93,6 +93,47 @@ void InitLogger(const std::string& dataDir) {
     g_oldCerrBuf = std::cerr.rdbuf(g_logBuf);
 }
 
+void ReinitLogger(const std::string& newDataDir) {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+
+    // Close current log
+    if (g_log.is_open()) {
+        g_log.flush();
+        g_log.close();
+    }
+
+    // Delete old stream buffer
+    if (g_logBuf) {
+        delete g_logBuf;
+        g_logBuf = nullptr;
+    }
+
+    // Restore original streams
+    if (g_oldCoutBuf) {
+        std::cout.rdbuf(g_oldCoutBuf);
+        g_oldCoutBuf = nullptr;
+    }
+    if (g_oldCerrBuf) {
+        std::cerr.rdbuf(g_oldCerrBuf);
+        g_oldCerrBuf = nullptr;
+    }
+
+    // Open new log at new location (append mode to preserve old logs)
+    g_logPath = newDataDir + "\\ipmsg_gui_debug.log";
+    g_log.open(g_logPath, std::ios::app);
+    if (!g_log.is_open()) {
+        std::cerr << "Failed to open unified log file at new location: " << g_logPath << std::endl;
+        return;
+    }
+
+    // Create new stream buffer pointing to new log
+    g_logBuf = new LogStreamBuf(g_log.rdbuf(), g_logMutex);
+    g_oldCoutBuf = std::cout.rdbuf(g_logBuf);
+    g_oldCerrBuf = std::cerr.rdbuf(g_logBuf);
+
+    LogMessage("LOGGER", "", "[Logger] Reinitialized at new location: " + g_logPath);
+}
+
 void LogMessage(const std::string& tag, const std::string& level,
                 const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_logMutex);

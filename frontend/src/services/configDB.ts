@@ -124,6 +124,9 @@ class ConfigDB {
     const notificationSound = await this.get<boolean>('notificationSound');
     if (notificationSound !== null) config.notificationSound = notificationSound;
 
+    const directUsers = await this.get<string[]>('directUsers');
+    if (directUsers) config.directUsers = directUsers;
+
     return config;
   }
 

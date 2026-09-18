@@ -26,13 +26,13 @@ BEGIN
         BLOCK "080404b0"
         BEGIN
             VALUE "CompanyName",     "masonwu21"
-            VALUE "FileDescription", "倍信 (IPMsg Pro) - 局域网即时通讯"
+            VALUE "FileDescription", "迅秋 (SpeedIPMsg) - 局域网即时通讯"
             VALUE "FileVersion",     "1.4.5"
             VALUE "InternalName",    "IPMsgPro"
             VALUE "LegalCopyright",  "MIT License © 2026 masonwu21"
 
             VALUE "OriginalFilename","IPMsgPro.exe"
-            VALUE "ProductName",     "倍信 (IPMsg Pro)"
+            VALUE "ProductName",     "迅秋 (SpeedIPMsg)"
             VALUE "ProductVersion",  "1.4.5"
         END
     END

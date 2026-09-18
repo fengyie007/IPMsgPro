@@ -787,6 +787,11 @@ std::vector<std::pair<std::string, int>> MsgMng::GetDirectUsers() const {
     return directUsers_;
 }
 
+void MsgMng::ClearDirectUsers() {
+    directUsers_.clear();
+    LogMessage("MSGMNG", "", "[MsgMng] Cleared all direct users");
+}
+
 // ---------- Message Sending ----------
 
 bool MsgMng::SendMessage(const UserInfo& target, const std::string& message,

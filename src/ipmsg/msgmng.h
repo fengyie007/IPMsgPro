@@ -119,6 +119,9 @@ public:
     /// Get list of direct users (for startup auto-discovery)
     std::vector<std::pair<std::string, int>> GetDirectUsers() const;
 
+    /// Clear all direct users (called when config is updated)
+    void ClearDirectUsers();
+
     // ---------- Message Sending ----------
 
     /// Send a text message to a specific user

@@ -35,7 +35,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 
       // Repair: if a previously saved dataDir is exactly the user's home directory
       // (mistakenly persisted when the folder picker opened at home and OK was clicked),
-      // reset it to the default so the correct "C:\Users\<user>\.ipmsgpro" is shown.
+      // reset it to the default so the correct "C:\Users\<user>\.speedipmsg" is shown.
       const home = (typeof window !== 'undefined' && (window as any).__tauricpp__?.homeDir) || '';
       const normalizePath = (p: string) => p.replace(/\//g, '\\').toLowerCase();
       if (config.dataDir && home && normalizePath(config.dataDir) === normalizePath(home)) {

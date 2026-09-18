@@ -15,12 +15,18 @@ MessageDB::~MessageDB() {
 }
 
 bool MessageDB::Init(const std::string& dbPath) {
-    if (db_) return true;
+    // If already initialized with the same path, do nothing
+    if (db_ && dbPath_ == dbPath) return true;
 
+    // Close existing connection if any (different path or fresh init)
+    Close();
+
+    dbPath_ = dbPath;
     int rc = sqlite3_open(dbPath.c_str(), &db_);
     if (rc != SQLITE_OK) {
         sqlite3_close(db_);
         db_ = nullptr;
+        dbPath_.clear();
         return false;
     }
 

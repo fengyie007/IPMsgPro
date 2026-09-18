@@ -55,14 +55,14 @@ static ipmsg::MessageDB* g_msgDb = nullptr;
 static ipmsg::FileTransferManager* g_fileTransfer = nullptr;
 
 /// Get the application data directory for storing database etc.
-/// Uses USERPROFILE\.ipmsgpro (user home directory)
+/// Uses USERPROFILE\.speedipmsg (user home directory)
 static std::string GetAppDataDir(int port) {
     char userProfile[MAX_PATH] = {};
     if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
         // Fallback to LOCAL_APPDATA if USERPROFILE is not available
         SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, userProfile);
     }
-    std::string dir = std::string(userProfile) + "\\.ipmsgpro";
+    std::string dir = std::string(userProfile) + "\\.speedipmsg";
     if (port != ipmsg::IPMSG_DEFAULT_PORT) {
         dir += "_" + std::to_string(port);
     }
@@ -841,7 +841,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
     // Configure application
     tauricpp::App::Config config;
-    config.window_config.title = "倍信";
+    config.window_config.title = "迅秋";
     config.window_config.width = 960;
     config.window_config.height = 640;
     config.window_config.center = true;
@@ -873,7 +873,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
             cmdHandler.SetWindow(&win);
 
             // Create tray icon (loads from exe resources automatically)
-            win.CreateTrayIcon("", "倍信");
+            win.CreateTrayIcon("", "迅秋");
 
             // Tray left-click: show window
             win.OnTrayClick([&]() {

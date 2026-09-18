@@ -69,6 +69,7 @@ private:
     bool CreateTables();
 
     sqlite3* db_ = nullptr;
+    std::string dbPath_;
 };
 
 } // namespace ipmsg

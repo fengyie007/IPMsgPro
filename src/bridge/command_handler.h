@@ -79,6 +79,7 @@ private:
 
     // --- Config Commands ---
     nlohmann::json HandleConfigSet(const nlohmann::json& args);
+    nlohmann::json HandleConfigLoaded(const nlohmann::json& args);
 
     // --- Dialog Commands ---
     nlohmann::json HandleDialogPickFolder(const nlohmann::json& args);

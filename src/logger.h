@@ -21,6 +21,10 @@ namespace ipmsg {
 // into it. Safe to call once at process start.
 void InitLogger(const std::string& dataDir);
 
+// Reinitialize logger with a new data directory (closes old log, opens new one).
+// Use when config-specified dataDir is loaded after initial startup.
+void ReinitLogger(const std::string& newDataDir);
+
 // Write a single tagged line to the unified log:
 //   [YYYY-MM-DD HH:MM:SS.mmm] [TAG] [LEVEL] message
 // Thread-safe. If the logger has not been initialized yet, it lazily opens

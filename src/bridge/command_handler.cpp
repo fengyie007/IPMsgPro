@@ -602,6 +602,8 @@ void CommandHandler::RegisterAllCommands() {
     // Config
     bridge_->RegisterCommand("config.set",
         [this](const nlohmann::json& args) { return HandleConfigSet(args); });
+    bridge_->RegisterCommand("config.loaded",
+        [this](const nlohmann::json& args) { return HandleConfigLoaded(args); });
 
     // Dialog
     bridge_->RegisterCommand("dialog.pick_folder",
@@ -1053,15 +1055,44 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         LogMessage("BRIDGE", "", "Config updated: nickname=" + nickname + ", group=" + group);
     }
 
-    // Store custom data directory (used for downloads etc.)
+    // Store custom data directory (used for downloads, database, etc.)
     if (!dataDir.empty()) {
         dataDir_ = dataDir;
         CreateDirectoryA(dataDir_.c_str(), nullptr);
         LogMessage("BRIDGE", "", "Config updated: dataDir=" + dataDir_);
+
+        // Reinitialize logger to new data directory
+        ipmsg::ReinitLogger(dataDir_);
+
+        // Re-initialize database with new data directory
+        if (msgDb_) {
+            std::string dbPath = dataDir_ + "\\ipmsg.db";
+            msgDb_->Close();
+            if (!msgDb_->Init(dbPath)) {
+                LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
+            } else {
+                LogMessage("BRIDGE", "", "[BRIDGE] Database reinitialized at " + dbPath);
+            }
+        }
     } else if (args.contains("dataDir") && args["dataDir"].is_string() && args["dataDir"].get<std::string>().empty()) {
         // dataDir explicitly set to empty -> reset to default
         dataDir_.clear();
         LogMessage("BRIDGE", "", "Config updated: dataDir reset to default");
+
+        // Reinitialize logger to default data directory
+        std::string defaultDir = GetDataDir();
+        ipmsg::ReinitLogger(defaultDir);
+
+        // Re-initialize database with default data directory
+        if (msgDb_) {
+            std::string dbPath = defaultDir + "\\ipmsg.db";
+            msgDb_->Close();
+            if (!msgDb_->Init(dbPath)) {
+                LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
+            } else {
+                LogMessage("BRIDGE", "", "[BRIDGE] Database reinitialized at " + dbPath);
+            }
+        }
     }
 
     // Store minimize behavior setting
@@ -1093,8 +1124,11 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
                    std::to_string(args["segments"].size()) + " entries)");
     }
 
-    // Sync direct users (cross-subnet)
+    // Sync direct users (cross-subnet) — clear first to match config exactly
     if (args.contains("directUsers") && args["directUsers"].is_array()) {
+        // Clear existing direct users
+        msgMng_->ClearDirectUsers();
+        // Add new direct users from config and send BR_ENTRY immediately
         for (const auto& user : args["directUsers"]) {
             if (user.is_string()) {
                 std::string entry = user.get<std::string>();
@@ -1103,6 +1137,8 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
                     std::string ip = entry.substr(0, colonPos);
                     int port = std::stoi(entry.substr(colonPos + 1));
                     msgMng_->AddDirectUser(ip, port);
+                    // Send BR_ENTRY immediately so user appears without restart
+                    msgMng_->SendDirectEntry(ip, port);
                 }
             }
         }
@@ -1110,6 +1146,16 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
                    std::to_string(args["directUsers"].size()) + " entries)");
     }
 
+    return {{"success", true}};
+}
+
+// Called after frontend finishes loading config from IndexedDB
+nlohmann::json CommandHandler::HandleConfigLoaded(const nlohmann::json& args) {
+    // Send BR_ENTRY to all configured direct users (cross-subnet)
+    for (const auto& [ip, port] : msgMng_->GetDirectUsers()) {
+        LogMessage("BRIDGE", "", "Config loaded: auto-adding direct user " + ip + ":" + std::to_string(port));
+        msgMng_->SendDirectEntry(ip, port);
+    }
     return {{"success", true}};
 }
 
@@ -2093,7 +2139,7 @@ nlohmann::json CommandHandler::HandleDialogOpen(const nlohmann::json& args) {
 
 
 std::string CommandHandler::GetDataDir() const {
-    // If custom dataDir is set, use it; otherwise use default (USERPROFILE\.ipmsgpro)
+    // If custom dataDir is set, use it; otherwise use default (USERPROFILE\.speedipmsg)
     if (!dataDir_.empty()) {
         return dataDir_;
     }
@@ -2101,7 +2147,7 @@ std::string CommandHandler::GetDataDir() const {
     if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
         SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, userProfile);
     }
-    return std::string(userProfile) + "\\.ipmsgpro";
+    return std::string(userProfile) + "\\.speedipmsg";
 }
 
 std::string GetUserDownloadsDir() {

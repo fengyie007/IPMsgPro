@@ -108,11 +108,11 @@ std::string Bridge::GetBridgeJs() {
     char userProfile[MAX_PATH] = {};
     if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) > 0) {
         homeDir = userProfile;
-        defaultDataDir = std::string(userProfile) + "\\.ipmsgpro";
+        defaultDataDir = std::string(userProfile) + "\\.speedipmsg";
     } else {
         SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, userProfile);
         homeDir = userProfile;
-        defaultDataDir = std::string(userProfile) + "\\.ipmsgpro";
+        defaultDataDir = std::string(userProfile) + "\\.speedipmsg";
     }
     // Convert backslashes to forward slashes for homeDir (JS)
     for (auto& c : homeDir) {

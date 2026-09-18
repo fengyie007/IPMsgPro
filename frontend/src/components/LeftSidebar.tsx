@@ -42,7 +42,7 @@ export default function LeftSidebar({ viewMode, onViewChange }: LeftSidebarProps
       </div>
 
       {/* Version at bottom */}
-      <div className="mt-auto pt-2 text-[11px] leading-none text-gray-500 select-none" title="倍信 (IPMsg Pro)">
+      <div className="mt-auto pt-2 text-[11px] leading-none text-gray-500 select-none" title="迅秋 (SpeedIPMsg)">
         v{APP_VERSION}
       </div>
     </div>

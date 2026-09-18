@@ -96,7 +96,7 @@ export default function Settings({ onClose }: SettingsProps) {
     setLocalConfig({ ...localConfig, dataDir: '' });
   };
 
-  const displayDataDir = localConfig.dataDir || getDefaultDataDir() || '~/.ipmsgpro';
+  const displayDataDir = localConfig.dataDir || getDefaultDataDir() || '~/.speedipmsg';
 
   return (
     <div className="flex-1 flex flex-col bg-white">
@@ -243,7 +243,7 @@ export default function Settings({ onClose }: SettingsProps) {
                   value={localConfig.dataDir || displayDataDir}
                   onChange={(e) => setLocalConfig({ ...localConfig, dataDir: e.target.value })}
                   className="input-field flex-1"
-                  placeholder={`默认: ${getDefaultDataDir() || '~/.ipmsgpro'}`}
+                  placeholder={`默认: ${getDefaultDataDir() || '~/.speedipmsg'}`}
                 />
                 <button
                   className="p-1.5 text-gray-400 hover:text-primary-500 border border-gray-200 rounded hover:border-primary-300"
@@ -324,7 +324,7 @@ export default function Settings({ onClose }: SettingsProps) {
           {/* Version info */}
           <Section title="关于">
             <div className="text-sm text-gray-500">
-              倍信 (IPMsg Pro) v{APP_VERSION}
+              迅秋 (SpeedIPMsg) v{APP_VERSION}
             </div>
             <div className="flex items-center gap-4 mt-2" onClick={handleGitLinkClick}>
               <a href="https://github.com/Emsoro/IPMsgPro" className="git-link" title="GitHub">

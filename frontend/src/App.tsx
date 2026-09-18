@@ -37,6 +37,8 @@ function App() {
     // Then do async init: load config, users, discover
     const init = async () => {
       await loadConfig();
+      // Notify backend that config is loaded, so it can send BR_ENTRY to direct users
+      await invoke('config.loaded');
       await loadUsers();
       await discoverUsers();
       await loadLocalUserId();
