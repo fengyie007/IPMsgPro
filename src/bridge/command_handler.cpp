@@ -349,7 +349,7 @@ void CommandHandler::Init(tauricpp::Bridge& bridge, MsgMng& msgMng,
 
 void CommandHandler::SetNativeWindowHandle(void* hwnd) {
     hwnd_ = static_cast<void*>(hwnd);
-    LogMessage("BRIDGE", "", "[DIALOG] SetNativeWindowHandle called, hwnd=" + 
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]SetNativeWindowHandle called, hwnd=" + 
                   (hwnd ? std::to_string(reinterpret_cast<uintptr_t>(hwnd)) : "NULL"));
 }
 
@@ -566,13 +566,12 @@ nlohmann::json CommandHandler::HandleFeiQScreenshotSend(const nlohmann::json& ar
         // FeiQ fragments the payload into 512-byte chunks (verified against a live
         // capture). Larger UDP datagrams get IP-fragmented and dropped, so FeiQ
         // never reassembles the image.
-        // Diagnostics: dump the DIB we generated (for offline comparison with what
-        // FeiQ itself sends) before emitting.
+        // Diagnostics (DEBUG only): dump the DIB we generated for offline
+        // comparison with what FeiQ itself sends.
         {
             static unsigned dibSeq = 0;
             char db[16]; snprintf(db, sizeof(db), "%08X", ++dibSeq);
-            std::ofstream o2(GetUserDownloadsDir() + "/FeiQ_OurTX_dib_" + std::string(db) + ".bin", std::ios::binary);
-            if (o2) o2.write(dib.data(), (std::streamsize)dib.size());
+            DumpDebugFile("FeiQ_OurTX_dib_" + std::string(db) + ".bin", dib);
         }
 
         // FeiQ sends the inline-image reference with command 0x00000121
@@ -703,7 +702,7 @@ void CommandHandler::SetupEventForwarding() {
             {"isSending", progress.isSending}
         };
 
-        LogMessage("BRIDGE", "", "[PROGRESS-CB] transferId=" + progress.transferId +
+        LogMessage("BRIDGE", "DEBUG", "[PROGRESS-CB] transferId=" + progress.transferId +
                      ", status=" + std::to_string(static_cast<int>(progress.status)) +
                      ", transferred=" + std::to_string(progress.transferred) +
                      "/" + std::to_string(progress.fileSize) +
@@ -720,7 +719,7 @@ void CommandHandler::SetupEventForwarding() {
                     event["savePath"] = progress.localPath;
                 }
                 if (msgDb_) msgDb_->UpdateStatus(progress.transferId, kMsgStatusCompleted);
-                LogMessage("BRIDGE", "", "[PROGRESS-CB] Emitting file.transfer_completed for transferId=" + progress.transferId);
+                LogMessage("BRIDGE", "DEBUG", "[PROGRESS-CB] Emitting file.transfer_completed for transferId=" + progress.transferId);
                 bridge_->Emit("file.transfer_completed", event);
             } else if (progress.status == ipmsg::TransferStatus::Failed) {
                 // File transfer failed
@@ -754,8 +753,8 @@ void CommandHandler::SetupEventForwarding() {
 
     msgMng_->SetMessageReceivedCallback([this](const MsgBuf& msg) {
         try {
-            // Log every received message for debugging
-            {
+            // Log every received message (DEBUG only: ~12 lines per packet)
+            if (IsDebugEnabled()) {
                 char cmdBuf[32] = {};
                 snprintf(cmdBuf, sizeof(cmdBuf), "0x%08lx", (unsigned long)msg.command);
                 uint32_t mode = GET_MODE(msg.command);
@@ -768,34 +767,34 @@ void CommandHandler::SetupEventForwarding() {
                     case IPMSG_RECVMSG: modeStr = "RECVMSG"; break;
                     default: modeStr = "UNKNOWN"; break;
                 }
-                LogMessage("BRIDGE", "", "[GUI-MSG] ====== BEGIN MESSAGE ======");
-                LogMessage("BRIDGE", "", "[GUI-MSG] packetNo=" + std::to_string(msg.packetNo));
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] from=") + msg.sender.userName + "@" +
+                LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] ====== BEGIN MESSAGE ======");
+                LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] packetNo=" + std::to_string(msg.packetNo));
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] from=") + msg.sender.userName + "@" +
                               msg.sender.hostName + " (" + msg.sender.ipAddress + ":" +
                               std::to_string(msg.sender.portNo) + ")");
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] nickName=") + msg.sender.nickName +
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] nickName=") + msg.sender.nickName +
                               ", groupName=" + msg.sender.groupName);
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] command=") + cmdBuf + " (" + modeStr + ")");
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] command=") + cmdBuf + " (" + modeStr + ")");
                 {
                     std::string flags;
                     if (msg.command & IPMSG_SENDCHECKOPT) flags += "SENDCHECKOPT ";
                     if (msg.command & IPMSG_FILEATTACHOPT) flags += "FILEATTACHOPT ";
                     if (msg.command & IPMSG_UTF8OPT) flags += "UTF8OPT ";
                     if (msg.command & IPMSG_CAPUTF8OPT) flags += "CAPUTF8OPT ";
-                    LogMessage("BRIDGE", "", "[GUI-MSG] command_flags: " + flags);
+                    LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] command_flags: " + flags);
                 }
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] body=\"") + msg.body + "\" (len=" + std::to_string(msg.body.size()) + ")");
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] extra=\"") + msg.extra + "\" (len=" + std::to_string(msg.extra.size()) + ")");
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] body=\"") + msg.body + "\" (len=" + std::to_string(msg.body.size()) + ")");
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] extra=\"") + msg.extra + "\" (len=" + std::to_string(msg.extra.size()) + ")");
                 {
                     std::ostringstream hexOs;
                     hexOs << std::hex << std::setfill('0') << std::setw(2);
                     for (size_t i = 0; i < msg.extra.size() && i < 200; ++i) {
                         hexOs << (unsigned int)(unsigned char)msg.extra[i] << " ";
                     }
-                    LogMessage("BRIDGE", "", "[GUI-MSG] extra_hex: " + hexOs.str());
+                    LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] extra_hex: " + hexOs.str());
                 }
-                LogMessage("BRIDGE", "", "[GUI-MSG] ====== END MESSAGE ======");
-                LogMessage("BRIDGE", "", std::string("[GUI-MSG] from=") + msg.sender.userName + "@" +
+                LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] ====== END MESSAGE ======");
+                LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] from=") + msg.sender.userName + "@" +
                               msg.sender.ipAddress + ":" + std::to_string(msg.sender.portNo) +
                               " cmd=" + cmdBuf + " mode=" + modeStr +
                               " body=\"" + msg.body + "\" extra=\"" + msg.extra + "\"");
@@ -945,20 +944,20 @@ void CommandHandler::SetupEventForwarding() {
                         else if (c >= 32 && c < 127) extraDbg << c;
                         else extraDbg << "<" << std::hex << (int)c << ">";
                     }
-                    LogMessage("BRIDGE", "", extraDbg.str());
+                    LogMessage("BRIDGE", "DEBUG", extraDbg.str());
                 }
                 {
                     std::ostringstream detailOs;
                     detailOs << std::dec << "[RECV-FILE-EXTRA] Parsed: fileId=" << fileId 
                              << ", fileName=" << fileName << ", fileSize=" << fileSize;
-                    LogMessage("BRIDGE", "", detailOs.str());
+                    LogMessage("BRIDGE", "DEBUG", detailOs.str());
                 }
                 {
                     std::ostringstream detailOs;
                     detailOs << "[RECV-FILE-EXTRA] Original msg: packetNo=" << msg.packetNo 
                              << ", cmd=0x" << std::hex << msg.command << std::dec
                              << ", body='" << msg.body << "'";
-                    LogMessage("BRIDGE", "", detailOs.str());
+                    LogMessage("BRIDGE", "DEBUG", detailOs.str());
                 }
 
                 // Determine if image or file based on extension
@@ -1031,7 +1030,7 @@ void CommandHandler::SetupEventForwarding() {
 
             // If file attachment, emit file receive request event (NOT auto-accepting)
             if (isFileAttach && !fileName.empty()) {
-                LogMessage("BRIDGE", "", "[FILE_REQ_EMIT] packetNo=" + std::to_string(msg.packetNo) +
+                LogMessage("BRIDGE", "DEBUG", "[FILE_REQ_EMIT]packetNo=" + std::to_string(msg.packetNo) +
                               ", fromUser=" + msg.sender.Key() +
                               ", fromIp=" + msg.sender.ipAddress +
                               ", fromPort=" + std::to_string(msg.sender.portNo) +
@@ -1040,7 +1039,7 @@ void CommandHandler::SetupEventForwarding() {
                               ", fileId=" + std::to_string(fileId) +
                               ", transferId=" + std::to_string(msg.packetNo));
                 
-                LogMessage("BRIDGE", "", "[BRIDGE_EMIT] Emitting file.receive_request event");
+                LogMessage("BRIDGE", "DEBUG", "[BRIDGE_EMIT]Emitting file.receive_request event");
                 bridge_->Emit("file.receive_request", {
                     {"packetNo", msg.packetNo},
                     {"fromUser", msg.sender.Key()},
@@ -1064,9 +1063,9 @@ void CommandHandler::SetupEventForwarding() {
                 }
             }
         } catch (const std::exception& e) {
-            LogMessage("BRIDGE", "", std::string("[GUI-MSG] Exception in message callback: ") + e.what());
+            LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] Exception in message callback: ") + e.what());
         } catch (...) {
-            LogMessage("BRIDGE", "", "[GUI-MSG] Unknown exception in message callback");
+            LogMessage("BRIDGE", "DEBUG", "[GUI-MSG] Unknown exception in message callback");
         }
     });
 
@@ -1179,7 +1178,7 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         if (msgDb_) {
             std::string dbPath = effectiveDir + "\\ipmsg.db";
             if (!msgDb_->Init(dbPath)) {
-                LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
+                LogMessage("BRIDGE", "ERROR", "Failed to reinitialize database at " + dbPath);
             } else {
                 LogMessage("BRIDGE", "", "[BRIDGE] Database reinitialized at " + dbPath);
             }
@@ -1200,7 +1199,7 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         if (msgDb_) {
             std::string dbPath = defaultDir + "\\ipmsg.db";
             if (!msgDb_->Init(dbPath)) {
-                LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
+                LogMessage("BRIDGE", "ERROR", "Failed to reinitialize database at " + dbPath);
             } else {
                 LogMessage("BRIDGE", "", "[BRIDGE] Database reinitialized at " + dbPath);
             }
@@ -1321,7 +1320,7 @@ nlohmann::json CommandHandler::HandleMessageSend(const nlohmann::json& args) {
         return {{"success", false}, {"error", "Message content is empty"}};
     }
 
-    LogMessage("BRIDGE", "", "[BACKEND-SEND] TEXT to=" + target->Key() + ", content=\"" + content + "\"");
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]TEXT to=" + target->Key() + ", content=\"" + content + "\"");
 
     // Normal mode: send via UDP
     // Try UTF-8 first (with IPMSG_UTF8OPT flag), fallback to GBK if needed.
@@ -1368,7 +1367,7 @@ nlohmann::json CommandHandler::HandleMessageSendImage(const nlohmann::json& args
         return {{"success", false}, {"error", "Image file path is empty"}};
     }
 
-    LogMessage("BRIDGE", "", "[BACKEND-SEND] IMAGE to=" + target->Key() + ", filePath=\"" + filePath + "\"");
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]IMAGE to=" + target->Key() + ", filePath=\"" + filePath + "\"");
 
     // Start TCP file transfer (register file info for serving)
     std::string transferId = fileTransfer_->StartSendFile(
@@ -1415,14 +1414,14 @@ nlohmann::json CommandHandler::HandleMessageSendImage(const nlohmann::json& args
             else if (c >= 32 && c < 127) dbgOs << c;
             else dbgOs << "<" << std::hex << (int)c << ">";
         }
-        LogMessage("BRIDGE", "", "[SEND-FILE-EXTRA] " + dbgOs.str());
+        LogMessage("BRIDGE", "DEBUG", "[SEND-FILE-EXTRA] " + dbgOs.str());
         std::ostringstream detailOs;
         detailOs << std::dec << "[SEND-FILE-EXTRA] fileId=" << fileInfo->fileId 
                   << ", fileName=" << fileInfo->fileName
                   << ", fileSize=" << fileInfo->fileSize
                   << ", modifyTime=" << fileInfo->modifyTime
                   << ", fileAttr=" << fileInfo->fileAttr;
-        LogMessage("BRIDGE", "", detailOs.str());
+        LogMessage("BRIDGE", "DEBUG", detailOs.str());
     }
 
     // Normal mode: send UDP notification with file attachment info
@@ -1474,7 +1473,7 @@ nlohmann::json CommandHandler::HandleFileSend(const nlohmann::json& args) {
         return {{"success", false}, {"error", "File path is empty"}};
     }
 
-    LogMessage("BRIDGE", "", "[BACKEND-SEND] FILE to=" + target->Key() + ", filePath=\"" + filePath + "\"");
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]FILE to=" + target->Key() + ", filePath=\"" + filePath + "\"");
 
     // Start TCP file transfer (register file info for serving)
     std::string transferId = fileTransfer_->StartSendFile(
@@ -1521,33 +1520,33 @@ nlohmann::json CommandHandler::HandleFileSend(const nlohmann::json& args) {
             else if (c >= 32 && c < 127) dbgOs << c;
             else dbgOs << "<" << std::hex << (int)c << ">";
         }
-        LogMessage("BRIDGE", "", "[SEND-FILE-EXTRA] " + dbgOs.str());
+        LogMessage("BRIDGE", "DEBUG", "[SEND-FILE-EXTRA] " + dbgOs.str());
         std::ostringstream detailOs;
         detailOs << std::dec << "[SEND-FILE-EXTRA] fileId=" << fileInfo->fileId 
                   << ", fileName=" << fileInfo->fileName
                   << ", fileSize=" << fileInfo->fileSize
                   << ", modifyTime=" << fileInfo->modifyTime
                   << ", fileAttr=" << fileInfo->fileAttr;
-        LogMessage("BRIDGE", "", detailOs.str());
+        LogMessage("BRIDGE", "DEBUG", detailOs.str());
     }
 
     // Normal mode: send UDP notification with file attachment info
-    LogMessage("BRIDGE", "", "[BACKEND-SEND] Sending SENDMSG with FILEATTACHOPT to " + target->Key() +
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]Sending SENDMSG with FILEATTACHOPT to " + target->Key() +
                   " (fileId=" + std::to_string(fileInfo->fileId) + ", fileSize=" + std::to_string(fileInfo->fileSize) + ")");
-    LogMessage("BRIDGE", "", "[BACKEND-SEND] File attach info: " + fileAttachInfo);
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]File attach info: " + fileAttachInfo);
     
     // 通知消息文本里的文件名也用 GBK，避免飞秋消息列表里乱码
     uint64_t sentPktNo = msgMng_->SendMessageWithFile(*target, "[File: " + Utf8ToGbk(fileInfo->fileName) + "]", fileAttachInfo, IPMSG_SENDCHECKOPT);
 
     if (sentPktNo > 0) {
-        LogMessage("BRIDGE", "", "[BACKEND-SEND] SENDMSG sent successfully, packetNo=" + std::to_string(sentPktNo));
+        LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]SENDMSG sent successfully, packetNo=" + std::to_string(sentPktNo));
         // Store the SENDMSG packetNo in FileInfo for matching GETFILEDATA requests
         {
             auto fi = fileTransfer_->GetFileInfo(transferId);
             if (fi) {
                 fi->packetNo = sentPktNo;
                 fileTransfer_->RegisterFileInfo(transferId, *fi);
-                LogMessage("BRIDGE", "", "[BACKEND-SEND] FileInfo updated: packetNo=" + std::to_string(sentPktNo) + ", fileId=" + std::to_string(fi->fileId));
+                LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]FileInfo updated: packetNo=" + std::to_string(sentPktNo) + ", fileId=" + std::to_string(fi->fileId));
             }
         }
         // Save to database
@@ -1721,14 +1720,14 @@ nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {
 }
 
 nlohmann::json CommandHandler::HandleFileAccept(const nlohmann::json& args) {
-    LogMessage("BRIDGE", "", "[BACKEND-ACCEPT-ENTRY] file.accept called with args: " + args.dump());
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-ACCEPT-ENTRY] file.accept called with args: " + args.dump());
 
     auto target = FindUserFromArgs(args);
     if (!target) {
-        LogMessage("BRIDGE", "", "[BACKEND-ACCEPT-ERROR] Target user not found! args=" + args.dump());
+        LogMessage("BRIDGE", "ERROR", "[BACKEND-ACCEPT-ERROR] Target user not found! args=" + args.dump());
         return {{"success", false}, {"error", "Target user not found"}};
     }
-    LogMessage("BRIDGE", "", "[BACKEND-ACCEPT] Found target user: " + target->Key() + ", ip=" + target->ipAddress + ", port=" + std::to_string(target->portNo));
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-ACCEPT]Found target user: " + target->Key() + ", ip=" + target->ipAddress + ", port=" + std::to_string(target->portNo));
 
     std::string transferId = args.value("transferId", "");
     std::string fileName = args.value("fileName", "");
@@ -1745,14 +1744,14 @@ nlohmann::json CommandHandler::HandleFileAccept(const nlohmann::json& args) {
         CreateDirectoryW(Utf8ToWide(saveDir).c_str(), nullptr);
         savePath = UniqueSavePath(saveDir, SanitizeFileName(fileName));
     }
-    LogMessage("BRIDGE", "", "[BACKEND-ACCEPT] savePath=" + savePath);
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-ACCEPT]savePath=" + savePath);
 
     if (transferId.empty() || fileName.empty() || savePath.empty()) {
-        LogMessage("BRIDGE", "", "[BACKEND-ACCEPT-ERROR] Missing required parameters!");
+        LogMessage("BRIDGE", "ERROR", "[BACKEND-ACCEPT-ERROR] Missing required parameters!");
         return {{"success", false}, {"error", "Missing required parameters"}};
     }
 
-    LogMessage("BRIDGE", "", "[BACKEND-ACCEPT] Calling StartRecvFile: ip=" + target->ipAddress + ", port=" + std::to_string(target->portNo) + ", fileName=" + fileName + ", fileSize=" + std::to_string(fileSize) + ", savePath=" + savePath + ", origPacketNo=" + std::to_string(origPacketNo) + ", origFileId=" + std::to_string(origFileId));
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-ACCEPT]Calling StartRecvFile: ip=" + target->ipAddress + ", port=" + std::to_string(target->portNo) + ", fileName=" + fileName + ", fileSize=" + std::to_string(fileSize) + ", savePath=" + savePath + ", origPacketNo=" + std::to_string(origPacketNo) + ", origFileId=" + std::to_string(origFileId));
 
     // Send IPMSG_RECVMSG acknowledgment to sender (delivery receipt)
     // Use the original SENDMSG packetNo (not the internal transferId)
@@ -1766,10 +1765,10 @@ nlohmann::json CommandHandler::HandleFileAccept(const nlohmann::json& args) {
         target->ipAddress, target->portNo, fileName, fileSize, savePath, target->Key(),
         origPacketNo, origFileId);
 
-    LogMessage("BRIDGE", "", "[BACKEND-ACCEPT] StartRecvFile result: recvTransferId=" + recvTransferId);
+    LogMessage("BRIDGE", "DEBUG", "[BACKEND-ACCEPT]StartRecvFile result: recvTransferId=" + recvTransferId);
 
     if (recvTransferId.empty()) {
-        LogMessage("BRIDGE", "", "[BACKEND-ACCEPT-ERROR] StartRecvFile failed!");
+        LogMessage("BRIDGE", "ERROR", "[BACKEND-ACCEPT-ERROR] StartRecvFile failed!");
         return {{"success", false}, {"error", "Failed to start file receive"}};
     }
 
@@ -2321,20 +2320,20 @@ std::string CommandHandler::TakePendingAck(uint64_t packetNo) {
 nlohmann::json CommandHandler::HandleDialogPickFolder(const nlohmann::json& args) {
     std::string title = args.value("title", "Select Folder");
     std::string initialDir = args.value("initial_dir", "");
-    LogMessage("BRIDGE", "", "[DIALOG] HandleDialogPickFolder called, title=" + title +
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]HandleDialogPickFolder called, title=" + title +
                ", initialDir=" + (initialDir.empty() ? "(default)" : initialDir));
 
     if (!hwnd_) {
-        LogMessage("BRIDGE", "", "[DIALOG] ERROR: hwnd_ is null!");
+        LogMessage("BRIDGE", "ERROR", "[DIALOG] hwnd_ is null!");
         return {{"success", false}, {"error", "Window handle not available"}};
     }
 
-    LogMessage("BRIDGE", "", "[DIALOG] hwnd_=" + std::to_string(reinterpret_cast<uintptr_t>(hwnd_)));
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]hwnd_=" + std::to_string(reinterpret_cast<uintptr_t>(hwnd_)));
     HWND hWnd = static_cast<HWND>(hwnd_);
-    LogMessage("BRIDGE", "", "[DIALOG] Calling PickFolder with hWnd=" + std::to_string(reinterpret_cast<uintptr_t>(hWnd)));
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]Calling PickFolder with hWnd=" + std::to_string(reinterpret_cast<uintptr_t>(hWnd)));
 
     auto folder = tauricpp::Dialog::PickFolder(hWnd, title, initialDir);
-    LogMessage("BRIDGE", "", "[DIALOG] PickFolder returned, folder=" + (folder ? *folder : "(empty)"));
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]PickFolder returned, folder=" + (folder ? *folder : "(empty)"));
     
     if (folder) {
         return {{"success", true}, {"folder", *folder}};
@@ -2345,10 +2344,10 @@ nlohmann::json CommandHandler::HandleDialogPickFolder(const nlohmann::json& args
 nlohmann::json CommandHandler::HandleDialogOpen(const nlohmann::json& args) {
     std::string title = args.value("title", "选择文件");
     bool multi = args.value("multi_select", false);
-    LogMessage("BRIDGE", "", "[DIALOG] HandleDialogOpen called, title=" + title);
+    LogMessage("BRIDGE", "DEBUG", "[DIALOG]HandleDialogOpen called, title=" + title);
 
     if (!hwnd_) {
-        LogMessage("BRIDGE", "", "[DIALOG] ERROR: hwnd_ is null!");
+        LogMessage("BRIDGE", "ERROR", "[DIALOG] hwnd_ is null!");
         return {{"success", false}, {"error", "Window handle not available"}};
     }
 
@@ -2383,6 +2382,15 @@ std::string GetUserDownloadsDir() {
     // UTF-8, e.g. C:\Users\冯波\Downloads. Downstream code (RecvFileThread ->
     // PathFromUtf8, FeiQ screenshot save -> u8path) expects UTF-8.
     return paths::UserDownloadsDir();
+}
+
+void CommandHandler::DumpDebugFile(const std::string& fileName, const std::string& data) const {
+    if (!IsDebugEnabled()) return;
+    const std::string dir = GetDataDir() + "\\debug";
+    std::error_code ec;
+    fs::create_directories(enc::PathFromUtf8(dir), ec);
+    std::ofstream out(enc::PathFromUtf8(dir + "\\" + fileName), std::ios::binary);
+    if (out) out.write(data.data(), static_cast<std::streamsize>(data.size()));
 }
 
 // ---------- FeiQ inline screenshot (custom fragmented image protocol) ----------
@@ -2576,13 +2584,10 @@ bool CommandHandler::SendFeiQShotPayload(const UserInfo& target, const std::stri
     LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] Reference=\"" + ref + "\"");
     msgMng_->SendMessage(target, ref, refCmd);
 
-    // DIAG dump of the verbatim payload for offline byte-diff.
-    {
-        std::ofstream o1(GetUserDownloadsDir() + "/FeiQ_OurTX_payload_" + id + ".bin", std::ios::binary);
-        if (o1) o1.write(payload.data(), (std::streamsize)payload.size());
-        LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] ref command=0x" +
-            std::to_string(refCmd) + " (decimal " + std::to_string(refCmd) + ")");
-    }
+    // DIAG dump of the verbatim payload for offline byte-diff (DEBUG only).
+    DumpDebugFile("FeiQ_OurTX_payload_" + id + ".bin", payload);
+    LogMessage("BRIDGE", "DEBUG", "[FEIQ-SHOT-TX] ref command=0x" +
+        std::to_string(refCmd) + " (decimal " + std::to_string(refCmd) + ")");
 
     char mtBuf[16];
     snprintf(mtBuf, sizeof(mtBuf), "%08X", 0);  // mtime always 0
@@ -2617,8 +2622,7 @@ bool CommandHandler::SendFeiQShotPayload(const UserInfo& target, const std::stri
         body += chunk;
 
         if (i == 0) {
-            std::ofstream of(GetUserDownloadsDir() + "/FeiQ_OurTX_frag0_" + id + ".bin", std::ios::binary);
-            if (of) of.write(body.data(), (std::streamsize)body.size());
+            DumpDebugFile("FeiQ_OurTX_frag0_" + id + ".bin", body);
         }
 
         msgMng_->SendRawCommand(target, fragCmd, body);
@@ -2664,13 +2668,12 @@ nlohmann::json CommandHandler::HandleFeiQEchoScreenshot(const nlohmann::json& ar
 
         SendFeiQShotPayload(*target, payload, dw, dh, useRef, useFrag);
 
-        // DIAG: dump the echoed payload so it can be compared with the original
-        // FeiQ_RawLZW_*.bin byte-for-byte.
+        // DIAG (DEBUG only): dump the echoed payload so it can be compared with
+        // the original FeiQ_RawLZW_*.bin byte-for-byte.
         {
             static unsigned eSeq = 0;
             char buf[16]; snprintf(buf, sizeof(buf), "%08X", ++eSeq);
-            std::ofstream o(GetUserDownloadsDir() + "/FeiQ_EchoTX_payload_" + std::string(buf) + ".bin", std::ios::binary);
-            if (o) o.write(payload.data(), (std::streamsize)payload.size());
+            DumpDebugFile("FeiQ_EchoTX_payload_" + std::string(buf) + ".bin", payload);
         }
         r["success"] = true;
         r["bytes"] = (int)payload.size();
@@ -2865,11 +2868,8 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
     if (buf.size() >= 4 && buf[0] == 'L' && buf[1] == 'Z' && buf[2] == 'W' && buf[3] == '!') {
         size_t expectedOut = (buf.size() >= 8) ? (size_t)le32(buf, 4) : 0;
         uint32_t storedCrc = (buf.size() >= 12) ? le32(buf, 8) : 0;
-        // DEBUG: keep the raw LZW payload for offline analysis.
-        {
-            std::ofstream rawF(GetUserDownloadsDir() + "/FeiQ_RawLZW_" + id + ".bin", std::ios::binary);
-            if (rawF) rawF.write(buf.data(), (std::streamsize)buf.size());
-        }
+        // DEBUG only: keep the raw LZW payload for offline analysis.
+        DumpDebugFile("FeiQ_RawLZW_" + id + ".bin", buf);
         std::string dib;
         bool ok = LzwDecompress(buf, 12, buf.size() - 12, 8, expectedOut, dib);
         bool validDib = ok && dib.size() >= 40;
@@ -2878,7 +2878,7 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
             int32_t biWidth = (int32_t)le32(dib, 4);
             int32_t biHeight = (int32_t)le32(dib, 8);
             uint16_t biBitCount = le16(dib, 14);
-            LogMessage("BRIDGE", "", "[FEIQ-SHOT-RX] DIB w=" + std::to_string(biWidth) +
+            LogMessage("BRIDGE", "DEBUG", "[FEIQ-SHOT-RX] DIB w=" + std::to_string(biWidth) +
                 " h=" + std::to_string(biHeight) + " bitcount=" + std::to_string(biBitCount) +
                 " sizeImage=" + std::to_string(le32(dib, 20)));
             if (biSize < 40 || biSize > 256 || biWidth <= 0 || biHeight == 0 ||
@@ -2931,15 +2931,12 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
                 buf = std::move(bmp);
                 ext = "bmp";
                 uint32_t actualCrc = Crc32(dib);
-                // DIAG: dump the DIB header fields that affect the pixel start
-                // offset, plus the first pixel bytes. For a solid-color image the
-                // first row should be the solid color (not garbage); mismatch
-                // here pinpoints where the parsing goes wrong (header vs palette
-                // vs row stride). Also keep the raw decoded DIB for offline view.
-                {
-                    std::ofstream dibF(GetUserDownloadsDir() + "/FeiQ_DecodedDIB_" + id + ".bin", std::ios::binary);
-                    if (dibF) dibF.write(dib.data(), (std::streamsize)dib.size());
-                }
+                // DIAG (DEBUG only): dump the DIB header fields that affect the
+                // pixel start offset, plus the first pixel bytes. For a solid-color
+                // image the first row should be the solid color (not garbage);
+                // mismatch here pinpoints where the parsing goes wrong (header vs
+                // palette vs row stride). Also keep the raw decoded DIB.
+                DumpDebugFile("FeiQ_DecodedDIB_" + id + ".bin", dib);
                 uint32_t biCompression = le32(dib, 16);
                 uint32_t biSizeImage    = le32(dib, 20);
                 uint32_t biClrUsed      = le32(dib, 32);
@@ -2952,7 +2949,7 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
                 size_t px0 = (size_t)biSize;
                 for (size_t i = 0; i + px0 < dib.size() && i < 32; ++i)
                     px << std::hex << (int)(unsigned char)dib[px0 + i] << " ";
-                LogMessage("BRIDGE", "", px.str());
+                LogMessage("BRIDGE", "DEBUG", px.str());
                 LogMessage("BRIDGE", "", "[FEIQ-SHOT] LZW decoded BMP: DIB=" +
                     std::to_string(dib.size()) + " expected=" + std::to_string(expectedOut) +
                     " crc=" + std::to_string(actualCrc) +

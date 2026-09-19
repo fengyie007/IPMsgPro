@@ -357,3 +357,24 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：日志洪水阻塞接收线程并撑爆日志文件
+
+**问题**：每个 UDP 包都被逐 16 字节十六进制转储并逐行刷盘，代码里自己的注释已经说明这会阻塞接收线程、导致飞秋大截图的分片丢失；文件传输每 64KB 一行、每次广播都枚举一遍网卡、每条消息约 12 行摘要；飞秋调试转储无条件写进用户的 Downloads。日志没有级别概念，约 240 处调用传空级别。
+
+### 修改 38：`src/logger.{h,cpp}` — 日志级别
+- 新增 `LogLevel`（DEBUG < INFO < WARN < ERROR）、`SetLogLevel` / `GetLogLevel` / `IsDebugEnabled`
+- `LogMessage` 在取锁和格式化之前按级别过滤；空级别字符串视为 INFO，`CRASH` 视为 ERROR
+- 默认阈值 INFO；`--verbose` 或 `--log-level=debug` 启动参数切到 DEBUG（`main.cpp` 解析并在日志头部记录当前级别）
+
+### 修改 39：高频日志降为 DEBUG，昂贵的转储用 `IsDebugEnabled()` 包裹
+- `msgmng.cpp`：每包十六进制转储、协议字段解析、每个广播地址、每个扫描 IP、发文件原始报文
+- `file_transfer.cpp`：TCP 请求转储、GETFILEDATA 原始字节、已登记文件信息、连接/线程生命周期细节；接收进度改为每 1MB 一行（与发送侧一致）
+- `network.cpp`：每次广播触发的网卡枚举明细
+- `command_handler.cpp`：每条消息的 12 行摘要、进度回调、附件 extra 转储、对话框与接收流程细节；真正的错误改为 ERROR 级别
+
+### 修改 40：`src/bridge/command_handler.{h,cpp}` — 飞秋调试转储改为 DEBUG 且写入数据目录
+- 新增 `DumpDebugFile(name, data)`：仅在 DEBUG 级别下写到 `<数据目录>\debug\`，六处 `FeiQ_*.bin` 不再无条件写入用户的 Downloads
+- 状态：✅ 已完成
+
+---

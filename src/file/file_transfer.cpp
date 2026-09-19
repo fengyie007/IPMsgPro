@@ -227,44 +227,45 @@ void FileTransferManager::HandleClientConnection(SOCKET clientSocket,
     }
 
     std::string request(buffer, received);
-    LogMessage("FILE_XFER", "", "=== RECEIVED TCP REQUEST FROM " + std::string(inet_ntoa(clientAddr.sin_addr)) + ":" + std::to_string(ntohs(clientAddr.sin_port)) + " ===");
-    LogMessage("FILE_XFER", "", "Request length: " + std::to_string(received) + " bytes");
-    
-    // Print raw hex dump
-    std::ostringstream hexDump;
-    for (int i = 0; i < received; i++) {
-        if (i % 16 == 0) hexDump << "\n0x" << std::hex << std::setfill('0') << std::setw(4) << i << ": ";
-        hexDump << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(unsigned char)buffer[i] << " ";
-        if (i % 16 == 15) {
-            hexDump << " ";
-            for (int j = i - 15; j <= i; j++) {
-                if (buffer[j] >= 32 && buffer[j] <= 126) {
-                    hexDump << buffer[j];
-                } else {
-                    hexDump << ".";
+    LogMessage("FILE_XFER", "", "TCP request from " + std::string(inet_ntoa(clientAddr.sin_addr)) + ":" +
+               std::to_string(ntohs(clientAddr.sin_port)) + " (" + std::to_string(received) + " bytes)");
+
+    // Raw request dump (DEBUG only; the formatting is skipped otherwise)
+    if (IsDebugEnabled()) {
+        std::ostringstream hexDump;
+        for (int i = 0; i < received; i++) {
+            if (i % 16 == 0) hexDump << "\n0x" << std::hex << std::setfill('0') << std::setw(4) << i << ": ";
+            hexDump << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(unsigned char)buffer[i] << " ";
+            if (i % 16 == 15) {
+                hexDump << " ";
+                for (int j = i - 15; j <= i; j++) {
+                    if (buffer[j] >= 32 && buffer[j] <= 126) {
+                        hexDump << buffer[j];
+                    } else {
+                        hexDump << ".";
+                    }
                 }
             }
         }
-    }
-    LogMessage("FILE_XFER", "", "Raw hex dump:" + hexDump.str());
-    
-    // Print as string (replace non-printable chars)
-    std::string printableStr;
-    for (int i = 0; i < received; i++) {
-        if (buffer[i] >= 32 && buffer[i] <= 126) {
-            printableStr += buffer[i];
-        } else if (buffer[i] == '\0') {
-            printableStr += "\\0";
-        } else if (buffer[i] == '\n') {
-            printableStr += "\\n";
-        } else if (buffer[i] == '\r') {
-            printableStr += "\\r";
-        } else {
-            printableStr += "\\x" + std::to_string((unsigned int)(unsigned char)buffer[i]);
+        LogMessage("FILE_XFER", "DEBUG", "Raw hex dump:" + hexDump.str());
+
+        // Print as string (replace non-printable chars)
+        std::string printableStr;
+        for (int i = 0; i < received; i++) {
+            if (buffer[i] >= 32 && buffer[i] <= 126) {
+                printableStr += buffer[i];
+            } else if (buffer[i] == '\0') {
+                printableStr += "\\0";
+            } else if (buffer[i] == '\n') {
+                printableStr += "\\n";
+            } else if (buffer[i] == '\r') {
+                printableStr += "\\r";
+            } else {
+                printableStr += "\\x" + std::to_string((unsigned int)(unsigned char)buffer[i]);
+            }
         }
+        LogMessage("FILE_XFER", "DEBUG", "Printable string: " + printableStr);
     }
-    LogMessage("FILE_XFER", "", "Printable string: " + printableStr);
-    LogMessage("FILE_XFER", "", "=== END REQUEST ===");
 
     // Parse IPMsg protocol header
     // Format: ver:packetNo:userName:hostName:command:body[\0extra]
@@ -356,7 +357,7 @@ void FileTransferManager::HandleClientConnection(SOCKET clientSocket,
     {
         std::lock_guard<std::mutex> lock(fileInfoMutex_);
         for (const auto& [tid, fi] : fileInfoRegistry_) {
-            LogMessage("FILE_XFER", "", "  Registered: transferId=" + tid + 
+            LogMessage("FILE_XFER", "DEBUG", "  Registered: transferId=" + tid +
                          ", packetNo=" + std::to_string(fi.packetNo) +
                          ", fileId=" + std::to_string(fi.fileId));
         }
@@ -566,7 +567,7 @@ void FileTransferManager::SendFileThread(const std::string& transferId, SOCKET c
 
         // Log progress every 1MB
         if (totalSent % (1024 * 1024) < bufferSize) {
-            LogMessage("FILE_XFER", "", "Sent " + std::to_string(totalSent) + "/" + std::to_string(fileSize) +
+            LogMessage("FILE_XFER", "DEBUG", "Sent " + std::to_string(totalSent) + "/" + std::to_string(fileSize) +
                              " bytes (" + std::to_string(totalSent * 100 / fileSize) + "%)");
         }
     }
@@ -588,7 +589,7 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
                                                 const std::string& savePath,
                                                 const std::string& fromUser,
                                                 uint64_t origPacketNo, int origFileId) {
-    LogMessage("FILE_XFER", "", "StartRecvFile called: fromUserIp=" + fromUserIp + ", fromUserPort=" + std::to_string(fromUserPort) + ", fileName=" + fileName + ", ready_=" + std::to_string(ready_));
+    LogMessage("FILE_XFER", "DEBUG", "StartRecvFile called: fromUserIp=" + fromUserIp + ", fromUserPort=" + std::to_string(fromUserPort) + ", fileName=" + fileName + ", ready_=" + std::to_string(ready_));
     
     if (!ready_) {
         LogMessage("FILE_XFER", "", "StartRecvFile failed: ready_ is false!");
@@ -597,7 +598,7 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
 
     // Generate transfer ID
     std::string transferId = GenerateTransferId();
-    LogMessage("FILE_XFER", "", "Generated transferId: " + transferId);
+    LogMessage("FILE_XFER", "DEBUG", "Generated transferId: " + transferId);
 
     // Create transfer record
     TransferProgress transfer;
@@ -615,10 +616,10 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
         std::lock_guard<std::mutex> lock(transfersMutex_);
         transfers_[transferId] = transfer;
     }
-    LogMessage("FILE_XFER", "", "Transfer record saved to map");
+    LogMessage("FILE_XFER", "DEBUG", "Transfer record saved to map");
 
     // Start receive thread, passing original packetNo and fileId for GETFILEDATA request
-    LogMessage("FILE_XFER", "", "Starting receive thread...");
+    LogMessage("FILE_XFER", "DEBUG", "Starting receive thread...");
     ++activeWorkers_;
     try {
         std::thread([this, transferId, fromUserIp, fromUserPort, savePath, fileSize,
@@ -635,7 +636,7 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
                                  " savePath=" + savePath);
             }
         }).detach();
-        LogMessage("FILE_XFER", "", "Receive thread started successfully");
+        LogMessage("FILE_XFER", "DEBUG", "Receive thread started successfully");
     } catch (const std::exception& e) {
         --activeWorkers_;
         LogMessage("FILE_XFER", "", "Failed to start receive thread: " + std::string(e.what()));
@@ -666,24 +667,24 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
         UpdateTransferProgress(transferId, 0, TransferStatus::Failed);
         return;
     }
-    LogMessage("FILE_XFER", "", "File created: " + savePath);
+    LogMessage("FILE_XFER", "DEBUG", "File created: " + savePath);
 
     // Connect to sender's TCP server (same port as UDP per IPMsg protocol)
-    LogMessage("FILE_XFER", "", "Creating TCP socket...");
+    LogMessage("FILE_XFER", "DEBUG", "Creating TCP socket...");
     SOCKET sendSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sendSocket == INVALID_SOCKET) {
         LogMessage("FILE_XFER", "", "Failed to create socket");
         UpdateTransferProgress(transferId, 0, TransferStatus::Failed);
         return;
     }
-    LogMessage("FILE_XFER", "", "Socket created successfully");
+    LogMessage("FILE_XFER", "DEBUG", "Socket created successfully");
 
     sockaddr_in serverAddr = {};
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(static_cast<u_short>(fromPort));
     inet_pton(AF_INET, fromIp.c_str(), &serverAddr.sin_addr);
 
-    LogMessage("FILE_XFER", "", "Connecting to " + fromIp + ":" + std::to_string(fromPort) + "...");
+    LogMessage("FILE_XFER", "DEBUG", "Connecting to " + fromIp + ":" + std::to_string(fromPort) + "...");
     if (connect(sendSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
         int err = WSAGetLastError();
         LogMessage("FILE_XFER", "", "Failed to connect to sender " + fromIp + ":" + std::to_string(fromPort) + " (err=" + std::to_string(err) + ")");
@@ -691,7 +692,7 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
         UpdateTransferProgress(transferId, 0, TransferStatus::Failed);
         return;
     }
-    LogMessage("FILE_XFER", "", "Connected to " + fromIp + ":" + std::to_string(fromPort));
+    LogMessage("FILE_XFER", "DEBUG", "Connected to " + fromIp + ":" + std::to_string(fromPort));
 
     // Get local user info for the protocol header
     char localUserName[256] = {};
@@ -708,7 +709,7 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
 
     // First, send RECVMSG via UDP to tell the sender we accept the file transfer
     // FeiQ expects RECVMSG (with decimal packetNo in body) before it will accept TCP GETFILEDATA
-    LogMessage("FILE_XFER", "", "Sending RECVMSG to accept file transfer...");
+    LogMessage("FILE_XFER", "DEBUG", "Sending RECVMSG to accept file transfer...");
     {
         SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (udpSocket != INVALID_SOCKET) {
@@ -728,7 +729,7 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
             int sendResult = sendto(udpSocket, ackStr.c_str(), static_cast<int>(ackStr.size()), 0,
                          reinterpret_cast<sockaddr*>(&destAddr), sizeof(destAddr));
             closesocket(udpSocket);
-            LogMessage("FILE_XFER", "", "RECVMSG sent: " + ackStr + " (sendResult=" + std::to_string(sendResult) + ")");
+            LogMessage("FILE_XFER", "DEBUG", "RECVMSG sent: " + ackStr + " (sendResult=" + std::to_string(sendResult) + ")");
         }
     }
     // Wait for the sender to process RECVMSG and be ready for TCP
@@ -748,37 +749,37 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
 
     std::ostringstream hexCmd;
     hexCmd << std::hex << IPMSG_GETFILEDATA;
-    LogMessage("FILE_XFER", "", "GETFILEDATA request format: ver=" + std::to_string(IPMSG_VERSION) + 
+    LogMessage("FILE_XFER", "DEBUG", "GETFILEDATA request format: ver=" + std::to_string(IPMSG_VERSION) +
                       ", newPktNo=" + std::to_string(newPktNo) +
                       ", command=" + std::to_string(IPMSG_GETFILEDATA) + " (0x" + hexCmd.str() + ")" +
                       ", extra=" + std::to_string(origPacketNo) + ":" + std::to_string(origFileId) + ":0");
     
-    // Print raw bytes of the request for debugging
-    LogMessage("FILE_XFER", "", "=== GETFILEDATA REQUEST RAW BYTES ===");
-    LogMessage("FILE_XFER", "", "Request length: " + std::to_string(request.size()) + " bytes");
-    std::ostringstream rawHex;
-    std::ostringstream rawAscii;
-    for (size_t i = 0; i < request.size(); i++) {
-        rawHex << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(unsigned char)request[i] << " ";
-        if (request[i] >= 32 && request[i] <= 126) {
-            rawAscii << request[i];
-        } else if (request[i] == '\0') {
-            rawAscii << "\\0";
-        } else if (request[i] == '\n') {
-            rawAscii << "\\n";
-        } else {
-            rawAscii << ".";
+    // Print raw bytes of the request (DEBUG only)
+    if (IsDebugEnabled()) {
+        LogMessage("FILE_XFER", "DEBUG", "=== GETFILEDATA REQUEST RAW BYTES (" + std::to_string(request.size()) + " bytes) ===");
+        std::ostringstream rawHex;
+        std::ostringstream rawAscii;
+        for (size_t i = 0; i < request.size(); i++) {
+            rawHex << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(unsigned char)request[i] << " ";
+            if (request[i] >= 32 && request[i] <= 126) {
+                rawAscii << request[i];
+            } else if (request[i] == '\0') {
+                rawAscii << "\\0";
+            } else if (request[i] == '\n') {
+                rawAscii << "\\n";
+            } else {
+                rawAscii << ".";
+            }
+            if (i % 16 == 15) {
+                LogMessage("FILE_XFER", "DEBUG", "0x" + std::to_string(i - 15) + ": " + rawHex.str() + " | " + rawAscii.str());
+                rawHex.str("");
+                rawAscii.str("");
+            }
         }
-        if (i % 16 == 15) {
-            LogMessage("FILE_XFER", "", "0x" + std::to_string(i - 15) + ": " + rawHex.str() + " | " + rawAscii.str());
-            rawHex.str("");
-            rawAscii.str("");
+        if (!rawHex.str().empty()) {
+            LogMessage("FILE_XFER", "DEBUG", "0x" + std::to_string(request.size() - (request.size() % 16)) + ": " + rawHex.str() + " | " + rawAscii.str());
         }
     }
-    if (!rawHex.str().empty()) {
-        LogMessage("FILE_XFER", "", "0x" + std::to_string(request.size() - (request.size() % 16)) + ": " + rawHex.str() + " | " + rawAscii.str());
-    }
-    LogMessage("FILE_XFER", "", "=== END REQUEST ===");
 
     if (::send(sendSocket, request.data(), static_cast<int>(request.size()), 0) == SOCKET_ERROR) {
         int err = WSAGetLastError();
@@ -787,12 +788,12 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
         UpdateTransferProgress(transferId, 0, TransferStatus::Failed);
         return;
     }
-    LogMessage("FILE_XFER", "", "GETFILEDATA request sent successfully");
+    LogMessage("FILE_XFER", "DEBUG", "GETFILEDATA request sent successfully");
 
     // Set TCP_NODELAY to disable Nagle's algorithm (important for file transfer)
     int nodelay = 1;
     setsockopt(sendSocket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
-    LogMessage("FILE_XFER", "", "TCP_NODELAY set");
+    LogMessage("FILE_XFER", "DEBUG", "TCP_NODELAY set");
 
     // Receive file data
     const int bufferSize = 64 * 1024; // 64KB buffer
@@ -801,7 +802,7 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
     int receiveTimeout = 5000; // 5 second timeout
     setsockopt(sendSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&receiveTimeout), sizeof(receiveTimeout));
 
-    LogMessage("FILE_XFER", "", "Starting file data receive loop (timeout=" + std::to_string(receiveTimeout) + "ms)");
+    LogMessage("FILE_XFER", "DEBUG", "Starting file data receive loop (timeout=" + std::to_string(receiveTimeout) + "ms)");
 
     while (fileSize <= 0 || totalReceived < fileSize) {
         // Stop on cancellation or manager shutdown
@@ -840,8 +841,12 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
 
         UpdateTransferProgress(transferId, totalReceived, TransferStatus::Transferring);
 
-        LogMessage("FILE_XFER", "", "Received " + std::to_string(totalReceived) + "/" + std::to_string(fileSize) +
-                          " bytes (" + std::to_string(fileSize > 0 ? totalReceived * 100 / fileSize : 0) + "%)");
+        // Log progress every 1MB (DEBUG); a line per 64KB chunk bloated the log
+        // and stalled large transfers on the synchronous flush.
+        if (totalReceived % (1024 * 1024) < received) {
+            LogMessage("FILE_XFER", "DEBUG", "Received " + std::to_string(totalReceived) + "/" + std::to_string(fileSize) +
+                              " bytes (" + std::to_string(fileSize > 0 ? totalReceived * 100 / fileSize : 0) + "%)");
+        }
     }
 
     closesocket(sendSocket);

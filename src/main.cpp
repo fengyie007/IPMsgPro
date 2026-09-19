@@ -525,6 +525,7 @@ static void RunCliTestRunner(int port, const std::string& configPath,
 struct CliArgs {
     int port = ipmsg::IPMSG_DEFAULT_PORT;
     bool cliMode = false;
+    bool verbose = false;      // --verbose: write DEBUG-level log lines
     std::string subCmd;        // "server" or "test"
     std::string configPath;    // path to JSON test config
     std::string targetIp = "127.0.0.1";
@@ -563,6 +564,12 @@ static CliArgs ParseCommandLine(LPSTR lpCmdLine) {
     // Parse --mode=cli
     if (cmdLine.find("--mode=cli") != std::string::npos) {
         args.cliMode = true;
+    }
+
+    // Parse --verbose (DEBUG log level)
+    if (cmdLine.find("--verbose") != std::string::npos ||
+        cmdLine.find("--log-level=debug") != std::string::npos) {
+        args.verbose = true;
     }
 
     // Parse --cmd=server or --cmd=test
@@ -707,6 +714,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
     // The data directory is UTF-8 (custom dir from the registry or
     // %USERPROFILE%\.speedipmsg, with a port suffix for non-default ports).
     std::string dataDir = ipmsg::paths::ResolveDataDir(cliArgs.port);
+    ipmsg::SetLogLevel(cliArgs.verbose ? ipmsg::LogLevel::Debug : ipmsg::LogLevel::Info);
     ipmsg::InitLogger(dataDir);
 
     // Install global crash handlers so hard faults (access violation / heap
@@ -732,6 +740,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
     LOG_INFO("IPMsgPro starting...");
     LOG_INFO("Unified log: " + dataDir + "\\ipmsg_gui_debug.log");
     LOG_INFO("Port: " + std::to_string(cliArgs.port));
+    LOG_INFO(std::string("Log level: ") + (cliArgs.verbose ? "DEBUG (--verbose)" : "INFO"));
     if (cliArgs.cliMode) {
         LOG_INFO("Mode: CLI (" + cliArgs.subCmd + ")");
     }

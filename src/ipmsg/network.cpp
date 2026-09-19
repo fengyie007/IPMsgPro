@@ -37,7 +37,7 @@ std::vector<LocalAddress> GetLocalAddresses() {
     ULONG bufLen = 0;
     GetAdaptersAddresses(AF_INET, flags, nullptr, nullptr, &bufLen);
     if (bufLen == 0) {
-        LogMessage("NETWORK", "", "[Network] GetAdaptersAddresses returned zero buffer length");
+        LogMessage("NETWORK", "WARN", "[Network] GetAdaptersAddresses returned zero buffer length");
         return addresses;
     }
 
@@ -46,20 +46,20 @@ std::vector<LocalAddress> GetLocalAddresses() {
 
     ULONG ret = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufLen);
     if (ret != ERROR_SUCCESS) {
-        LogMessage("NETWORK", "", "[Network] GetAdaptersAddresses failed, error=" + std::to_string(ret));
+        LogMessage("NETWORK", "WARN", "[Network] GetAdaptersAddresses failed, error=" + std::to_string(ret));
         return addresses;
     }
 
-    LogMessage("NETWORK", "", "[Network] Scanning network adapters...");
+    LogMessage("NETWORK", "DEBUG", "[Network] Scanning network adapters...");
     for (auto adapter = adapters; adapter; adapter = adapter->Next) {
         std::string adapterName = adapter->AdapterName ? adapter->AdapterName : "(unknown)";
-        LogMessage("NETWORK", "", std::string("[Network] Adapter: ") + adapterName +
+        LogMessage("NETWORK", "DEBUG", std::string("[Network] Adapter: ") + adapterName +
                    ", Status=" + std::string(adapter->OperStatus == IfOperStatusUp ? "UP" : "DOWN") +
                    ", Type=" + std::to_string(adapter->IfType));
 
         if (adapter->OperStatus != IfOperStatusUp) continue;
         if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
-            LogMessage("NETWORK", "", "[Network] Skipping loopback adapter");
+            LogMessage("NETWORK", "DEBUG", "[Network] Skipping loopback adapter");
             continue;
         }
 
@@ -73,11 +73,11 @@ std::vector<LocalAddress> GetLocalAddresses() {
             la.ip = ipStr;
             la.prefixLength = static_cast<int>(addr->OnLinkPrefixLength);
             addresses.push_back(la);
-            LogMessage("NETWORK", "", "[Network] Found local IP: " + la.ip + "/" + std::to_string(la.prefixLength));
+            LogMessage("NETWORK", "DEBUG", "[Network] Found local IP: " + la.ip + "/" + std::to_string(la.prefixLength));
         }
     }
 
-    LogMessage("NETWORK", "", "[Network] Total local IPs found: " + std::to_string(addresses.size()));
+    LogMessage("NETWORK", "DEBUG", "[Network] Total local IPs found: " + std::to_string(addresses.size()));
     return addresses;
 }
 
@@ -117,13 +117,13 @@ std::vector<std::string> GetAllBroadcastAddresses() {
             // Avoid duplicates
             if (std::find(broadcasts.begin(), broadcasts.end(), bc) == broadcasts.end()) {
                 broadcasts.push_back(bc);
-                LogMessage("NETWORK", "", "[Network] Directed broadcast for " + la.ip + "/" +
+                LogMessage("NETWORK", "DEBUG", "[Network] Directed broadcast for " + la.ip + "/" +
                            std::to_string(la.prefixLength) + " -> " + bc);
             }
         }
     }
 
-    LogMessage("NETWORK", "", "[Network] Broadcast addresses: " + std::to_string(broadcasts.size()));
+    LogMessage("NETWORK", "DEBUG", "[Network] Broadcast addresses: " + std::to_string(broadcasts.size()));
     return broadcasts;
 }
 

@@ -531,30 +531,36 @@ bool MsgMng::ResolveMsg(const char* buf, int size,
     // IPMsg protocol format: "ver:packetNo:userName:hostName:command:body[\0extra[\0extInfo]]"
     if (size <= 0) return false;
 
-    // Log raw message for debugging
-    std::string rawMsg(buf, size);
-    LogMessage("MSGMNG", "", "========== RAW MESSAGE START (" + std::to_string(size) + " bytes from " + fromIP + ":" + std::to_string(fromPort) + ") ==========");
-    
-    // Print raw hex dump
-    std::stringstream hexDump;
-    for (int i = 0; i < size; ++i) {
-        hexDump << std::hex << std::setfill('0') << std::setw(2) 
-                << (unsigned int)(unsigned char)buf[i] << " ";
-        if ((i + 1) % 16 == 0 || i == size - 1) {
-            hexDump << " | ";
-            int start = (i / 16) * 16;
-            for (int j = start; j <= i; ++j) {
-                unsigned char c = buf[j];
-                hexDump << (c >= 32 && c < 127 ? (char)c : '.');
+    // Raw packet dump. DEBUG only, and gated on IsDebugEnabled() so the hex
+    // formatting itself is skipped: this runs on the UDP receive thread for
+    // EVERY datagram, and FeiQ bursts thousands of screenshot fragments within
+    // tens of milliseconds. Per-packet synchronous logging blocked the thread,
+    // overflowed the socket buffer and dropped fragments.
+    if (IsDebugEnabled()) {
+        std::string rawMsg(buf, size);
+        LogMessage("MSGMNG", "DEBUG", "========== RAW MESSAGE START (" + std::to_string(size) + " bytes from " + fromIP + ":" + std::to_string(fromPort) + ") ==========");
+
+        // Print raw hex dump
+        std::stringstream hexDump;
+        for (int i = 0; i < size; ++i) {
+            hexDump << std::hex << std::setfill('0') << std::setw(2)
+                    << (unsigned int)(unsigned char)buf[i] << " ";
+            if ((i + 1) % 16 == 0 || i == size - 1) {
+                hexDump << " | ";
+                int start = (i / 16) * 16;
+                for (int j = start; j <= i; ++j) {
+                    unsigned char c = buf[j];
+                    hexDump << (c >= 32 && c < 127 ? (char)c : '.');
+                }
+                LogMessage("MSGMNG", "DEBUG", hexDump.str());
+                hexDump.str("");
             }
-            LogMessage("MSGMNG", "", hexDump.str());
-            hexDump.str("");
         }
+
+        // Print protocol fields
+        LogMessage("MSGMNG", "DEBUG", "Raw string (first 200 chars): " + rawMsg.substr(0, 200));
+        LogMessage("MSGMNG", "DEBUG", "========== RAW MESSAGE END ==========");
     }
-    
-    // Print protocol fields
-    LogMessage("MSGMNG", "", "Raw string (first 200 chars): " + rawMsg.substr(0, 200));
-    LogMessage("MSGMNG", "", "========== RAW MESSAGE END ==========");
     
     // Parse header by finding the first 5 colon-separated fields
     // Fields: version, packetNo, userName, hostName, command
@@ -582,7 +588,7 @@ bool MsgMng::ResolveMsg(const char* buf, int size,
         size_t verEnd = verStr.find_first_not_of("0123456789");
         if (verEnd != std::string::npos) {
             verStr = verStr.substr(0, verEnd);
-            LogMessage("MSGMNG", "", "FeiQ extended version detected: " + fields[0] + ", using: " + verStr);
+            LogMessage("MSGMNG", "DEBUG", "FeiQ extended version detected: " + fields[0] + ", using: " + verStr);
         }
         int version = std::stoi(verStr);
         if (version != IPMSG_VERSION) return false;
@@ -598,11 +604,11 @@ bool MsgMng::ResolveMsg(const char* buf, int size,
         out.sender.portNo = fromPort;
         out.timestamp = std::time(nullptr);
         
-        LogMessage("MSGMNG", "", "Parsed header: ver=" + fields[0] + " pkt=" + fields[1] + 
+        LogMessage("MSGMNG", "DEBUG", "Parsed header: ver=" + fields[0] + " pkt=" + fields[1] + 
                " user=" + out.sender.userName + " host=" + out.sender.hostName + 
                " cmd=" + std::to_string(out.command));
     } catch (...) {
-        LogMessage("MSGMNG", "", "Failed to parse header");
+        LogMessage("MSGMNG", "WARN", "Failed to parse header from " + fromIP + ":" + std::to_string(fromPort));
         return false;
     }
 
@@ -688,7 +694,7 @@ bool MsgMng::ResolveMsg(const char* buf, int size,
 
     out.sender.hostStatus = GET_OPT(out.command);
     
-    LogMessage("MSGMNG", "", "Resolved message: mode=" + std::to_string(mode) + 
+    LogMessage("MSGMNG", "DEBUG", "Resolved message: mode=" + std::to_string(mode) + 
            " nick=" + out.sender.nickName + " group=" + out.sender.groupName);
 
     return true;
@@ -714,14 +720,14 @@ void MsgMng::UdpBroadcast(const std::string& data) {
 
     for (const auto& bc : broadcasts) {
         bool sent = UdpSend(bc, portNo_, data);
-        LogMessage("MSGMNG", "", "[MsgMng] Broadcast to " + bc + ":" + std::to_string(portNo_) +
+        LogMessage("MSGMNG", "DEBUG", "[MsgMng] Broadcast to " + bc + ":" + std::to_string(portNo_) +
                    " (size=" + std::to_string(data.size()) + " bytes) " + (sent ? "OK" : "FAILED"));
     }
 
     // Also broadcast to custom segments
     for (const auto& seg : segments_) {
         bool sent = UdpSend(seg, portNo_, data);
-        LogMessage("MSGMNG", "", "[MsgMng] Broadcast to " + seg + ":" + std::to_string(portNo_) +
+        LogMessage("MSGMNG", "DEBUG", "[MsgMng] Broadcast to " + seg + ":" + std::to_string(portNo_) +
                    " (size=" + std::to_string(data.size()) + " bytes) " + (sent ? "OK" : "FAILED"));
     }
 }
@@ -875,12 +881,12 @@ uint64_t MsgMng::SendMessageWithFile(const UserInfo& target, const std::string& 
             else if (msg[i] == '\x07') dbgMsg += "\\a";
             else dbgMsg += msg[i];
         }
-        LogMessage("MSGMNG", "", "[SEND-FILE] pktNo=" + std::to_string(pktNo) + ", cmd=0x" +
+        LogMessage("MSGMNG", "DEBUG", "[SEND-FILE]pktNo=" + std::to_string(pktNo) + ", cmd=0x" +
                    ([](uint32_t v)->std::string{std::ostringstream o;o<<std::hex<<v;return o.str();})(cmd) +
                    ", msgLen=" + std::to_string(msg.size()));
-        LogMessage("MSGMNG", "", "[SEND-FILE] rawMsg=" + dbgMsg);
+        LogMessage("MSGMNG", "DEBUG", "[SEND-FILE]rawMsg=" + dbgMsg);
         // Also write to debug log for file-based analysis
-        LogMessage("MSGMNG", "", "[SEND-FILE-RAW] pktNo=" + std::to_string(pktNo) + ", cmd=0x" + 
+        LogMessage("MSGMNG", "DEBUG", "[SEND-FILE-RAW]pktNo=" + std::to_string(pktNo) + ", cmd=0x" + 
                ([](uint32_t v)->std::string{std::ostringstream o;o<<std::hex<<v;return o.str();})(cmd) +
                ", rawMsg=" + dbgMsg);
     }
@@ -1077,7 +1083,7 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
                     IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
                     body, extra);
 
-                LogMessage("MSGMNG", "", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (packet=" + std::to_string(pktNo) + ")");
+                LogMessage("MSGMNG", "DEBUG", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (packet=" + std::to_string(pktNo) + ")");
                 UdpSend(ipStr, port, msg);
 
                 // Progress callback (every 10 IPs or at end of range)

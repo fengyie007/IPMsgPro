@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "util/encoding.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -23,6 +24,18 @@ namespace {
     std::streambuf* g_oldCoutBuf = nullptr;
     std::streambuf* g_oldCerrBuf = nullptr;
     bool g_initialized = false;
+    std::atomic<int> g_level{static_cast<int>(LogLevel::Info)};
+
+    LogLevel ParseLevel(const std::string& level) {
+        if (level.empty()) return LogLevel::Info;
+        switch (level[0]) {
+            case 'D': case 'd': return LogLevel::Debug;
+            case 'W': case 'w': return LogLevel::Warn;
+            case 'E': case 'e': return LogLevel::Error;
+            case 'C': case 'c': return LogLevel::Error;   // "CRASH"
+            default: return LogLevel::Info;
+        }
+    }
 
     // Redirects std::cout / std::cerr into the log file while keeping each
     // line atomic: characters are buffered and flushed (under the log mutex)
@@ -73,6 +86,14 @@ namespace {
     }
 
 }  // namespace
+
+void SetLogLevel(LogLevel level) {
+    g_level.store(static_cast<int>(level));
+}
+
+LogLevel GetLogLevel() {
+    return static_cast<LogLevel>(g_level.load());
+}
 
 void InitLogger(const std::string& dataDir) {
     if (g_initialized) return;
@@ -138,6 +159,11 @@ void ReinitLogger(const std::string& newDataDir) {
 
 void LogMessage(const std::string& tag, const std::string& level,
                 const std::string& msg) {
+    // Drop lines below the threshold before taking the lock or touching the
+    // file: this is what keeps DEBUG-heavy paths (UDP receive, TCP chunks)
+    // cheap in normal operation.
+    if (ParseLevel(level) < GetLogLevel()) return;
+
     std::lock_guard<std::mutex> lock(g_logMutex);
 
     // Lazily open (append) if logging happened before InitLogger().

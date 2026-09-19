@@ -119,6 +119,9 @@ public:
     std::string GetDataDir() const;
 
 private:
+    /// Write a protocol diagnostic blob to <dataDir>\debug\<fileName>.
+    /// No-op unless the DEBUG log level is active (--verbose).
+    void DumpDebugFile(const std::string& fileName, const std::string& data) const;
     tauricpp::Bridge* bridge_ = nullptr;
     MsgMng* msgMng_ = nullptr;
     MessageDB* msgDb_ = nullptr;
