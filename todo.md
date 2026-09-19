@@ -574,3 +574,14 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：版本号不一致
+
+**问题**：v1.5.0 发布时 `CMakeLists.txt` 仍是 1.4.0，`resources/app.rc` 的数字版本仍是 1,4,5,0（exe 属性对话框里显示的就是数字版本），与 `main.cpp`、`package.json`、`APP_VERSION`、README 的 1.5.0 不一致。
+
+### 修改 65：`CMakeLists.txt` / `resources/app.rc`
+- `project(IPMsgPro VERSION 1.5.0 ...)`；`FILEVERSION` / `PRODUCTVERSION` 改为 `1,5,0,0`
+- 版本号共 6 处需同步（见 AGENTS.md「Version bump」）
+- 状态：✅ 已完成
+
+---
