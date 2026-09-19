@@ -15,11 +15,13 @@ MessageDB::~MessageDB() {
 }
 
 bool MessageDB::Init(const std::string& dbPath) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // If already initialized with the same path, do nothing
     if (db_ && dbPath_ == dbPath) return true;
 
     // Close existing connection if any (different path or fresh init)
-    Close();
+    CloseLocked();
 
     dbPath_ = dbPath;
     int rc = sqlite3_open(dbPath.c_str(), &db_);
@@ -44,6 +46,11 @@ bool MessageDB::Init(const std::string& dbPath) {
 }
 
 void MessageDB::Close() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CloseLocked();
+}
+
+void MessageDB::CloseLocked() {
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -79,6 +86,7 @@ bool MessageDB::CreateTables() {
 }
 
 bool MessageDB::SaveMessage(const MessageRecord& msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;
 
     const char* sql = R"(
@@ -106,6 +114,7 @@ bool MessageDB::SaveMessage(const MessageRecord& msg) {
 }
 
 bool MessageDB::UpdateStatus(const std::string& id, int status) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;
 
     const char* sql = "UPDATE messages SET status = ? WHERE id = ?;";
@@ -126,6 +135,7 @@ bool MessageDB::UpdateStatus(const std::string& id, int status) {
 bool MessageDB::GetMessages(const std::string& userId, const std::string& localUserId,
                              int limit, int offset,
                              std::vector<MessageRecord>& messages) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;
 
     // Get messages between current user and the other user
@@ -178,6 +188,7 @@ bool MessageDB::GetMessages(const std::string& userId, const std::string& localU
 
 bool MessageDB::SearchMessages(const std::string& keyword,
                                 std::vector<MessageRecord>& messages) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_ || keyword.empty()) return false;
 
     const char* sql = R"(
@@ -213,6 +224,7 @@ bool MessageDB::SearchMessages(const std::string& keyword,
 }
 
 bool MessageDB::ClearMessages(const std::string& userId) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;
 
     if (userId.empty()) {
@@ -233,6 +245,7 @@ bool MessageDB::ClearMessages(const std::string& userId) {
 }
 
 int MessageDB::GetMessageCount(const std::string& userId) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return 0;
 
     const char* sql = "SELECT COUNT(*) FROM messages WHERE from_id = ? OR to_id = ?;";
@@ -254,6 +267,7 @@ int MessageDB::GetMessageCount(const std::string& userId) {
 }
 
 bool MessageDB::GetRecentConversations(const std::string& localUserId, int limit, std::vector<MessageRecord>& messages) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;
 
     // Get latest message per conversation partner

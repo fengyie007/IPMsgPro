@@ -79,7 +79,8 @@ public:
     /// @param tcpPort TCP port for file transfer (0 = use IPMsg default port + 1)
     bool Init(int tcpPort = 0);
 
-    /// Shutdown
+    /// Shutdown. Cancels active transfers and waits (bounded) for the
+    /// detached worker threads to exit before returning.
     void Shutdown();
 
     /// Check if initialized
@@ -170,11 +171,15 @@ private:
 private:
     SOCKET tcpListenSocket_ = INVALID_SOCKET;
     int tcpPort_ = 0;
-    bool ready_ = false;
+    std::atomic<bool> ready_{false};
     std::atomic<bool> running_{false};
 
     // Accept thread
     std::thread acceptThread_;
+
+    // Number of detached send/recv worker threads currently alive. Shutdown()
+    // waits for this to reach zero so `this` is not destroyed under a worker.
+    std::atomic<int> activeWorkers_{0};
 
     // Active transfers
     std::map<std::string, TransferProgress> transfers_;

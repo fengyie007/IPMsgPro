@@ -1114,7 +1114,7 @@ nlohmann::json CommandHandler::HandleUserStatus(const nlohmann::json& args) {
 }
 
 nlohmann::json CommandHandler::HandleUserLocal(const nlohmann::json& args) {
-    auto& localUser = msgMng_->GetLocalUser();
+    const UserInfo localUser = msgMng_->GetLocalUser();
     return {
         {"success", true},
         {"id", localUser.Key()},
@@ -1163,10 +1163,11 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         // Reinitialize logger to new data directory
         ipmsg::ReinitLogger(dataDir_);
 
-        // Re-initialize database with new data directory
+        // Re-initialize database with new data directory. Init() swaps the
+        // connection under the database mutex; an explicit Close() first would
+        // open a window where the receive thread drops incoming messages.
         if (msgDb_) {
             std::string dbPath = dataDir_ + "\\ipmsg.db";
-            msgDb_->Close();
             if (!msgDb_->Init(dbPath)) {
                 LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
             } else {
@@ -1189,10 +1190,9 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         std::string defaultDir = GetDataDir();
         ipmsg::ReinitLogger(defaultDir);
 
-        // Re-initialize database with default data directory
+        // Re-initialize database with default data directory (see above)
         if (msgDb_) {
             std::string dbPath = defaultDir + "\\ipmsg.db";
-            msgDb_->Close();
             if (!msgDb_->Init(dbPath)) {
                 LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
             } else {

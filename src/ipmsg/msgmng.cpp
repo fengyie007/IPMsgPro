@@ -280,7 +280,8 @@ void MsgMng::ProcessRecvBuffer(const sockaddr_in& fromAddr, const char* data, in
     // Skip own messages.
     // A message is "own" only if it has the same key AND the same port.
     // Same user@host on a different port means it's a different instance (e.g. two IPMsgPro instances).
-    if (msg.sender.Key() == localUser_.Key() && msg.sender.portNo == localUser_.portNo) {
+    const UserInfo local = LocalUserSnapshot();
+    if (msg.sender.Key() == local.Key() && msg.sender.portNo == local.portNo) {
         return;
     }
 
@@ -327,8 +328,8 @@ void MsgMng::ProcessRecvBuffer(const sockaddr_in& fromAddr, const char* data, in
 
         // Reply with ANSENTRY
         {
-            std::string body = localUser_.nickName;
-            std::string extra = localUser_.groupName;
+            std::string body = local.nickName;
+            std::string extra = local.groupName;
             auto reply = MakeMsg(MakePacketNo(),
                 IPMSG_ANSENTRY | IPMSG_CAPUTF8OPT,
                 body, extra);
@@ -477,10 +478,12 @@ std::string MsgMng::MakeMsg(uint64_t packetNo, uint32_t command,
         return isUtf8 ? GBKToUTF8(s) : UTF8ToGBK(s);
     };
 
-    std::string userName = toWire(localUser_.userName);
-    std::string hostName = toWire(localUser_.hostName);
-    std::string nickName = toWire(localUser_.nickName);
-    std::string groupName = toWire(localUser_.groupName);
+    // MakeMsg runs on the UI, receive and scan threads; read a consistent copy.
+    const UserInfo local = LocalUserSnapshot();
+    std::string userName = toWire(local.userName);
+    std::string hostName = toWire(local.hostName);
+    std::string nickName = toWire(local.nickName);
+    std::string groupName = toWire(local.groupName);
 
     // Build header: "ver:packetNo:userName:hostName:command:"
     std::string result;
@@ -731,8 +734,9 @@ uint64_t MsgMng::MakePacketNo() {
 
 void MsgMng::BroadcastEntry() {
     // Body: nickname, Extra: groupname
-    std::string body = localUser_.nickName;
-    std::string extra = localUser_.groupName;
+    const UserInfo local = LocalUserSnapshot();
+    std::string body = local.nickName;
+    std::string extra = local.groupName;
     auto msg = MakeMsg(MakePacketNo(),
         IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
         body, extra);
@@ -742,8 +746,9 @@ void MsgMng::BroadcastEntry() {
 }
 
 void MsgMng::SendDirectEntry(const std::string& ip, int port) {
-    std::string body = localUser_.nickName;
-    std::string extra = localUser_.groupName;
+    const UserInfo local = LocalUserSnapshot();
+    std::string body = local.nickName;
+    std::string extra = local.groupName;
     auto msg = MakeMsg(MakePacketNo(),
         IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
         body, extra);
@@ -753,13 +758,14 @@ void MsgMng::SendDirectEntry(const std::string& ip, int port) {
 void MsgMng::BroadcastExit() {
     auto msg = MakeMsg(MakePacketNo(),
         IPMSG_BR_EXIT,
-        localUser_.nickName);
+        LocalUserSnapshot().nickName);
     UdpBroadcast(msg);
 }
 
 void MsgMng::BroadcastAbsence(uint32_t command) {
-    std::string body = localUser_.nickName;
-    std::string extra = localUser_.groupName;
+    const UserInfo local = LocalUserSnapshot();
+    std::string body = local.nickName;
+    std::string extra = local.groupName;
     auto msg = MakeMsg(MakePacketNo(), command, body, extra);
     UdpBroadcast(msg);
 }
@@ -906,23 +912,32 @@ std::optional<UserInfo> MsgMng::FindUser(const std::string& key) const {
 void MsgMng::UpdateLocalInfo(const std::optional<std::string>& nickName,
                              const std::optional<std::string>& groupName) {
     bool changed = false;
-    if (nickName) {
-        // Same fallback as Init(): peers must never see an empty nickname.
-        std::string nn = nickName->empty() ? localUser_.userName : *nickName;
-        if (nn != localUser_.nickName) {
-            localUser_.nickName = nn;
+    {
+        std::lock_guard<std::mutex> lock(localUserMutex_);
+        if (nickName) {
+            // Same fallback as Init(): peers must never see an empty nickname.
+            std::string nn = nickName->empty() ? localUser_.userName : *nickName;
+            if (nn != localUser_.nickName) {
+                localUser_.nickName = nn;
+                changed = true;
+            }
+        }
+        if (groupName && *groupName != localUser_.groupName) {
+            localUser_.groupName = *groupName;
             changed = true;
         }
     }
-    if (groupName && *groupName != localUser_.groupName) {
-        localUser_.groupName = *groupName;
-        changed = true;
-    }
 
-    // Re-broadcast entry so peers pick up the new info
+    // Re-broadcast entry so peers pick up the new info (outside the lock:
+    // MakeMsg takes its own snapshot).
     if (changed && ready_) {
         BroadcastEntry();
     }
+}
+
+UserInfo MsgMng::LocalUserSnapshot() const {
+    std::lock_guard<std::mutex> lock(localUserMutex_);
+    return localUser_;
 }
 
 void MsgMng::AddOrUpdateUser(const UserInfo& user) {
@@ -1046,14 +1061,17 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
             for (uint32_t ip = start; ip <= end && scanning_; ++ip) {
                 std::string ipStr = ipmsg::Uint32ToIP(ip);
 
+                // Snapshot per IP: the user may edit nickname/group mid-scan.
+                const UserInfo local = LocalUserSnapshot();
+
                 // Skip our own IP
-                if (ipStr == localUser_.ipAddress) {
+                if (ipStr == local.ipAddress) {
                     continue;
                 }
 
                 // Send BR_ENTRY to this IP
-                std::string body = localUser_.nickName;
-                std::string extra = localUser_.groupName;
+                std::string body = local.nickName;
+                std::string extra = local.groupName;
                 uint64_t pktNo = MakePacketNo();
                 auto msg = MakeMsg(pktNo,
                     IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,

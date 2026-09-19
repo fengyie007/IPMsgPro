@@ -288,3 +288,25 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：跨线程共享状态无保护（数据库热切换、本地用户信息、传输线程生命周期）
+
+**问题**：修改数据目录时 UI 线程关闭并重开 SQLite，接收线程可能正在写入；昵称/分组由 UI 线程改写而接收线程、扫描线程同时读取；退出时文件传输对象被删除，而 detached 的收发线程可能仍在运行。
+
+### 修改 29：`src/database/message_db.{h,cpp}` — 所有公开方法加锁
+- 新增 `mutex_`，`Init`/`Close`/`SaveMessage`/`UpdateStatus`/查询方法全部在锁内执行；`Init` 内部用 `CloseLocked` 原子地完成关旧开新
+- `HandleConfigSet` 不再先 `Close()` 再 `Init()`，避免中间窗口丢消息
+
+### 修改 30：`src/ipmsg/msgmng.{h,cpp}` — 本地用户信息快照
+- 新增 `localUserMutex_` 与 `LocalUserSnapshot()`；`MakeMsg`、`ProcessRecvBuffer`、广播函数、扫描线程一律读快照，`UpdateLocalInfo` 在锁内写
+- `GetLocalUser()` 改为返回副本；`ready_` 改为 `std::atomic<bool>`
+- `segments_`/`directUsers_`/`scanRanges_` 仅在 UI 线程读写，加注释说明
+
+### 修改 31：`src/file/file_transfer.{h,cpp}` — 工作线程可回收
+- 新增 `activeWorkers_` 计数（RAII 递减），`Shutdown` 取消所有传输后最多等待 5 秒让 detached 线程退出，再返回给 `main` 删除对象
+- accept 到的 socket 设置收发超时（10s/30s），避免对端停滞把线程钉死
+- 收发循环同时检查 `running_`，`Shutdown` 后立即退出
+- `UpdateTransferProgress` 在锁外调用进度回调，消除回调内再查询本对象的死锁隐患；`ready_` 改为原子
+- 状态：✅ 已完成
+
+---

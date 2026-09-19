@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <mutex>
 
 struct sqlite3;
 
@@ -34,7 +35,10 @@ struct MessageRecord {
     int status = kMsgStatusSending;  // see MessageStatus
 };
 
-/// SQLite3-backed message database
+/// SQLite3-backed message database.
+/// All public methods are thread-safe: the UI thread (commands), the UDP
+/// receive thread (incoming messages) and the TCP transfer threads (status
+/// updates) share one instance.
 class MessageDB {
 public:
     MessageDB();
@@ -44,15 +48,20 @@ public:
     MessageDB(const MessageDB&) = delete;
     MessageDB& operator=(const MessageDB&) = delete;
 
-    /// Initialize database at the given path
-    /// Creates tables if they don't exist
+    /// Initialize database at the given path (UTF-8).
+    /// Creates tables if they don't exist. Reopening with a different path
+    /// closes the current connection first, atomically with respect to the
+    /// other methods, so callers must not call Close() beforehand.
     bool Init(const std::string& dbPath);
 
     /// Close the database
     void Close();
 
     /// Check if database is ready
-    bool IsReady() const { return db_ != nullptr; }
+    bool IsReady() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return db_ != nullptr;
+    }
 
     /// Save a message to the database
     bool SaveMessage(const MessageRecord& msg);
@@ -86,9 +95,16 @@ public:
     bool GetRecentConversations(const std::string& localUserId, int limit, std::vector<MessageRecord>& messages);
 
 private:
-    /// Create database tables
+    /// Create database tables (caller holds mutex_)
     bool CreateTables();
 
+    /// Close the connection (caller holds mutex_)
+    void CloseLocked();
+
+    // Serializes every call on this object. SQLite itself is compiled in
+    // serialized mode, but Init()/Close() swap the connection pointer while
+    // another thread may be inside SaveMessage()/UpdateStatus().
+    mutable std::mutex mutex_;
     sqlite3* db_ = nullptr;
     std::string dbPath_;
 };

@@ -191,8 +191,9 @@ public:
     void UpdateLocalInfo(const std::optional<std::string>& nickName,
                          const std::optional<std::string>& groupName);
 
-    /// Get local user info
-    const UserInfo& GetLocalUser() const { return localUser_; }
+    /// Get a copy of the local user info (thread-safe; the UI thread may be
+    /// rewriting nickname/group concurrently).
+    UserInfo GetLocalUser() const { return LocalUserSnapshot(); }
     int GetLocalPort() const { return portNo_; }
 
     // ---------- Callbacks ----------
@@ -244,12 +245,22 @@ private:
     /// Remove a user from the known users list
     void RemoveUser(const std::string& key);
 
+    /// Copy of localUser_ taken under localUserMutex_. Use this on the UDP
+    /// receive thread and the scan thread instead of reading localUser_
+    /// directly, because the UI thread rewrites it in UpdateLocalInfo().
+    UserInfo LocalUserSnapshot() const;
+
 private:
     SOCKET udpSock_ = INVALID_SOCKET;
     int portNo_ = IPMSG_DEFAULT_PORT;
-    bool ready_ = false;
+    std::atomic<bool> ready_{false};
 
     UserInfo localUser_;
+    mutable std::mutex localUserMutex_;
+
+    // Written and read only on the UI thread (config.set, network.scan,
+    // BroadcastEntry, Shutdown), so no lock is needed. The scan thread works
+    // on the copy captured in ScanIpRanges().
     std::vector<std::string> segments_;  // custom broadcast segments
     std::vector<std::pair<std::string, int>> directUsers_;  // cross-subnet users (ip, port)
     std::vector<std::string> scanRanges_;  // IP scan ranges (format: "startIp-endIp")

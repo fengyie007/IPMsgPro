@@ -24,6 +24,32 @@ namespace ipmsg {
 
 namespace fs = std::filesystem;
 
+namespace {
+
+// Decrements the active worker counter when a detached worker thread exits
+// (by any path, including exceptions).
+struct WorkerExit {
+    std::atomic<int>& counter;
+    ~WorkerExit() { --counter; }
+};
+
+// Socket timeouts for the accepted (sending) side. Without them a peer that
+// connects and then stalls would pin a worker thread forever, and Shutdown()
+// could never reap it.
+constexpr int kRequestRecvTimeoutMs = 10000;
+constexpr int kSendTimeoutMs = 30000;
+
+void SetSocketTimeouts(SOCKET s, int recvMs, int sendMs) {
+    if (recvMs > 0) {
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvMs), sizeof(recvMs));
+    }
+    if (sendMs > 0) {
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendMs), sizeof(sendMs));
+    }
+}
+
+}  // namespace
+
 // Convert a UTF-8 path string to a wide string. The backend receives paths from
 // the frontend as UTF-8 (which may contain Chinese user names / file names, e.g.
 // "C:\\Users\\冯波\\Downloads"). Building std::filesystem::path directly from a
@@ -135,10 +161,26 @@ void FileTransferManager::Shutdown() {
     {
         std::lock_guard<std::mutex> lock(transfersMutex_);
         for (auto& [id, transfer] : transfers_) {
-            if (transfer.status == TransferStatus::Transferring) {
+            if (transfer.status == TransferStatus::Transferring ||
+                transfer.status == TransferStatus::Pending) {
                 transfer.status = TransferStatus::Cancelled;
             }
         }
+    }
+
+    // Wait (bounded) for the detached send/recv workers to notice the
+    // cancellation and exit. Workers check the status once per chunk and all
+    // sockets carry timeouts, so this normally completes within milliseconds.
+    const int kMaxWaitMs = 5000;
+    const int kStepMs = 20;
+    int waitedMs = 0;
+    while (activeWorkers_.load() > 0 && waitedMs < kMaxWaitMs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
+        waitedMs += kStepMs;
+    }
+    if (activeWorkers_.load() > 0) {
+        LogMessage("FILE_XFER", "WARN", "[FileTransfer] " + std::to_string(activeWorkers_.load()) +
+                   " worker thread(s) still running after " + std::to_string(kMaxWaitMs) + "ms");
     }
 
     ready_ = false;
@@ -163,18 +205,29 @@ void FileTransferManager::AcceptThreadFunc() {
 
         LogMessage("FILE_XFER", "", "[FileTransfer] Incoming connection from " + std::string(inet_ntoa(clientAddr.sin_addr)) + ":" + std::to_string(ntohs(clientAddr.sin_port)));
 
+        // A stalled peer must not pin this worker forever (see Shutdown()).
+        SetSocketTimeouts(clientSocket, kRequestRecvTimeoutMs, kSendTimeoutMs);
+
         // Handle connection in a new thread
-        std::thread([this, clientSocket, clientAddr]() {
-            try {
-                HandleClientConnection(clientSocket, clientAddr);
-            } catch (const std::exception& e) {
-                LogMessage("FILE_XFER", "", "UNCAUGHT std::exception in HandleClientConnection from " +
-                                 std::string(inet_ntoa(clientAddr.sin_addr)) + ": " + e.what());
-            } catch (...) {
-                LogMessage("FILE_XFER", "", "UNCAUGHT unknown exception in HandleClientConnection from " +
-                                 std::string(inet_ntoa(clientAddr.sin_addr)));
-            }
-        }).detach();
+        ++activeWorkers_;
+        try {
+            std::thread([this, clientSocket, clientAddr]() {
+                WorkerExit exitGuard{activeWorkers_};
+                try {
+                    HandleClientConnection(clientSocket, clientAddr);
+                } catch (const std::exception& e) {
+                    LogMessage("FILE_XFER", "", "UNCAUGHT std::exception in HandleClientConnection from " +
+                                     std::string(inet_ntoa(clientAddr.sin_addr)) + ": " + e.what());
+                } catch (...) {
+                    LogMessage("FILE_XFER", "", "UNCAUGHT unknown exception in HandleClientConnection from " +
+                                     std::string(inet_ntoa(clientAddr.sin_addr)));
+                }
+            }).detach();
+        } catch (const std::exception& e) {
+            --activeWorkers_;
+            closesocket(clientSocket);
+            LogMessage("FILE_XFER", "ERROR", "[FileTransfer] Failed to start connection thread: " + std::string(e.what()));
+        }
     }
 }
 
@@ -489,14 +542,18 @@ void FileTransferManager::SendFileThread(const std::string& transferId, SOCKET c
     int64_t totalSent = offset;
 
     while (totalSent < fileSize) {
-        // Check if cancelled
-        {
+        // Stop on cancellation or manager shutdown
+        bool cancelled = !running_;
+        if (!cancelled) {
             std::lock_guard<std::mutex> lock(transfersMutex_);
             auto it = transfers_.find(transferId);
             if (it != transfers_.end() && it->second.status == TransferStatus::Cancelled) {
-                LogMessage("FILE_XFER", "", "[FileTransfer] Transfer cancelled: " + transferId);
-                break;
+                cancelled = true;
             }
+        }
+        if (cancelled) {
+            LogMessage("FILE_XFER", "", "[FileTransfer] Transfer cancelled: " + transferId);
+            break;
         }
 
         // Read from file
@@ -577,9 +634,11 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
 
     // Start receive thread, passing original packetNo and fileId for GETFILEDATA request
     LogMessage("FILE_XFER", "", "Starting receive thread...");
+    ++activeWorkers_;
     try {
         std::thread([this, transferId, fromUserIp, fromUserPort, savePath, fileSize,
                      origPacketNo, origFileId]() {
+            WorkerExit exitGuard{activeWorkers_};
             try {
                 RecvFileThread(transferId, fromUserIp, fromUserPort, savePath, fileSize,
                                origPacketNo, origFileId);
@@ -593,6 +652,7 @@ std::string FileTransferManager::StartRecvFile(const std::string& fromUserIp, in
         }).detach();
         LogMessage("FILE_XFER", "", "Receive thread started successfully");
     } catch (const std::exception& e) {
+        --activeWorkers_;
         LogMessage("FILE_XFER", "", "Failed to start receive thread: " + std::string(e.what()));
         return "";
     }
@@ -759,13 +819,18 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
     LogMessage("FILE_XFER", "", "Starting file data receive loop (timeout=" + std::to_string(receiveTimeout) + "ms)");
 
     while (fileSize <= 0 || totalReceived < fileSize) {
-        {
+        // Stop on cancellation or manager shutdown
+        bool cancelled = !running_;
+        if (!cancelled) {
             std::lock_guard<std::mutex> lock(transfersMutex_);
             auto it = transfers_.find(transferId);
             if (it != transfers_.end() && it->second.status == TransferStatus::Cancelled) {
-                LogMessage("FILE_XFER", "", "Transfer cancelled");
-                break;
+                cancelled = true;
             }
+        }
+        if (cancelled) {
+            LogMessage("FILE_XFER", "", "Transfer cancelled");
+            break;
         }
 
         int recvSize = (fileSize > 0) ?
@@ -851,19 +916,23 @@ std::optional<FileInfo> FileTransferManager::GetFileInfo(const std::string& tran
     return std::nullopt;
 }
 
-void FileTransferManager::UpdateTransferProgress(const std::string& transferId, 
+void FileTransferManager::UpdateTransferProgress(const std::string& transferId,
                                                   int64_t transferred,
                                                   TransferStatus status) {
-    std::lock_guard<std::mutex> lock(transfersMutex_);
-    auto it = transfers_.find(transferId);
-    if (it != transfers_.end()) {
-        it->second.transferred = transferred;
-        it->second.status = status;
-
-        // Call callback if set
-        if (onProgress_) {
-            onProgress_(it->second);
+    // Copy the record out and invoke the callback outside the lock, so a
+    // callback that queries this manager (GetTransfer etc.) cannot deadlock.
+    std::optional<TransferProgress> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(transfersMutex_);
+        auto it = transfers_.find(transferId);
+        if (it != transfers_.end()) {
+            it->second.transferred = transferred;
+            it->second.status = status;
+            snapshot = it->second;
         }
+    }
+    if (snapshot && onProgress_) {
+        onProgress_(*snapshot);
     }
 }
 
