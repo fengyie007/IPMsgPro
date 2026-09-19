@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, FiVolume2, FiVolumeX, FiUserPlus, FiUsers } from 'react-icons/fi';
+import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, FiVolume2, FiVolumeX, FiUserPlus } from 'react-icons/fi';
 import { useConfigStore } from '../stores/configStore';
-import { Config, DEFAULT_CONFIG, APP_VERSION } from '../types';
-import { invoke } from '../services/bridge';
+import { Config, APP_VERSION } from '../types';
+import { invoke, listen } from '../services/bridge';
 
 interface SettingsProps {
   onClose: () => void;
@@ -22,13 +22,37 @@ export default function Settings({ onClose }: SettingsProps) {
   const [newDirectUser, setNewDirectUser] = useState('');
   const [newScanRange, setNewScanRange] = useState('');
 
-  // IP Range Scanner state
+  // IP Range Scanner state, driven by backend events. A scan may also have been
+  // started by the backend at startup (config.loaded), so we always listen.
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{current: number, total: number, found: number} | null>(null);
 
   useEffect(() => {
     setLocalConfig({ ...config });
   }, [config]);
+
+  useEffect(() => {
+    const offProgress = listen('network.scan_progress', (data: any) => {
+      setIsScanning(true);
+      setScanProgress({
+        current: Number(data?.current) || 0,
+        total: Number(data?.total) || 0,
+        found: Number(data?.found) || 0,
+      });
+    });
+    const offComplete = listen('network.scan_complete', (data: any) => {
+      setIsScanning(false);
+      setScanProgress((prev) => ({
+        current: prev?.total ?? 0,
+        total: prev?.total ?? 0,
+        found: Number(data?.found) || 0,
+      }));
+    });
+    return () => {
+      offProgress();
+      offComplete();
+    };
+  }, []);
 
   const handleSave = async () => {
     await saveConfig(localConfig);
@@ -88,12 +112,17 @@ export default function Settings({ onClose }: SettingsProps) {
 
   const handleStartScan = async () => {
     if (localConfig.ipScanRanges.length === 0) return;
-    
+
     setIsScanning(true);
     setScanProgress({ current: 0, total: 0, found: 0 });
-    
+
     try {
-      await invoke('network.scan_range', { ranges: localConfig.ipScanRanges });
+      const res = await invoke<{ success?: boolean; message?: string }>('network.scan_range', { ranges: localConfig.ipScanRanges });
+      if (res && res.success === false) {
+        // Backend refused (e.g. a scan is already running or the ranges are invalid)
+        setIsScanning(false);
+        setScanProgress(null);
+      }
     } catch (err) {
       console.error('[Settings] Scan failed:', err);
       setIsScanning(false);
@@ -336,7 +365,7 @@ export default function Settings({ onClose }: SettingsProps) {
                   </button>
                 ) : (
                   <button
-                    className="px-3 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 transition-colors"
+                    className="px-3 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={handleStartScan}
                     disabled={localConfig.ipScanRanges.length === 0}
                   >
@@ -345,15 +374,17 @@ export default function Settings({ onClose }: SettingsProps) {
                 )}
                 {scanProgress && (
                   <span className="text-xs text-gray-500">
-                    {scanProgress.current}/{scanProgress.total} (发现 {scanProgress.found})
+                    {isScanning
+                      ? `已扫描 ${scanProgress.current}/${scanProgress.total}，发现 ${scanProgress.found} 个用户`
+                      : `扫描完成，发现 ${scanProgress.found} 个用户`}
                   </span>
                 )}
               </div>
-              {scanProgress && scanProgress.current > 0 && (
+              {scanProgress && scanProgress.total > 0 && (
                 <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-primary-500 transition-all duration-300"
-                    style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}
+                    style={{ width: `${Math.min(100, (scanProgress.current / scanProgress.total) * 100)}%` }}
                   />
                 </div>
               )}

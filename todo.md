@@ -443,3 +443,20 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：IP 范围扫描进度永远显示 0/0，扫描结束后按钮不复位
+
+**问题**：后端进度回调传的 current/total 都是 0，设置页进度条从不出现；`network.scan_complete` 无人处理，「取消扫描」按钮一直停留；「发现」计数跨次扫描累加。
+
+### 修改 49：`src/ipmsg/msgmng.cpp` — 真实进度
+- 抽出 `ParseScanRange`，扫描前先解析全部范围并算出总 IP 数，非法范围直接跳过并告警
+- 回调携带 `(current, total, found)`，每 10 个 IP 和每段末尾各上报一次；`scanFoundCount_` 每次扫描开始时清零
+- 自己的 IP 跳过发送但仍计入进度，避免进度条永远到不了 100%
+
+### 修改 50：`frontend/src/components/Settings.tsx` / `App.tsx`
+- 设置页订阅 `network.scan_progress` / `network.scan_complete`：进度条按 current/total 绘制，完成后按钮复位并显示「扫描完成，发现 N 个用户」；后端启动时自动触发的扫描同样可见
+- `network.scan_range` 返回失败（已有扫描在进行）时立即复位
+- 删除 `App.tsx` 里只打 console 的两个扫描监听
+- 状态：✅ 已完成
+
+---

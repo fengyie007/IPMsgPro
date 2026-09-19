@@ -871,6 +871,33 @@ void MsgMng::RemoveUser(const std::string& key) {
 // IP Range Scanner (active scanning for cross-subnet users)
 // ============================================================================
 
+// Parse "startIp-endIp" (full: "10.8.33.1-10.8.33.254", shorthand:
+// "10.8.33.1-254"). Returns false for malformed or reversed ranges.
+static bool ParseScanRange(const std::string& range, uint32_t& start, uint32_t& end) {
+    // rfind: the IP itself contains dots but no dashes, so the LAST dash splits
+    size_t dashPos = range.rfind('-');
+    if (dashPos == std::string::npos) return false;
+
+    std::string startIp = range.substr(0, dashPos);
+    std::string endIp = range.substr(dashPos + 1);
+    start = ipmsg::IPToUint32(startIp);
+
+    // Shorthand: the end is only the last octet of the start address
+    bool isShorthand = !endIp.empty() &&
+        std::all_of(endIp.begin(), endIp.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (isShorthand) {
+        int lastOctet = 0;
+        try { lastOctet = std::stoi(endIp); } catch (...) { return false; }
+        if (lastOctet < 0 || lastOctet > 255) return false;
+        size_t lastDot = startIp.rfind('.');
+        if (lastDot == std::string::npos) return false;
+        end = ipmsg::IPToUint32(startIp.substr(0, lastDot + 1) + endIp);
+    } else {
+        end = ipmsg::IPToUint32(endIp);
+    }
+    return start != 0 && end != 0 && end >= start;
+}
+
 bool MsgMng::ScanIpRange(const std::string& startIp, const std::string& endIp,
                          int port, int delayMs) {
     // Backward compatibility: single range scan
@@ -896,96 +923,68 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
     if (delayMs < 10) delayMs = 10;
     if (delayMs > 5000) delayMs = 5000;
 
-    // Use provided ranges or fall back to configured scanRanges_
+    // Use provided ranges or fall back to configured scanRanges_. Parse them
+    // up front so the total IP count is known for progress reporting and
+    // malformed entries are rejected before any packet goes out.
     const auto& rangesToScan = ranges.empty() ? scanRanges_ : ranges;
-    if (rangesToScan.empty()) {
+    std::vector<std::pair<uint32_t, uint32_t>> parsed;
+    uint32_t total = 0;
+    for (const auto& range : rangesToScan) {
+        uint32_t start = 0, end = 0;
+        if (!ParseScanRange(range, start, end)) {
+            LogMessage("MSGMNG", "WARN", "[Scanner] Invalid IP range ignored: " + range);
+            continue;
+        }
+        parsed.emplace_back(start, end);
+        total += end - start + 1;
+    }
+    if (parsed.empty()) {
         scanning_ = false;
-        LogMessage("MSGMNG", "", "[Scanner] No IP ranges configured for scan");
+        LogMessage("MSGMNG", "", "[Scanner] No valid IP ranges configured for scan");
         return false;
     }
 
-    LogMessage("MSGMNG", "", "[Scanner] Starting scan of " + std::to_string(rangesToScan.size()) + " ranges, port=" + std::to_string(port) + ", delay=" + std::to_string(delayMs) + "ms");
+    LogMessage("MSGMNG", "", "[Scanner] Starting scan of " + std::to_string(parsed.size()) + " ranges (" +
+               std::to_string(total) + " IPs), port=" + std::to_string(port) + ", delay=" + std::to_string(delayMs) + "ms");
+
+    // Found counter is per scan (AddOrUpdateUser increments it while scanning_)
+    scanFoundCount_ = 0;
 
     // Start scanning thread
-    scanThread_ = std::thread([this, rangesToScan, port, delayMs]() {
-        uint32_t totalFound = 0;
+    scanThread_ = std::thread([this, parsed, total, port, delayMs]() {
+        uint32_t current = 0;
+        auto reportProgress = [&]() {
+            if (scanProgressCallback_) {
+                scanProgressCallback_(current, total, scanFoundCount_.load());
+            }
+        };
+        reportProgress();
 
-        for (const auto& range : rangesToScan) {
+        for (const auto& [start, end] : parsed) {
             if (!scanning_) break;
-
-            // Parse range: "startIp-endIp" (use rfind to find LAST dash, since IP contains dots)
-            // Supports both full IP format "10.8.33.1-10.8.33.254" and shorthand "10.8.33.1-254"
-            size_t dashPos = range.rfind('-');
-            if (dashPos == std::string::npos) {
-                LogMessage("MSGMNG", "", "[Scanner] Invalid range format: " + range);
-                continue;
-            }
-
-            std::string startIp = range.substr(0, dashPos);
-            std::string endIp = range.substr(dashPos + 1);
-
-            uint32_t start = ipmsg::IPToUint32(startIp);
-            uint32_t end;
-
-            // Check if endIp is just a last octet (0-255) - shorthand format
-            bool isShorthand = false;
-            try {
-                int lastOctet = std::stoi(endIp);
-                if (lastOctet >= 0 && lastOctet <= 255) {
-                    isShorthand = true;
-                }
-            } catch (...) {
-                isShorthand = false;
-            }
-
-            if (isShorthand) {
-                // Construct full end IP from startIp's first three octets + lastOctet
-                size_t lastDot = startIp.rfind('.');
-                if (lastDot != std::string::npos) {
-                    std::string prefix = startIp.substr(0, lastDot + 1);
-                    end = ipmsg::IPToUint32(prefix + endIp);
-                } else {
-                    LogMessage("MSGMNG", "", "[Scanner] Invalid start IP for shorthand range: " + range);
-                    continue;
-                }
-            } else {
-                end = ipmsg::IPToUint32(endIp);
-            }
-
-            if (start == 0 || end == 0 || end < start) {
-                LogMessage("MSGMNG", "", "[Scanner] Invalid IP range: " + range);
-                continue;
-            }
-
-            uint32_t rangeTotal = end - start + 1;
-            LogMessage("MSGMNG", "", "[Scanner] Scanning range: " + range + " (" + std::to_string(rangeTotal) + " IPs, port=" + std::to_string(port) + ")");
+            LogMessage("MSGMNG", "", "[Scanner] Scanning range " + ipmsg::Uint32ToIP(start) + "-" +
+                       ipmsg::Uint32ToIP(end) + " (" + std::to_string(end - start + 1) + " IPs)");
 
             for (uint32_t ip = start; ip <= end && scanning_; ++ip) {
+                ++current;
                 std::string ipStr = ipmsg::Uint32ToIP(ip);
 
                 // Snapshot per IP: the user may edit nickname/group mid-scan.
                 const UserInfo local = LocalUserSnapshot();
 
                 // Skip our own IP
-                if (ipStr == local.ipAddress) {
-                    continue;
+                if (ipStr != local.ipAddress) {
+                    // Send BR_ENTRY to this IP
+                    uint64_t pktNo = MakePacketNo();
+                    auto msg = MakeMsg(pktNo, IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
+                                       local.nickName, local.groupName);
+                    LogMessage("MSGMNG", "DEBUG", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" +
+                               std::to_string(port) + " (packet=" + std::to_string(pktNo) + ")");
+                    UdpSend(ipStr, port, msg);
                 }
 
-                // Send BR_ENTRY to this IP
-                std::string body = local.nickName;
-                std::string extra = local.groupName;
-                uint64_t pktNo = MakePacketNo();
-                auto msg = MakeMsg(pktNo,
-                    IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
-                    body, extra);
-
-                LogMessage("MSGMNG", "DEBUG", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (packet=" + std::to_string(pktNo) + ")");
-                UdpSend(ipStr, port, msg);
-
-                // Progress callback (every 10 IPs or at end of range)
-                if (scanProgressCallback_) {
-                    scanProgressCallback_(0, 0, scanFoundCount_.load());
-                }
+                // Progress every 10 IPs and at the end of each range
+                if (current % 10 == 0 || ip == end) reportProgress();
 
                 // Small delay to avoid flooding network
                 std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
@@ -998,9 +997,7 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
         auto graceStart = std::chrono::steady_clock::now();
         while (scanning_ && std::chrono::steady_clock::now() - graceStart < std::chrono::milliseconds(gracePeriodMs)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (scanProgressCallback_) {
-                scanProgressCallback_(0, 0, scanFoundCount_.load());
-            }
+            reportProgress();
         }
 
         // Scan complete
