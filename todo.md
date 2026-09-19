@@ -512,3 +512,14 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：视觉一致性
+
+### 修改 59：使用 Tailwind 主题 token，替换硬编码色值与宽度
+- `tailwind.config.js` 补充 `list.bg`；`LeftSidebar` / `UserListPanel` / `ChatPanel` 中的 `bg-[#2C2C2C]`、`bg-[#3C3C3C]`、`bg-[#F7F7F7]`、`bg-[#F5F5F5]`、`w-[60px]`、`w-[300px]` 改为 `bg-sidebar-bg`、`bg-sidebar-hover`、`bg-list-bg`、`bg-chat-bg`、`w-sidebar`、`w-user-list`，以后改主题只需改配置
+
+### 修改 60：左侧栏 Logo 使用应用图标
+- 由 `resources/icon.ico` 生成 `frontend/src/assets/app-icon.png`（64px），替换占位字母「P」，与 exe / 托盘图标一致
+- 状态：✅ 已完成
+
+---

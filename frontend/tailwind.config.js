@@ -17,11 +17,17 @@ export default {
           600: '#16a34a',
           700: '#15803d',
         },
+        // Left navigation rail
         sidebar: {
           bg: '#2C2C2C',
           hover: '#3C3C3C',
           active: '#07C160',
         },
+        // Conversation / contact list column
+        list: {
+          bg: '#F7F7F7',
+        },
+        // Chat area
         chat: {
           bg: '#F5F5F5',
           sent: '#95EC69',

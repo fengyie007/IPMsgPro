@@ -95,7 +95,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   const isContactsMode = viewMode === 'contacts';
 
   return (
-    <div className="w-[300px] bg-[#F7F7F7] border-r border-gray-200 flex flex-col shrink-0">
+    <div className="w-user-list bg-list-bg border-r border-gray-200 flex flex-col shrink-0">
       {/* Search bar */}
       <div className="p-3 flex items-center gap-2">
         <div className="flex-1 relative">
@@ -192,7 +192,7 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
             {user.nickname.charAt(0).toUpperCase()}
           </span>
         </div>
-        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#F7F7F7] ${statusColor}`} />
+        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-list-bg ${statusColor}`} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
@@ -248,7 +248,7 @@ function ContactCard({ user, selected, onClick }: {
             {user.nickname.charAt(0).toUpperCase()}
           </span>
         </div>
-        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#F7F7F7] ${statusColor}`} />
+        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-list-bg ${statusColor}`} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">

@@ -2,6 +2,7 @@ import React from 'react';
 import { FiMessageSquare, FiUsers, FiSettings } from 'react-icons/fi';
 import { useMessageStore } from '../stores/messageStore';
 import { APP_VERSION } from '../types';
+import appIcon from '../assets/app-icon.png';
 
 export type ViewMode = 'chat' | 'contacts' | 'settings';
 
@@ -16,11 +17,15 @@ export default function LeftSidebar({ viewMode, onViewChange }: LeftSidebarProps
   for (const n of unread.values()) totalUnread += n;
 
   return (
-    <div className="w-[60px] bg-[#2C2C2C] flex flex-col items-center py-4 shrink-0">
-      {/* Logo */}
-      <div className="w-10 h-10 rounded-lg bg-primary-500 flex items-center justify-center mb-8">
-        <span className="text-white font-bold text-lg">P</span>
-      </div>
+    <div className="w-sidebar bg-sidebar-bg flex flex-col items-center py-4 shrink-0">
+      {/* Logo: the application icon (same image as the exe / tray icon) */}
+      <img
+        src={appIcon}
+        alt="迅秋"
+        title="迅秋 (SpeedIPMsg)"
+        className="w-10 h-10 rounded-lg mb-8 select-none"
+        draggable={false}
+      />
 
       {/* Navigation buttons */}
       <div className="flex flex-col items-center gap-4 flex-1">
@@ -63,7 +68,7 @@ function NavButton({ icon, active, onClick, title, badge = 0 }: {
   return (
     <button
       className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors relative
-        ${active ? 'bg-[#3C3C3C] text-primary-400' : 'text-gray-400 hover:bg-[#3C3C3C] hover:text-gray-200'}`}
+        ${active ? 'bg-sidebar-hover text-primary-400' : 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200'}`}
       onClick={onClick}
       title={title}
     >

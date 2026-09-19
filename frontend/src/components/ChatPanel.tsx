@@ -433,7 +433,7 @@ export default function ChatPanel() {
       </div>
 
       {/* Message list */}
-      <div ref={messageListRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#F5F5F5]">
+      <div ref={messageListRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto p-4 space-y-3 bg-chat-bg">
         {hasMoreHistory && (
           <div className="flex justify-center">
             <button
