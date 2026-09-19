@@ -1010,6 +1010,22 @@ void CommandHandler::SetupEventForwarding() {
             {"status", isAway ? "away" : "online"}
         });
     });
+
+    // IP range scan progress. Registered once here (not per scan request) so
+    // the scan thread never reads a callback while the UI thread replaces it,
+    // and scans started from config.loaded also report to the frontend.
+    msgMng_->SetScanProgressCallback([this](uint32_t current, uint32_t total, uint32_t found) {
+        bridge_->Emit("network.scan_progress", {
+            {"current", current},
+            {"total", total},
+            {"found", found}
+        });
+    });
+    msgMng_->SetScanCompleteCallback([this](uint32_t found) {
+        bridge_->Emit("network.scan_complete", {
+            {"found", found}
+        });
+    });
 }
 
 // ---------- User Commands ----------
@@ -1194,11 +1210,13 @@ nlohmann::json CommandHandler::HandleConfigLoaded(const nlohmann::json& args) {
         msgMng_->SendDirectEntry(ip, port);
     }
 
-    // Auto-scan IP ranges from config
+    // Auto-scan IP ranges from config. This is the single startup trigger; the
+    // frontend must not start another scan after config.loaded. Peers are
+    // expected on the same port we listen on (not always the default 2425).
     auto scanRanges = msgMng_->GetScanRanges();
     if (!scanRanges.empty()) {
         LogMessage("BRIDGE", "", "Config loaded: auto-scanning " + std::to_string(scanRanges.size()) + " IP ranges");
-        msgMng_->ScanIpRanges(scanRanges, 2425, 50);  // Use default port and delay
+        msgMng_->ScanIpRanges(scanRanges, msgMng_->GetLocalPort(), 50);
     }
     return {{"success", true}};
 }
@@ -2128,7 +2146,7 @@ nlohmann::json CommandHandler::HandleNetworkScan(const nlohmann::json& args) {
 nlohmann::json CommandHandler::HandleNetworkScanRange(const nlohmann::json& args) {
     // Support both old format (startIp/endIp) and new format (ranges array)
     std::vector<std::string> ranges;
-    int port = args.value("port", IPMSG_DEFAULT_PORT);
+    int port = args.value("port", msgMng_->GetLocalPort());
     int delayMs = args.value("delayMs", 50);
 
     if (args.contains("ranges") && args["ranges"].is_array()) {
@@ -2148,22 +2166,8 @@ nlohmann::json CommandHandler::HandleNetworkScanRange(const nlohmann::json& args
         return {{"success", false}, {"error", "ranges or startIp/endIp required"}};
     }
 
-    // Set up progress callback to emit events to frontend
-    msgMng_->SetScanProgressCallback([this](uint32_t current, uint32_t total, uint32_t found) {
-        bridge_->Emit("network.scan_progress", {
-            {"current", current},
-            {"total", total},
-            {"found", found}
-        });
-    });
-
-    // Set completion callback
-    msgMng_->SetScanCompleteCallback([this](uint32_t found) {
-        bridge_->Emit("network.scan_complete", {
-            {"found", found}
-        });
-    });
-
+    // Scan progress/complete callbacks are registered once in
+    // SetupEventForwarding(), so both manual and startup scans emit events.
     bool ok = msgMng_->ScanIpRanges(ranges, port, delayMs);
     return {{"success", ok}, {"message", ok ? "Scan started" : "Scan already in progress or invalid range"}};
 }

@@ -178,6 +178,14 @@ bool MsgMng::Init(int portNo, const std::string& userName,
 }
 
 void MsgMng::Shutdown() {
+    // Stop any in-flight IP range scan and reap its thread first: destroying a
+    // joinable std::thread calls std::terminate. This runs before the ready_
+    // check because a scan can be started even when Init() failed.
+    scanning_ = false;
+    if (scanThread_.joinable()) {
+        scanThread_.join();
+    }
+
     if (!ready_) return;
 
     // Broadcast exit
@@ -946,6 +954,13 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
         return false;
     }
 
+    // Reap the previous scan thread. A scan that finished on its own leaves
+    // scanThread_ joinable; assigning a new std::thread over a joinable one
+    // calls std::terminate.
+    if (scanThread_.joinable()) {
+        scanThread_.join();
+    }
+
     // Clamp delay
     if (delayMs < 10) delayMs = 10;
     if (delayMs > 5000) delayMs = 5000;
@@ -1025,11 +1040,12 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
                 // Send BR_ENTRY to this IP
                 std::string body = localUser_.nickName;
                 std::string extra = localUser_.groupName;
-                auto msg = MakeMsg(MakePacketNo(),
+                uint64_t pktNo = MakePacketNo();
+                auto msg = MakeMsg(pktNo,
                     IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
                     body, extra);
 
-                LogMessage("MSGMNG", "", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (packet=" + std::to_string(MakePacketNo()) + ")");
+                LogMessage("MSGMNG", "", "[Scanner] Sending BR_ENTRY to " + ipStr + ":" + std::to_string(port) + " (packet=" + std::to_string(pktNo) + ")");
                 UdpSend(ipStr, port, msg);
 
                 // Progress callback (every 10 IPs or at end of range)
@@ -1065,11 +1081,13 @@ bool MsgMng::ScanIpRanges(const std::vector<std::string>& ranges, int port, int 
 }
 
 void MsgMng::CancelScan() {
-    if (scanning_) {
-        scanning_ = false;
-        if (scanThread_.joinable()) {
-            scanThread_.join();
-        }
+    bool wasScanning = scanning_.exchange(false);
+    // Always reap the thread, even if the scan already finished on its own,
+    // so scanThread_ is never left joinable.
+    if (scanThread_.joinable()) {
+        scanThread_.join();
+    }
+    if (wasScanning) {
         LogMessage("MSGMNG", "", "[Scanner] Scan cancelled by user");
     }
 }

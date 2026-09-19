@@ -205,3 +205,24 @@
 - 进度、完成日志包含发现数量
 
 ---
+
+## 修复：IP 范围扫描线程未回收导致崩溃
+
+**问题**：配置了 IP 段的会话，扫描过一次之后再次点击「开始扫描」、或正常退出程序时直接崩溃（日志出现 `CRASH` / `std::terminate`）。
+
+**根因**：`ScanIpRanges` 直接给 `scanThread_` 赋新线程，而上一次自然结束的扫描线程仍处于 joinable 状态；`Shutdown` 也从不 join 扫描线程。C++ 规定给 joinable 的 `std::thread` 赋值或析构会调用 `std::terminate`。
+
+### 修改 21：`src/ipmsg/msgmng.cpp` — 扫描线程生命周期
+- `ScanIpRanges`：占用扫描标志后先 join 上一个扫描线程，再创建新线程
+- `CancelScan`：无论扫描是否仍在进行都 join，保证 `scanThread_` 不残留 joinable
+- `Shutdown`：先停止并回收扫描线程，再关闭 socket（放在 `ready_` 判断之前，因为 Init 失败时也可能已启动扫描）
+- 顺带修正扫描日志里多调用一次 `MakePacketNo()` 的问题（日志打印的包号与实际发送的不一致，且白白消耗包号）
+- 状态：✅ 已完成
+
+### 修改 22：`src/bridge/command_handler.cpp` / `frontend/src/App.tsx` — 去掉启动时的重复扫描触发
+- 启动扫描只保留后端 `HandleConfigLoaded` 一处，删除 `App.tsx` 中 `config.loaded` 之后再次调用 `network.scan_range` 的代码
+- `HandleConfigLoaded` / `HandleNetworkScanRange` 的目标端口不再硬编码 2425，改用 `GetLocalPort()`
+- 扫描进度/完成回调改为在 `SetupEventForwarding` 中一次性注册：后端自动触发的扫描也能向前端发事件，同时消除 UI 线程反复替换回调与扫描线程读取回调之间的竞态
+- 状态：✅ 已完成
+
+---
