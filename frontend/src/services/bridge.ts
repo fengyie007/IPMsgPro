@@ -85,6 +85,9 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
     case 'file.info':
       return { success: true, fileSize: 0, fileName: args?.filePath?.split(/[\\/]/).pop() ?? '' } as T;
 
+    case 'file.read_image':
+      return { success: false, error: 'not available in dev mode' } as T;
+
     case 'history.get':
     case 'history.get_recent':
     case 'history.search':

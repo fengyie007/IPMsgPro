@@ -308,6 +308,8 @@ void CommandHandler::RegisterAllCommands() {
         [this](const nlohmann::json& args) { return HandleFileSend(args); });
     bridge_->RegisterCommand("file.info",
         [this](const nlohmann::json& args) { return HandleFileInfo(args); });
+    bridge_->RegisterCommand("file.read_image",
+        [this](const nlohmann::json& args) { return HandleFileReadImage(args); });
     bridge_->RegisterCommand("file.save_temp",
         [this](const nlohmann::json& args) { return HandleFileSaveTemp(args); });
     bridge_->RegisterCommand("file.accept",
@@ -1164,6 +1166,55 @@ nlohmann::json CommandHandler::HandleFileInfo(const nlohmann::json& args) {
     } catch (const std::exception& e) {
         return {{"success", false}, {"error", std::string(e.what())}};
     }
+}
+
+// Read a local image file and return it as a data: URL so the chat bubble can
+// show a thumbnail. Images sent/received through the standard file channel
+// only exist as paths on disk; the WebView cannot read them directly.
+nlohmann::json CommandHandler::HandleFileReadImage(const nlohmann::json& args) {
+    std::string filePath = args.value("filePath", "");
+    if (filePath.empty()) {
+        return {{"success", false}, {"error", "File path is empty"}};
+    }
+
+    // Only image extensions, and a size cap so a huge photo cannot balloon the
+    // frontend's memory (the bubble is a thumbnail; click opens the original).
+    static const std::map<std::string, std::string> kMime = {
+        {"png", "image/png"}, {"jpg", "image/jpeg"}, {"jpeg", "image/jpeg"},
+        {"gif", "image/gif"}, {"bmp", "image/bmp"}, {"webp", "image/webp"},
+    };
+    constexpr uint64_t kMaxBytes = 5 * 1024 * 1024;
+
+    std::string ext;
+    if (auto dot = filePath.find_last_of('.'); dot != std::string::npos) {
+        ext = filePath.substr(dot + 1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    }
+    auto mimeIt = kMime.find(ext);
+    if (mimeIt == kMime.end()) {
+        return {{"success", false}, {"error", "Not an image file"}};
+    }
+
+    std::error_code ec;
+    const fs::path p = enc::PathFromUtf8(filePath);
+    uint64_t size = fs::file_size(p, ec);
+    if (ec) {
+        return {{"success", false}, {"error", ec.message()}};
+    }
+    if (size > kMaxBytes) {
+        return {{"success", false}, {"error", "Image too large for preview"}, {"tooLarge", true}};
+    }
+
+    std::ifstream in(p, std::ios::binary);
+    if (!in) {
+        return {{"success", false}, {"error", "Cannot open file"}};
+    }
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return {
+        {"success", true},
+        {"dataUrl", "data:" + mimeIt->second + ";base64," + Base64Encode(bytes)},
+        {"fileSize", size}
+    };
 }
 
 nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {

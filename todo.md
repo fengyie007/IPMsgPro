@@ -479,3 +479,18 @@
 - 状态：✅ 已完成
 
 ---
+
+## 功能：图片消息显示缩略图，点击打开原图
+
+**问题**：README 承诺的缩略图只对飞秋内联截图生效；走标准文件通道收发的图片（含截图）只显示文件名。
+
+### 修改 54：`src/bridge/command_handler.{h,cpp}` — `file.read_image`
+- 读取本地图片（png/jpg/gif/bmp/webp，宽字符路径），限制 5MB，返回 `data:` URL；超限返回 `tooLarge`
+
+### 修改 55：`frontend/src/components/ChatPanel.tsx` — `useThumbnail`
+- 图片气泡按本地路径懒加载缩略图：自己发的立即加载，收到的在传输完成后加载（未完成时文件不完整）；模块级缓存（最多 200 条）避免切换会话时重复读取
+- 点击缩略图通过 `shell_open` 用系统默认看图程序打开原图；读取失败或超限时回退为文件名
+- `bridge.ts` 补 `file.read_image` mock
+- 状态：✅ 已完成
+
+---

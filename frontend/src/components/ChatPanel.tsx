@@ -635,6 +635,36 @@ function EmojiSprite({ id, size }: { id: string; size: number }) {
 }
 
 // ---- Image message with thumbnail + progress ----
+// Thumbnails are loaded lazily from the local file through the backend
+// (file.read_image) and cached per path, so switching conversations does not
+// re-read the same files. Bounded so the cache cannot grow without limit.
+const thumbnailCache = new Map<string, string | null>();
+const THUMBNAIL_CACHE_MAX = 200;
+
+function useThumbnail(localPath: string | undefined, enabled: boolean): string | null {
+  const [dataUrl, setDataUrl] = useState<string | null>(
+    localPath ? thumbnailCache.get(localPath) ?? null : null
+  );
+  useEffect(() => {
+    if (!localPath || !enabled) return;
+    const cached = thumbnailCache.get(localPath);
+    if (cached !== undefined) { setDataUrl(cached); return; }
+    let cancelled = false;
+    invoke<{ success?: boolean; dataUrl?: string }>('file.read_image', { filePath: localPath })
+      .then((r) => {
+        const url = r && r.success && r.dataUrl ? r.dataUrl : null;
+        if (thumbnailCache.size >= THUMBNAIL_CACHE_MAX) {
+          thumbnailCache.delete(thumbnailCache.keys().next().value as string);
+        }
+        thumbnailCache.set(localPath, url);
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => { if (!cancelled) setDataUrl(null); });
+    return () => { cancelled = true; };
+  }, [localPath, enabled]);
+  return dataUrl;
+}
+
 function ImageContent({ message, pendingReceives, onAccept, onReject }: {
   message: Message;
   pendingReceives: PendingFileReceive[];
@@ -650,15 +680,30 @@ function ImageContent({ message, pendingReceives, onAccept, onReject }: {
   // Find the pending receive request for this message
   const pendingReq = pendingReceives.find(r => `recv_${r.packetNo}` === message.id);
 
+  // Inline data URL (FeiQ inline screenshots) renders directly; otherwise load
+  // a thumbnail from the local file once it exists: immediately for our own
+  // sends, after completion for received files (the file is partial before).
+  const inlineUrl = message.content.startsWith('data:') ? message.content : null;
+  const localPath = message.fileInfo?.filePath;
+  const canLoad = !inlineUrl && !!localPath && (isSelf(message) || !!isCompleted);
+  const thumbnail = useThumbnail(localPath, canLoad);
+  const imageUrl = inlineUrl ?? thumbnail;
+
+  const openOriginal = () => {
+    if (localPath) invoke('shell_open', { url: localPath }).catch(() => {});
+  };
+
   return (
     <div className="relative">
       {/* Image display */}
-      {message.content.startsWith('data:') ? (
+      {imageUrl ? (
         <img
-          src={message.content}
-          alt="图片"
+          src={imageUrl}
+          alt={message.fileInfo?.fileName || '图片'}
+          title={localPath ? '点击查看原图' : undefined}
           className="max-w-full rounded cursor-pointer hover:opacity-90 transition-opacity"
           style={{ maxHeight: 200 }}
+          onClick={openOriginal}
         />
       ) : (
         <div className="flex items-center gap-2 p-1">

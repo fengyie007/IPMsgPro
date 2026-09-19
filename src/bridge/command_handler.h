@@ -62,6 +62,7 @@ private:
     // --- File Commands ---
     nlohmann::json HandleFileSend(const nlohmann::json& args);
     nlohmann::json HandleFileInfo(const nlohmann::json& args);
+    nlohmann::json HandleFileReadImage(const nlohmann::json& args);
     nlohmann::json HandleFileSaveTemp(const nlohmann::json& args);
     nlohmann::json HandleFileAccept(const nlohmann::json& args);
     nlohmann::json HandleFileReject(const nlohmann::json& args);
