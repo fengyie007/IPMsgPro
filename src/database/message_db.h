@@ -12,6 +12,17 @@ struct sqlite3;
 
 namespace ipmsg {
 
+/// Message status codes persisted in the `status` column.
+/// Text messages: Sending (no ack yet) -> Delivered (RECVMSG received) or Failed.
+/// File/image messages: Sending (transfer in progress) -> Completed or Failed.
+/// Incoming messages are stored as Delivered.
+enum MessageStatus : int {
+    kMsgStatusSending   = 0,
+    kMsgStatusDelivered = 1,
+    kMsgStatusCompleted = 2,  // file transfer finished successfully
+    kMsgStatusFailed    = 3,
+};
+
 /// Message record stored in the database
 struct MessageRecord {
     std::string id;         // unique message ID
@@ -20,7 +31,7 @@ struct MessageRecord {
     std::string content;    // message text content
     int type = 0;           // 0:text, 1:image, 2:file
     int64_t timestamp = 0;  // unix timestamp
-    int status = 0;         // 0:sending, 1:delivered, 2:read, 3:failed
+    int status = kMsgStatusSending;  // see MessageStatus
 };
 
 /// SQLite3-backed message database
@@ -45,6 +56,10 @@ public:
 
     /// Save a message to the database
     bool SaveMessage(const MessageRecord& msg);
+
+    /// Update the status of an existing message (see MessageStatus).
+    /// Returns false when the database is closed or the id does not exist.
+    bool UpdateStatus(const std::string& id, int status);
 
     /// Get messages for a specific user (conversation partner)
     /// userId is the key of the other party (userName@hostName)

@@ -129,6 +129,20 @@ private:
     std::string minimizeBehavior_ = "taskbar";  // "taskbar" or "tray"
     bool notificationSound_ = true;  // play notification sound on new messages
 
+    // Text messages sent with IPMSG_SENDCHECKOPT that have not been acknowledged
+    // yet: SENDMSG packetNo -> database message id. Filled on the UI thread by
+    // HandleMessageSend, consumed on the UDP receive thread when the peer's
+    // RECVMSG arrives. Entries are pruned after kPendingAckMaxAgeSec.
+    struct PendingAck {
+        std::string messageId;
+        std::chrono::steady_clock::time_point sentAt;
+    };
+    std::map<uint64_t, PendingAck> pendingAcks_;
+    std::mutex pendingAcksMutex_;
+    static constexpr int kPendingAckMaxAgeSec = 600;
+    void RegisterPendingAck(uint64_t packetNo, const std::string& messageId);
+    std::string TakePendingAck(uint64_t packetNo);
+
     // --- FeiQ inline screenshot (custom fragmented image protocol) ---
     struct FeiQScreenshot {
         std::string id;

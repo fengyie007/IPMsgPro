@@ -253,3 +253,26 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：消息与文件状态从不写回数据库，历史文件永远显示 0%
+
+**问题**：重启后，历史记录里发出的文件一直显示 0% 进度条，收到的文件没有「已保存 / 打开文件夹」；文本消息的送达状态不保存。
+
+**根因**：`MessageDB` 只有 `INSERT`，没有任何 `UPDATE`；后端发出的 `message.ack` 事件前端无人监听，且事件里带的是回执自身的包号而非被确认的包号；前端 `loadHistory` 把状态 <2 的文件一律伪造成 0% 或「等待接收」。
+
+### 修改 25：`src/database/message_db.{h,cpp}` — 状态枚举与 `UpdateStatus`
+- 新增 `MessageStatus` 枚举：0 Sending、1 Delivered、2 Completed（文件传完）、3 Failed
+- 新增 `UpdateStatus(id, status)`（`UPDATE messages SET status=? WHERE id=?`）
+
+### 修改 26：`src/bridge/command_handler.{h,cpp}` / `src/ipmsg/msgmng.{h,cpp}` — 写回状态
+- `MsgMng::SendMessage` 改为返回本次发送的 packetNo（0 表示失败）
+- 新增 `pendingAcks_`（packetNo → 消息 id，带互斥锁与 10 分钟过期清理）：发送文本时登记，收到 RECVMSG 时按**回执正文里的包号**取回并写入 Delivered；`message.ack` 事件增加 `messageId` 字段
+- 文件传输进度回调：Completed → 写 2，Failed → 写 3（文件记录的 id 就是 transferId，收发两端一致）
+- 各处裸状态码替换为枚举常量；发送失败写 3（原先写 2，与「已完成」冲突）
+
+### 修改 27：`frontend/src/stores/messageStore.ts` — 历史状态映射与回执监听
+- 抽出 `historyState()`：文件 2 → 100% 已完成，3 → 失败，0/1 → 普通卡片（不再伪造 0% 或「等待接收」）；文本 0 → 发送中，1 → 已送达，其他 → 失败
+- 新增 `message.ack` 监听：按 `messageId` 把自己发出的文本消息置为 delivered
+- 状态：✅ 已完成
+
+---

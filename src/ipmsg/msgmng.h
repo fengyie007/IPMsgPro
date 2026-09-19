@@ -154,8 +154,11 @@ public:
     // ---------- Message Sending ----------
 
     /// Send a text message to a specific user
-    bool SendMessage(const UserInfo& target, const std::string& message,
-                     uint32_t options = 0);
+    /// @return packetNo of the sent message (0 on failure). A peer's RECVMSG
+    ///         receipt carries this number in its body, so callers can match
+    ///         the receipt back to the message.
+    uint64_t SendMessage(const UserInfo& target, const std::string& message,
+                         uint32_t options = 0);
 
     /// Send a message with an explicit (raw) command word, bypassing the
     /// automatic IPMSG_SENDMSG | options composition. Required for FeiQ

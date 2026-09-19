@@ -62,6 +62,26 @@ function locateTransferMessage(
   return null;
 }
 
+/**
+ * Map a persisted history record to in-memory message state.
+ * Backend status codes (MessageStatus in src/database/message_db.h):
+ *   text: 0 = sent, no receipt yet; 1 = delivered (RECVMSG received, or an
+ *         incoming message); 3 = send failed (older builds wrote 2)
+ *   file: 0/1 = transfer started but never finished; 2 = completed;
+ *         3 = failed / rejected
+ */
+function historyState(m: any): { status: Message['status']; transferProgress?: number } {
+  const isFileMsg = m.type !== 0;
+  if (isFileMsg) {
+    if (m.status === 2) return { status: 'delivered', transferProgress: 100 };
+    if (m.status === 3) return { status: 'failed' };
+    // Incomplete transfer from a previous session: show a plain card, never a
+    // fake 0% bar or a "waiting to accept" prompt that cannot be answered.
+    return { status: 'sent' };
+  }
+  return { status: m.status === 0 ? 'sending' : m.status === 1 ? 'delivered' : 'failed' };
+}
+
 interface MessageStore {
   /** Map of userId -> messages array */
   messages: Map<string, Message[]>;
@@ -515,30 +535,7 @@ updateTransferProgress: (transferId, progress, isSending) => {
 
           const msgType = m.type === 0 ? 'text' : m.type === 1 ? 'image' : 'file';
           const isFileMsg = m.type !== 0;
-
-          // For file messages loaded from history:
-          // - If sent by local user && status <= 1 => still pending transfer
-          // - If received && status <= 1 => waiting for acceptance (need to re-trigger)
-          // - If status >= 2 => completed
-          let transferProgress: number | undefined = undefined;
-          let msgStatus: 'sending' | 'sent' | 'delivered' | 'failed' = m.status === 0 ? 'sending' : m.status === 1 ? 'delivered' : m.status === 2 ? 'delivered' : 'failed';
-
-          if (isFileMsg) {
-            if (isSentByMe) {
-              // Sent files: status 0/1 means still pending/sending, 2 means completed
-              transferProgress = m.status >= 2 ? 100 : 0;
-            } else {
-              // Received files from history: status 1 = delivered = file notification received
-              // but no actual transfer happened yet on this session
-              // Mark as -1 to show waiting-for-acceptance UI (user needs to accept again)
-              if (m.status < 2) {
-                transferProgress = -1;
-                msgStatus = 'sending';
-              } else {
-                transferProgress = 100;
-              }
-            }
-          }
+          const { status: msgStatus, transferProgress } = historyState(m);
 
           return {
             id: m.id,
@@ -618,7 +615,7 @@ updateTransferProgress: (transferId, progress, isSending) => {
             content: m.content,
             type: msgType,
             timestamp: m.timestamp * 1000,
-            status: m.status === 0 ? 'sending' : m.status === 1 ? 'delivered' : m.status === 2 ? 'delivered' : 'failed',
+            status: historyState(m).status,
           };
         });
 
@@ -812,6 +809,27 @@ updateTransferProgress: (transferId, progress, isSending) => {
         }
       }
       // For file attachments, the message was already added by file.receive_request handler
+    }));
+
+    // Listen for delivery receipts (IPMSG_RECVMSG) of our own text messages.
+    // The backend resolves the acknowledged packetNo to the message id it
+    // returned from message.send, so we can match by id.
+    unsubs.push(listen('message.ack', (data: any) => {
+      const messageId: string | undefined = data?.messageId;
+      if (!messageId) return;
+      set((state) => {
+        for (const [userId, msgs] of state.messages) {
+          const idx = msgs.findIndex((m) => m.id === messageId && m.from === 'self');
+          if (idx < 0) continue;
+          if (msgs[idx].status === 'delivered') return {};
+          const newMessages = new Map(state.messages);
+          const updated = [...msgs];
+          updated[idx] = { ...updated[idx], status: 'delivered' };
+          newMessages.set(userId, updated);
+          return { messages: newMessages };
+        }
+        return {};
+      });
     }));
 
     // Listen for file receive requests - add to pending list

@@ -818,21 +818,23 @@ std::vector<std::string> MsgMng::GetScanRanges() const {
 
 // ---------- Message Sending ----------
 
-bool MsgMng::SendMessage(const UserInfo& target, const std::string& message,
-                          uint32_t options) {
+uint64_t MsgMng::SendMessage(const UserInfo& target, const std::string& message,
+                             uint32_t options) {
     // Wire encoding (UTF-8 from frontend -> GBK for FeiQ compatibility) is
     // handled centrally in MakeMsg, so pass the message through as-is.
     uint32_t cmd = IPMSG_SENDMSG | options;
-    auto msg = MakeMsg(MakePacketNo(), cmd, message);
+    uint64_t pktNo = MakePacketNo();
+    auto msg = MakeMsg(pktNo, cmd, message);
     bool ok = UdpSend(target.ipAddress, target.portNo, msg);
-    
+
     LogMessage("MSGMNG", "", "[MsgMng] SendMessage to " + target.Key() +
                " (" + target.ipAddress + ":" + std::to_string(target.portNo) + ")"
                + " len=" + std::to_string(message.size()) + " cmd=0x" +
                ([](uint32_t v)->std::string{std::ostringstream o;o<<std::hex<<v;return o.str();})(cmd) +
+               " pkt=" + std::to_string(pktNo) +
                " ok=" + (ok ? "true" : "false"));
-    
-    return ok;
+
+    return ok ? pktNo : 0;
 }
 
 bool MsgMng::SendRawCommand(const UserInfo& target, uint32_t command,

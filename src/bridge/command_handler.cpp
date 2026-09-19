@@ -662,17 +662,22 @@ void CommandHandler::SetupEventForwarding() {
                      ", isSending=" + std::to_string(progress.isSending));
 
         try {
+            // The database record of a file/image message uses the transferId
+            // as its id (both directions), so the final outcome can be persisted
+            // here and survives a restart (see MessageStatus in message_db.h).
             if (progress.status == ipmsg::TransferStatus::Completed) {
                 // File transfer completed
                 event["message"] = progress.isSending ? "File sent successfully" : "File received successfully";
                 if (!progress.isSending) {
                     event["savePath"] = progress.localPath;
                 }
+                if (msgDb_) msgDb_->UpdateStatus(progress.transferId, kMsgStatusCompleted);
                 LogMessage("BRIDGE", "", "[PROGRESS-CB] Emitting file.transfer_completed for transferId=" + progress.transferId);
                 bridge_->Emit("file.transfer_completed", event);
             } else if (progress.status == ipmsg::TransferStatus::Failed) {
                 // File transfer failed
                 event["message"] = "File transfer failed";
+                if (msgDb_) msgDb_->UpdateStatus(progress.transferId, kMsgStatusFailed);
                 bridge_->Emit("file.transfer_failed", event);
             } else {
                 // Progress update
@@ -748,14 +753,23 @@ void CommandHandler::SetupEventForwarding() {
                               " body=\"" + msg.body + "\" extra=\"" + msg.extra + "\"");
             }
 
-            // For RECVMSG (acknowledgment), forward to frontend as message status update
+            // RECVMSG is the delivery receipt. Its BODY carries the packetNo of
+            // OUR message being acknowledged (the header packetNo is the
+            // receipt's own number). Resolve it to the database id handed to the
+            // frontend by message.send, persist "delivered", then forward.
             uint32_t mode = GET_MODE(msg.command);
             if (mode == IPMSG_RECVMSG) {
-                nlohmann::json ack = {
-                    {"packetNo", msg.packetNo},
-                    {"from", msg.sender.Key()}
-                };
-                bridge_->Emit("message.ack", ack);
+                uint64_t ackedPacketNo = 0;
+                try { ackedPacketNo = std::stoull(msg.body); } catch (...) {}
+                std::string messageId = ackedPacketNo ? TakePendingAck(ackedPacketNo) : std::string();
+                if (!messageId.empty() && msgDb_) {
+                    msgDb_->UpdateStatus(messageId, kMsgStatusDelivered);
+                }
+                bridge_->Emit("message.ack", {
+                    {"packetNo", ackedPacketNo},
+                    {"from", msg.sender.Key()},
+                    {"messageId", messageId}
+                });
                 return;
             }
 
@@ -940,7 +954,7 @@ void CommandHandler::SetupEventForwarding() {
                 record.content = msg.body;
                 record.type = dbType;
                 record.timestamp = static_cast<int64_t>(msg.timestamp);
-                record.status = 1; // delivered
+                record.status = kMsgStatusDelivered;
                 msgDb_->SaveMessage(record);
             }
 
@@ -1256,7 +1270,8 @@ nlohmann::json CommandHandler::HandleMessageSend(const nlohmann::json& args) {
     // Feiq/FeiQ handles IPMSG_UTF8OPT properly for UTF-8 encoded content.
     // For other IPMsg clients that don't understand UTF8OPT (like older FeiQ),
     // we send GBK encoded content without the UTF8 flag.
-    bool ok = msgMng_->SendMessage(*target, content, IPMSG_SENDCHECKOPT);
+    uint64_t sentPacketNo = msgMng_->SendMessage(*target, content, IPMSG_SENDCHECKOPT);
+    bool ok = sentPacketNo != 0;
 
     // Always save to database (even if send failed, we want to track it)
     MessageRecord record;
@@ -1273,8 +1288,13 @@ nlohmann::json CommandHandler::HandleMessageSend(const nlohmann::json& args) {
     record.content = content;
     record.type = 0;  // text
     record.timestamp = static_cast<int64_t>(std::time(nullptr));
-    record.status = ok ? 0 : 2; // 0=sending, 2=failed
+    record.status = ok ? kMsgStatusSending : kMsgStatusFailed;
     msgDb_->SaveMessage(record);
+
+    // Let the peer's RECVMSG receipt be resolved back to this record.
+    if (ok) {
+        RegisterPendingAck(sentPacketNo, record.id);
+    }
 
     return {{"success", ok}, {"messageId", record.id}};
 }
@@ -1367,7 +1387,7 @@ nlohmann::json CommandHandler::HandleMessageSendImage(const nlohmann::json& args
         record.content = filePath;  // Store file path
         record.type = 1;  // image
         record.timestamp = static_cast<int64_t>(std::time(nullptr));
-        record.status = 1; // sending
+        record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
         msgDb_->SaveMessage(record);
 
         // Emit transfer started event
@@ -1480,7 +1500,7 @@ nlohmann::json CommandHandler::HandleFileSend(const nlohmann::json& args) {
         record.content = filePath;  // Store file path
         record.type = 2;  // file
         record.timestamp = static_cast<int64_t>(std::time(nullptr));
-        record.status = 1; // sending
+        record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
         msgDb_->SaveMessage(record);
 
         // Emit transfer started event
@@ -1550,7 +1570,7 @@ nlohmann::json CommandHandler::HandleFileRecv(const nlohmann::json& args) {
     record.content = savePath;  // Store save path
     record.type = 2;  // file
     record.timestamp = static_cast<int64_t>(std::time(nullptr));
-    record.status = 1; // receiving
+    record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
     msgDb_->SaveMessage(record);
 
     // Emit transfer started event
@@ -1713,7 +1733,7 @@ nlohmann::json CommandHandler::HandleFileAccept(const nlohmann::json& args) {
     record.content = savePath;
     record.type = 2;  // file
     record.timestamp = static_cast<int64_t>(std::time(nullptr));
-    record.status = 1; // receiving
+    record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
     msgDb_->SaveMessage(record);
 
     // Emit transfer started event
@@ -2221,6 +2241,30 @@ std::optional<UserInfo> CommandHandler::FindUserFromArgs(const nlohmann::json& a
         }
     }
     return std::nullopt;
+}
+
+void CommandHandler::RegisterPendingAck(uint64_t packetNo, const std::string& messageId) {
+    std::lock_guard<std::mutex> lk(pendingAcksMutex_);
+    const auto now = std::chrono::steady_clock::now();
+    // Peers that never answer (offline, or clients without SENDCHECKOPT
+    // support) would otherwise grow the map without bound.
+    for (auto it = pendingAcks_.begin(); it != pendingAcks_.end();) {
+        if (now - it->second.sentAt > std::chrono::seconds(kPendingAckMaxAgeSec)) {
+            it = pendingAcks_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    pendingAcks_[packetNo] = PendingAck{messageId, now};
+}
+
+std::string CommandHandler::TakePendingAck(uint64_t packetNo) {
+    std::lock_guard<std::mutex> lk(pendingAcksMutex_);
+    auto it = pendingAcks_.find(packetNo);
+    if (it == pendingAcks_.end()) return {};
+    std::string id = std::move(it->second.messageId);
+    pendingAcks_.erase(it);
+    return id;
 }
 
 // ---------- Dialog Commands ----------

@@ -105,6 +105,24 @@ bool MessageDB::SaveMessage(const MessageRecord& msg) {
     return rc == SQLITE_DONE;
 }
 
+bool MessageDB::UpdateStatus(const std::string& id, int status) {
+    if (!db_) return false;
+
+    const char* sql = "UPDATE messages SET status = ? WHERE id = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, status);
+    sqlite3_bind_text(stmt, 2, id.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return rc == SQLITE_DONE && sqlite3_changes(db_) > 0;
+}
+
 bool MessageDB::GetMessages(const std::string& userId, const std::string& localUserId,
                              int limit, int offset,
                              std::vector<MessageRecord>& messages) {
