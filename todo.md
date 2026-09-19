@@ -392,3 +392,19 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：清理前后端死代码
+
+### 修改 42：后端
+- 删除飞秋内联截图**发送**通道（v1.4.0 起截图已改走标准文件传输，前端不再调用）：`feiq.screenshot_send` / `feiq.echo_screenshot` 命令、`HandleFeiQScreenshotSend` / `HandleFeiQEchoScreenshot` / `SendFeiQShotPayload`、`LzwCompress`、`PngDataUrlTo24bppDib`、`JpegDimensions`、GDI+ 编码器查找、`lastFeiQShot*` 成员、`MsgMng::SendRawCommand`；接收/解码路径（`LzwDecompress`、分片重组）完整保留
+- 删除前端从不调用的 `message.send_image`（与 `file.send` 重复约 100 行）和 `file.recv`（与 `file.accept` 重复）
+- 删除未使用的 `IsInSubnet`、`MessageDB::GetMessageCount`、`FileTransferManager::SendFileRequest`（空桩）与 `FileReceiveRequestCallback`
+- `command_handler.cpp` 由 2960 行减至约 2340 行
+
+### 修改 43：前端
+- 删除 `messageVersion`（写 6 处从不读）、`isFeiqShot`、`Config.password`、`App.tsx` 中重复的两次取消订阅
+- 删除永远走不到的 base64 发文件路径（`sendFile`、`previewFile`、隐藏的 `<input type="file">`、图片模式的预览弹窗）；`SendPreview` 简化为只展示文件名与大小
+- `bridge.ts` 的 dev 模式 mock 与实际调用的命令对齐：补齐 `user.local`、`config.loaded`、`network.scan_range/cancel`、`history.get_recent`、`dialog.open/save`、`file.info/save_temp/save_data/open_folder`、`screenshot.capture`、`window.*`、`shell_open`，删除从未调用的条目
+- 状态：✅ 已完成
+
+---

@@ -54,9 +54,6 @@ uint32_t IPToUint32(const std::string& ip);
 /// Convert uint32_t to IP string (network byte order)
 std::string Uint32ToIP(uint32_t ip);
 
-/// Check if an IP address is in a given subnet (CIDR notation, e.g., "192.168.1.0/24")
-bool IsInSubnet(const std::string& ip, const std::string& subnet);
-
 /// Get hostname of the local machine
 std::string GetHostName();
 

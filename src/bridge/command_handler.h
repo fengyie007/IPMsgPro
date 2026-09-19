@@ -58,12 +58,10 @@ private:
 
     // --- Message Commands ---
     nlohmann::json HandleMessageSend(const nlohmann::json& args);
-    nlohmann::json HandleMessageSendImage(const nlohmann::json& args);
 
     // --- File Commands ---
     nlohmann::json HandleFileSend(const nlohmann::json& args);
     nlohmann::json HandleFileInfo(const nlohmann::json& args);
-    nlohmann::json HandleFileRecv(const nlohmann::json& args);
     nlohmann::json HandleFileSaveTemp(const nlohmann::json& args);
     nlohmann::json HandleFileAccept(const nlohmann::json& args);
     nlohmann::json HandleFileReject(const nlohmann::json& args);
@@ -96,14 +94,6 @@ private:
     nlohmann::json HandleWindowMaximize(const nlohmann::json& args);
     nlohmann::json HandleWindowRestore(const nlohmann::json& args);
     nlohmann::json HandleWindowSetAlwaysOnTop(const nlohmann::json& args);
-    nlohmann::json HandleFeiQScreenshotSend(const nlohmann::json& args);
-    nlohmann::json HandleFeiQEchoScreenshot(const nlohmann::json& args);
-    // Send a pre-built FeiQ inline-screenshot payload ("LZW!" + size + crc + LZW
-    // stream bytes, exactly as FeiQ wires it) to `target` using the fragmented
-    // inline protocol. dw/dh only size the inline reference placeholder. refCmd
-    // / fragCmd are the wire command numbers (0 = use the default FeiQ values).
-    bool SendFeiQShotPayload(const UserInfo& target, const std::string& payload,
-                             int dw, int dh, uint32_t refCmd, uint32_t fragCmd);
 
     // --- File Commands (extra) ---
     nlohmann::json HandleFileSaveData(const nlohmann::json& args);
@@ -167,15 +157,6 @@ private:
     // the volume of screenshots is tiny.
     std::set<std::string> emittedIds_;
     std::mutex feiqMutex_;
-    // The most recent FeiQ screenshot WE RECEIVED, kept verbatim so the UI can
-    // "echo" it back to the sender byte-for-byte (diagnostic: proves whether our
-    // send pipeline works even when we can't yet generate a valid image).
-    std::string lastFeiQShotPayload_;   // full "LZW!" + size + crc + LZW(DIB)
-    std::string lastFeiQShotSender_;    // sender key of that screenshot
-    uint32_t lastFeiQShotRefCmd_ = 0;   // wire command FeiQ used for the ref msg
-    uint32_t lastFeiQShotFragCmd_ = 0;  // wire command FeiQ used for fragments
-    int lastFeiQShotW_ = 400;
-    int lastFeiQShotH_ = 134;
     void HandleFeiQScreenshotReference(const ipmsg::MsgBuf& msg, const std::string& body);
     bool HandleFeiQScreenshotFragment(const ipmsg::MsgBuf& msg);
     void FinalizeFeiQScreenshot(const std::string& key);

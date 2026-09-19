@@ -142,23 +142,6 @@ std::string Uint32ToIP(uint32_t ip) {
     return buf;
 }
 
-bool IsInSubnet(const std::string& ip, const std::string& subnet) {
-    // Parse CIDR: "192.168.1.0/24"
-    size_t slashPos = subnet.find('/');
-    if (slashPos == std::string::npos) return ip == subnet;
-
-    std::string netPart = subnet.substr(0, slashPos);
-    int prefixLen = std::stoi(subnet.substr(slashPos + 1));
-
-    uint32_t ipVal = IPToUint32(ip);
-    uint32_t netVal = IPToUint32(netPart);
-
-    if (prefixLen == 0) return true;
-    uint32_t mask = (prefixLen >= 32) ? 0xFFFFFFFF : (0xFFFFFFFF << (32 - prefixLen));
-
-    return (ipVal & mask) == (netVal & mask);
-}
-
 std::string GetHostName() {
     wchar_t buf[MAX_COMPUTERNAME_LENGTH + 1] = {};
     DWORD size = MAX_COMPUTERNAME_LENGTH + 1;

@@ -104,16 +104,6 @@ static void RunCliServer(int port) {
     LOG_INFO("CLI SERVER mode on port " + std::to_string(port));
     LOG_INFO("Waiting for file transfers... Auto-accept enabled.");
 
-    // Set up auto-accept callback
-    g_fileTransfer->SetFileReceiveRequestCallback(
-        [](const std::string& fromUser, const std::string& fileName,
-           int64_t fileSize, const std::string& transferId) {
-            LOG_INFO("[AUTO-ACCEPT] File: " + fileName + " (" +
-                     std::to_string(fileSize) + " bytes) from " + fromUser +
-                     " transferId=" + transferId);
-        }
-    );
-
     // Set up progress callback
     g_fileTransfer->SetProgressCallback(
         [](const ipmsg::TransferProgress& progress) {

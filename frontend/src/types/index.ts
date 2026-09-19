@@ -29,8 +29,6 @@ export interface Message {
   fileInfo?: FileInfoAttachment;
   /** Transfer progress (0-100), only for file/image in transit */
   transferProgress?: number;
-  /** True for screenshots received via the FeiQ inline protocol (can be echoed back) */
-  isFeiqShot?: boolean;
 }
 
 /** File attachment info attached to a message */
@@ -48,7 +46,6 @@ export interface FileInfoAttachment {
 export interface Config {
   nickname: string;
   group: string;        // user group name shown to peers
-  password: string;
   segments: string[];   // multi-segment broadcast addresses
   port: number;
   autoDiscovery: boolean;
@@ -128,7 +125,6 @@ const getDefaultDataDir = (): string => {
 export const DEFAULT_CONFIG: Config = {
   nickname: '',
   group: '',
-  password: '',
   segments: [],
   port: 2425,
   autoDiscovery: true,

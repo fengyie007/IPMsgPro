@@ -8,20 +8,17 @@ import { EMOJIS, buildEmojiMessage, parseEmojiId, emojiStyle, EMOJI_TOKEN_RE } f
 import ScreenshotEditor from './ScreenshotEditor';
 
 // ============================================================================
-// Send Preview Modal - shown before sending image/file
+// Send Preview Modal - shown before sending a file
 // ============================================================================
 
 interface SendPreviewProps {
-  mode: 'image' | 'file';
-  file?: File;
-  fileName?: string;
-  fileSize?: number;
-  dataUrl?: string;
+  fileName: string;
+  fileSize: number;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-function SendPreview({ mode, file, fileName, fileSize, dataUrl, onConfirm, onCancel }: SendPreviewProps) {
+function SendPreview({ fileName, fileSize, onConfirm, onCancel }: SendPreviewProps) {
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
       onClick={onCancel}>
@@ -29,9 +26,7 @@ function SendPreview({ mode, file, fileName, fileSize, dataUrl, onConfirm, onCan
         onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="text-sm font-medium text-gray-800">
-            {mode === 'image' ? '发送图片' : '发送文件'}
-          </h3>
+          <h3 className="text-sm font-medium text-gray-800">发送文件</h3>
           <button className="p-1 text-gray-400 hover:text-gray-600" onClick={onCancel}>
             <FiX size={16} />
           </button>
@@ -39,26 +34,14 @@ function SendPreview({ mode, file, fileName, fileSize, dataUrl, onConfirm, onCan
 
         {/* Preview */}
         <div className="px-4 py-3 flex-1 overflow-auto">
-          {mode === 'image' && dataUrl ? (
-            <div className="flex justify-center">
-              <img
-                src={dataUrl}
-                alt="preview"
-                className="max-w-full max-h-[300px] rounded object-contain"
-              />
+          <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+            <FiFile size={28} className="text-gray-400 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-800 truncate">{fileName}</p>
+              <p className="text-xs text-gray-400">{formatFileSize(fileSize)}</p>
             </div>
-          ) : (
-            <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-              <FiFile size={28} className="text-gray-400 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-gray-800 truncate">{file?.name ?? fileName ?? ''}</p>
-                <p className="text-xs text-gray-400">{formatFileSize(file?.size ?? fileSize ?? 0)}</p>
-              </div>
-            </div>
-          )}
-          <p className="text-xs text-gray-400 mt-2">
-            {mode === 'image' ? '图片将通过 TCP 传输发送给对方' : '文件将通过 TCP 传输发送给对方'}
-          </p>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">文件将通过 TCP 传输发送给对方</p>
         </div>
 
         {/* Actions */}
@@ -89,7 +72,6 @@ export default function ChatPanel() {
   const currentUser = useUserStore((s) => s.currentUser);
   const sendMessage = useMessageStore((s) => s.sendMessage);
   const sendImage = useMessageStore((s) => s.sendImage);
-  const sendFile = useMessageStore((s) => s.sendFile);
   const sendFileByPath = useMessageStore((s) => s.sendFileByPath);
   const loadHistory = useMessageStore((s) => s.loadHistory);
   const clearHistory = useMessageStore((s) => s.clearHistory);
@@ -99,7 +81,6 @@ export default function ChatPanel() {
 
   const [hasInput, setHasInput] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
 
   // ---- Screenshot state ----
   const [screenshot, setScreenshot] = useState<{ image: string; screenCount?: number } | null>(null);
@@ -108,12 +89,9 @@ export default function ChatPanel() {
   // even after the editor loses focus to the picker button.
   const savedRange = useRef<Range | null>(null);
 
-  // Send preview state
-  const [previewFile, setPreviewFile] = useState<File | null>(null);
+  // Send-confirm modal state: the file picked via the native dialog (real path)
   const [pendingFilePath, setPendingFilePath] = useState<string | null>(null);
   const [pendingFileName, setPendingFileName] = useState<string>('');
-  const [previewMode, setPreviewMode] = useState<'image' | 'file' | null>(null);
-  const [previewDataUrl, setPreviewDataUrl] = useState<string | undefined>();
   // Real file size (bytes) for the send-confirm modal, queried from backend
   const [pendingFileSize, setPendingFileSize] = useState<number | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -286,23 +264,6 @@ export default function ChatPanel() {
     setScreenshot(null);
   };
 
-  // ---- Image select & preview ----
-  const handleImageClick = () => {
-    imageInputRef.current?.click();
-  };
-
-  const handleImageSend = async () => {
-    if (!previewFile || !currentUser || !previewDataUrl) return;
-
-    const base64 = previewDataUrl.split(',')[1];
-    await sendImage(currentUser.id, base64, previewFile.name);
-
-    // Close preview
-    setPreviewFile(null);
-    setPreviewMode(null);
-    setPreviewDataUrl(undefined);
-  };
-
   // ---- File select & preview ----
   // 使用原生文件对话框直接拿到真实路径，避免前端 base64 编码 + 复制到临时文件夹（大文件极慢）
   const handleFileClick = async () => {
@@ -317,9 +278,7 @@ export default function ChatPanel() {
         const name = fp.split(/[\\/]/).pop() || fp;
         setPendingFilePath(fp);
         setPendingFileName(name);
-        setPreviewMode('file');
-        setPreviewFile(null);
-        setPreviewDataUrl(undefined);
+        setPendingFileSize(null);
         // Query real file size from backend for the confirm modal
         invoke<{ success?: boolean; fileSize?: number }>('file.info', { filePath: fp })
           .then((r) => setPendingFileSize(r && r.success ? (r.fileSize ?? 0) : 0))
@@ -330,34 +289,16 @@ export default function ChatPanel() {
     }
   };
 
-  const handleFileSend = async () => {
-    if (!currentUser) return;
-
-    if (pendingFilePath) {
-      await sendFileByPath(currentUser.id, pendingFilePath);
-    } else if (previewFile) {
-      // 图片等仍走 base64（体积较小）
-      const base64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.readAsDataURL(previewFile);
-      });
-      await sendFile(currentUser.id, base64, previewFile.name);
-    }
-
+  const resetPendingFile = () => {
     setPendingFilePath(null);
     setPendingFileName('');
     setPendingFileSize(null);
-    setPreviewFile(null);
-    setPreviewMode(null);
-    setPreviewDataUrl(undefined);
   };
 
-  const handlePreviewCancel = () => {
-    setPreviewFile(null);
-    setPreviewMode(null);
-    setPreviewDataUrl(undefined);
-    setPendingFileSize(null);
+  const handleFileSend = async () => {
+    if (!currentUser || !pendingFilePath) return;
+    await sendFileByPath(currentUser.id, pendingFilePath);
+    resetPendingFile();
   };
 
   // ---- Native file drag & drop ----
@@ -523,14 +464,6 @@ export default function ChatPanel() {
           >
             <FiFile size={18} />
           </button>
-          {/* Hidden file inputs */}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={() => {}}
-          />
         </div>
 
         {/* Text input (contentEditable so emoji can be inserted inline at text height) */}
@@ -563,16 +496,13 @@ export default function ChatPanel() {
         </div>
       </div>
 
-      {/* Send preview modal */}
-      {previewMode && (previewFile || pendingFilePath) && (
+      {/* Send confirm modal */}
+      {pendingFilePath !== null && (
         <SendPreview
-          mode={previewMode}
-          file={previewFile ?? undefined}
           fileName={pendingFileName}
           fileSize={pendingFileSize ?? 0}
-          dataUrl={previewDataUrl}
-          onConfirm={previewMode === 'image' ? handleImageSend : handleFileSend}
-          onCancel={handlePreviewCancel}
+          onConfirm={handleFileSend}
+          onCancel={resetPendingFile}
         />
       )}
 

@@ -244,28 +244,6 @@ bool MessageDB::ClearMessages(const std::string& userId) {
     return true;
 }
 
-int MessageDB::GetMessageCount(const std::string& userId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!db_) return 0;
-
-    const char* sql = "SELECT COUNT(*) FROM messages WHERE from_id = ? OR to_id = ?;";
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return 0;
-    }
-
-    sqlite3_bind_text(stmt, 1, userId.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, userId.c_str(), -1, SQLITE_TRANSIENT);
-
-    int count = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        count = sqlite3_column_int(stmt, 0);
-    }
-
-    sqlite3_finalize(stmt);
-    return count;
-}
-
 bool MessageDB::GetRecentConversations(const std::string& localUserId, int limit, std::vector<MessageRecord>& messages) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) return false;

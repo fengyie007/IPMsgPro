@@ -761,22 +761,6 @@ uint64_t MsgMng::SendMessage(const UserInfo& target, const std::string& message,
     return ok ? pktNo : 0;
 }
 
-bool MsgMng::SendRawCommand(const UserInfo& target, uint32_t command,
-                            const std::string& message) {
-    // Send with the exact command word given (no IPMSG_SENDMSG OR-ed in),
-    // so FeiQ inline-screenshot fragments keep their 0x2000C0 mode byte.
-    auto msg = MakeMsg(MakePacketNo(), command, message);
-    bool ok = UdpSend(target.ipAddress, target.portNo, msg);
-
-    LogMessage("MSGMNG", "", "[MsgMng] SendRawCommand to " + target.Key() +
-               " (" + target.ipAddress + ":" + std::to_string(target.portNo) + ")"
-               + " len=" + std::to_string(message.size()) + " cmd=0x" +
-               ([](uint32_t v)->std::string{std::ostringstream o;o<<std::hex<<v;return o.str();})(command) +
-               " ok=" + (ok ? "true" : "false"));
-
-    return ok;
-}
-
 uint64_t MsgMng::SendMessageWithFile(const UserInfo& target, const std::string& message,
                                       const std::string& fileAttachInfo, uint32_t options) {
     // Don't use IPMSG_UTF8OPT for file messages - FeiQ doesn't support it

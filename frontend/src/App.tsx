@@ -74,8 +74,6 @@ function App() {
       unsubMessages();
       unsubScanProgress();
       unsubScanComplete();
-      unsubUsers();
-      unsubMessages();
     };
   }, []);
 

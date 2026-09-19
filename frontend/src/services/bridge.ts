@@ -40,6 +40,9 @@ export function listen(event: string, callback: (data: any) => void): () => void
 }
 
 // ---------- Mock responses for development ----------
+// Keep this list aligned with the commands the UI actually invokes (grep for
+// invoke(' in frontend/src). Unknown commands fall through to an error so a
+// missing mock is visible in the dev console instead of silently "working".
 
 function getMockResponse<T>(command: string, args?: Record<string, any>): T {
   switch (command) {
@@ -53,46 +56,54 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
       } as T;
 
     case 'user.discover':
+    case 'config.set':
+    case 'config.loaded':
+    case 'frontend.error':
+    case 'file.reject':
+    case 'file.accept':
+    case 'history.clear':
+    case 'network.scan_range':
+    case 'network.scan_cancel':
+    case 'window.restore':
+    case 'window.set_always_on_top':
+    case 'shell_open':
+    case 'file.open_folder':
       return { success: true } as T;
 
-    case 'user.status':
-      return { success: true, status: args?.status ?? 'online' } as T;
+    case 'user.local':
+      return { success: true, id: 'me@localhost', nickname: '我', username: 'me', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2425 } as T;
 
     case 'message.send':
-      return { success: true } as T;
-
-    case 'message.send_image':
-      return { success: true } as T;
+      return { success: true, messageId: `mock_${Date.now()}` } as T;
 
     case 'file.send':
-      return { success: true } as T;
+      return { success: true, transferId: `mock_${Date.now()}`, fileName: args?.filePath?.split(/[\\/]/).pop() ?? 'file' } as T;
 
-    case 'file.recv':
-      return { success: true } as T;
+    case 'file.save_temp':
+      return { success: true, filePath: `C:\\Temp\\${args?.filename ?? 'temp'}` } as T;
 
-    case 'file.accept':
-      return { success: true } as T;
-
-    case 'file.reject':
-      return { success: true } as T;
+    case 'file.info':
+      return { success: true, fileSize: 0, fileName: args?.filePath?.split(/[\\/]/).pop() ?? '' } as T;
 
     case 'history.get':
-      return { success: true, messages: [] } as T;
-
+    case 'history.get_recent':
     case 'history.search':
-      return { success: true, messages: [] } as T;
-
-    case 'history.clear':
-      return { success: true } as T;
-
-    case 'network.scan':
-      return { success: true } as T;
-
-    case 'config.set':
-      return { success: true } as T;
+      return { success: true, messages: [], localUserId: 'me@localhost' } as T;
 
     case 'dialog.pick_folder':
       return { success: true, folder: '' } as T;
+
+    case 'dialog.open':
+      return { success: true, files: [] } as T;
+
+    case 'dialog.save':
+      return { success: false, cancelled: true } as T;
+
+    case 'file.save_data':
+      return { success: false, error: 'not available in dev mode' } as T;
+
+    case 'screenshot.capture':
+      return { success: false, error: 'not available in dev mode' } as T;
 
     default:
       return { success: false, error: 'Unknown command' } as T;

@@ -103,9 +103,6 @@ class ConfigDB {
     const nickname = await this.get<string>('nickname');
     if (nickname) config.nickname = nickname;
 
-    const password = await this.get<string>('password');
-    if (password) config.password = password;
-
     const segments = await this.get<string[]>('segments');
     if (segments) config.segments = segments;
 

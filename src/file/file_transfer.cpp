@@ -915,12 +915,6 @@ void FileTransferManager::UpdateTransferProgress(const std::string& transferId,
     }
 }
 
-bool FileTransferManager::SendFileRequest(const std::string& targetIp, int targetPort,
-                                           const std::string& transferId, int fileId) {
-    // This is handled in RecvFileThread
-    return true;
-}
-
 std::string FileTransferManager::GenerateTransferId() {
     auto now = std::chrono::system_clock::now().time_since_epoch().count();
     std::random_device rd;

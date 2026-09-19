@@ -275,236 +275,6 @@ void CommandHandler::SetWindow(tauricpp::Window* window) {
     LogMessage("BRIDGE", "", "[WINDOW] SetWindow called");
 }
 
-// ============================================================================
-// FeiQ inline screenshot SEND channel
-// ============================================================================
-//
-// IMPORTANT (verified against a real FeiQ capture): modern FeiQ sends inline
-// screenshots as RAW JPEG bytes. The fragment payload is the JPEG file directly
-// (magic 0xFFD8FFE0), NOT the legacy "LZW!" + DIB wrapper. The fragment header
-// layout is:
-//     "<id>|<total>|<off>|<fragCount>|<fragIndex>|<len>|0|2|0|<mtime>#"
-// followed IMMEDIATELY by the raw JPEG chunk (NO leading 0x00). The reference
-// message is a RICH-TEXT message whose body embeds the inline-image marker
-// "/~#><id>" inside FeiQ's font/object placeholder "B~{/font;...}".
-
-// Resolve a GDI+ image encoder CLSID by its MIME type.
-static bool GetEncoderClsid(const wchar_t* mime, CLSID& clsid) {
-    UINT num = 0, size = 0;
-    Gdiplus::GetImageEncodersSize(&num, &size);
-    if (size == 0) return false;
-    auto* buf = (Gdiplus::ImageCodecInfo*)malloc(size);
-    if (!buf) return false;
-    Gdiplus::GetImageEncoders(num, size, buf);
-    bool found = false;
-    for (UINT i = 0; i < num; ++i) {
-        if (wcscmp(buf[i].MimeType, mime) == 0) { clsid = buf[i].Clsid; found = true; break; }
-    }
-    free(buf);
-    return found;
-}
-
-// GDI+ is initialized lazily and kept alive for the process lifetime. The
-// screenshot-capture path starts/stops GDI+ locally, so Bitmap::FromStream in
-// this file would otherwise run with GDI+ uninitialized and fail silently.
-static bool EnsureGdiplus() {
-    static ULONG_PTR token = 0;
-    static int started = 0;
-    if (!started) {
-        Gdiplus::GdiplusStartupInput input;
-        if (Gdiplus::GdiplusStartup(&token, &input, NULL) == Gdiplus::Ok) started = 1;
-    }
-    return started != 0;
-}
-
-static uint32_t ReadLE32(const std::string& s, size_t o) {
-    if (o + 4 > s.size()) return 0;
-    return (uint32_t)(unsigned char)s[o]
-         | ((uint32_t)(unsigned char)s[o + 1] << 8)
-         | ((uint32_t)(unsigned char)s[o + 2] << 16)
-         | ((uint32_t)(unsigned char)s[o + 3] << 24);
-}
-
-// Decode a base64 PNG data URL (from the frontend screenshot editor) into a
-// 24-bit bottom-up DIB (BITMAPINFOHEADER + pixel data, NO file header). FeiQ
-// renders inline screenshots as an LZW-compressed 24/32-bit DIB, so we must
-// hand it a DIB, not a JPEG.
-static bool PngDataUrlTo24bppDib(const std::string& dataUrl, std::string& dib) {
-    dib.clear();
-    if (!EnsureGdiplus()) return false;
-    std::string b64;
-    auto comma = dataUrl.find(',');
-    if (comma != std::string::npos) b64 = dataUrl.substr(comma + 1);
-    else b64 = dataUrl;
-    std::string png = Base64Decode(b64);
-    if (png.empty()) return false;
-
-    HGLOBAL hG = GlobalAlloc(GMEM_MOVEABLE, png.size());
-    if (!hG) return false;
-    memcpy(GlobalLock(hG), png.data(), png.size());
-    GlobalUnlock(hG);
-
-    IStream* pStream = nullptr;
-    if (FAILED(CreateStreamOnHGlobal(hG, TRUE, &pStream))) { GlobalFree(hG); return false; }
-
-    Gdiplus::Bitmap* bmp = Gdiplus::Bitmap::FromStream(pStream);
-    bool ok = false;
-    if (bmp && bmp->GetLastStatus() == Gdiplus::Ok) {
-        HBITMAP hBmp = NULL;
-        if (bmp->GetHBITMAP(Gdiplus::Color(0, 0, 0), &hBmp) == Gdiplus::Ok && hBmp) {
-            BITMAP bm;
-            if (GetObject(hBmp, sizeof(bm), &bm) == sizeof(bm)) {
-                int w = bm.bmWidth, h = bm.bmHeight;
-                if (w > 0 && h > 0) {
-                    BITMAPINFOHEADER bi = { 0 };
-                    bi.biSize = 40;
-                    bi.biWidth = w;
-                    bi.biHeight = h;          // positive => bottom-up DIB
-                    bi.biPlanes = 1;
-                    bi.biBitCount = 24;
-                    bi.biCompression = 0;
-                    int rowBytes = ((w * 3 + 3) / 4) * 4;
-                    bi.biSizeImage = (uint32_t)(rowBytes * h);
-                    HDC hdc = GetDC(NULL);
-                    if (hdc) {
-                    dib.resize(40 + bi.biSizeImage);
-                    if (GetDIBits(hdc, hBmp, 0, h, (void*)(dib.data() + 40),
-                                  (BITMAPINFO*)&bi, DIB_RGB_COLORS)) {
-                        // GetDIBits writes the pixels into dib+40 but updates the
-                        // BITMAPINFOHEADER in `bi`; the DIB FeiQ reads starts with a
-                        // valid 40-byte header, so copy it to the front of the buffer.
-                        memcpy((void*)dib.data(), &bi, 40);
-                        ok = true;
-                    }
-                        ReleaseDC(NULL, hdc);
-                    }
-                }
-            }
-            DeleteObject(hBmp);
-        }
-    }
-    delete bmp;
-    if (pStream) pStream->Release();
-    GlobalFree(hG);
-    return ok;
-
-}
-
-// Read width/height from a JPEG's SOF marker (best-effort; returns false if it
-// cannot be determined). Used to fill FeiQ's inline-image placeholder sizing.
-static bool JpegDimensions(const std::string& jpeg, int& w, int& h) {
-    w = 0; h = 0;
-    if (jpeg.size() < 4 || (uint8_t)jpeg[0] != 0xFF || (uint8_t)jpeg[1] != 0xD8) return false;
-    size_t i = 2;
-    while (i + 9 < jpeg.size()) {
-        if ((uint8_t)jpeg[i] != 0xFF) { i++; continue; }
-        uint8_t marker = (uint8_t)jpeg[i + 1];
-        // SOF markers (exclude DHT=0xC4, DAC=0xC8, lossless variants we don't need).
-        if (marker >= 0xC0 && marker <= 0xCF &&
-            marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
-            h = ((uint8_t)jpeg[i + 5] << 8) | (uint8_t)jpeg[i + 6];
-            w = ((uint8_t)jpeg[i + 7] << 8) | (uint8_t)jpeg[i + 8];
-            return w > 0 && h > 0;
-        }
-        int len = ((uint8_t)jpeg[i + 2] << 8) | (uint8_t)jpeg[i + 3];
-        if (len <= 0) break;
-        i += 2 + (size_t)len;
-    }
-    return false;
-}
-
-// Forward declarations (defined later, after LzwDecompress).
-static bool LzwCompress(const std::string& in, std::string& out);
-static bool LzwDecompress(const std::string& in, size_t inOff, size_t inLen,
-                          int minCodeSize, size_t expectedOut, std::string& out);
-
-nlohmann::json CommandHandler::HandleFeiQScreenshotSend(const nlohmann::json& args) {
-    nlohmann::json r; r["success"] = false;
-    try {
-        std::string targetArg = args.contains("target") && args["target"].is_string()
-            ? args["target"].get<std::string>() : "<none>";
-        LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] ENTER target=\"" + targetArg + "\" hasDataUrl=" +
-            (args.contains("dataUrl") && args["dataUrl"].is_string() ? "yes" : "no"));
-        auto target = FindUserFromArgs(args);
-        if (!target) {
-            LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] FIND TARGET FAILED for=\"" + targetArg + "\"");
-            r["error"] = "未找到目标用户"; return r;
-        }
-        LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] target resolved key=" + target->Key() +
-            " ip=" + target->ipAddress);
-        if (!args.contains("dataUrl") || !args["dataUrl"].is_string()) {
-            r["error"] = "缺少图片数据"; return r;
-        }
-
-        // FeiQ renders inline screenshots as an LZW-compressed DIB -- EXACTLY the
-        // format it sends to us: "LZW!" + uint32 LE (DIB size) + uint32 LE (CRC32
-        // of DIB) + LZW(DIB). We must emit this, NOT a raw JPEG.
-        std::string dib;
-        if (!PngDataUrlTo24bppDib(args["dataUrl"].get<std::string>(), dib)) {
-            r["error"] = "图片编码失败"; return r;
-        }
-        int dw = (int)ReadLE32(dib, 4);
-        int dh = (int)(int32_t)ReadLE32(dib, 8);
-        LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] DIB bytes=" + std::to_string(dib.size()) +
-            " w=" + std::to_string(dw) + " h=" + std::to_string(dh));
-
-        uint32_t crc = Crc32(dib);
-        std::string lzw;
-        if (!LzwCompress(dib, lzw)) { r["error"] = "压缩失败"; return r; }
-
-        // Self-check: our compressor MUST be decodable by the same LZW variant
-        // FeiQ uses (our LzwDecompress mirrors it). If round-trip fails, the peer
-        // could never decode our payload either -- abort and report instead of
-        // sending a broken screenshot.
-        {
-            std::string round;
-            if (!LzwDecompress(lzw, 0, lzw.size(), 8, dib.size(), round) || round != dib) {
-                LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] SELFCHECK LZW round-trip MISMATCH (out=" +
-                    std::to_string(round.size()) + " expected=" + std::to_string(dib.size()) + ")");
-                r["error"] = "LZW 自检失败"; return r;
-            }
-            LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] SELFCHECK LZW round-trip OK (" +
-                std::to_string(lzw.size()) + " bytes compressed)");
-        }
-
-        std::string payload = "LZW!";
-        auto appendU32 = [&](uint32_t v) {
-            payload.push_back((char)(v & 0xFF));
-            payload.push_back((char)((v >> 8) & 0xFF));
-            payload.push_back((char)((v >> 16) & 0xFF));
-            payload.push_back((char)((v >> 24) & 0xFF));
-        };
-        appendU32((uint32_t)dib.size());
-        appendU32(crc);
-        payload += lzw;
-        LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] payload=" + std::to_string(payload.size()) +
-            " (LZW=" + std::to_string(lzw.size()) + ")");
-
-        // FeiQ fragments the payload into 512-byte chunks (verified against a live
-        // capture). Larger UDP datagrams get IP-fragmented and dropped, so FeiQ
-        // never reassembles the image.
-        // Diagnostics (DEBUG only): dump the DIB we generated for offline
-        // comparison with what FeiQ itself sends.
-        {
-            static unsigned dibSeq = 0;
-            char db[16]; snprintf(db, sizeof(db), "%08X", ++dibSeq);
-            DumpDebugFile("FeiQ_OurTX_dib_" + std::string(db) + ".bin", dib);
-        }
-
-        // FeiQ sends the inline-image reference with command 0x00000121
-        // (IPMSG_SENDMSG | IPMSG_SENDCHECKOPT | 0x1).
-        const uint32_t kFeiQRefCmd = IPMSG_SENDMSG | IPMSG_SENDCHECKOPT | 0x1; // 0x121
-
-        // Emit the inline screenshot to the peer using the fragmented FeiQ protocol.
-        SendFeiQShotPayload(*target, payload, dw, dh, kFeiQRefCmd, IPMSG_FILEATTACHOPT | 0xC0);
-        r["success"] = true;
-        r["fragments"] = (int)((payload.size() + 511) / 512);
-    } catch (const std::exception& e) {
-        r["error"] = e.what();
-    }
-    return r;
-}
-
 nlohmann::json CommandHandler::HandleWindowSetAlwaysOnTop(const nlohmann::json& args) {
     nlohmann::json r; r["success"] = true;
     try {
@@ -532,16 +302,12 @@ void CommandHandler::RegisterAllCommands() {
     // Message
     bridge_->RegisterCommand("message.send",
         [this](const nlohmann::json& args) { return HandleMessageSend(args); });
-    bridge_->RegisterCommand("message.send_image",
-        [this](const nlohmann::json& args) { return HandleMessageSendImage(args); });
 
     // File
     bridge_->RegisterCommand("file.send",
         [this](const nlohmann::json& args) { return HandleFileSend(args); });
     bridge_->RegisterCommand("file.info",
         [this](const nlohmann::json& args) { return HandleFileInfo(args); });
-    bridge_->RegisterCommand("file.recv",
-        [this](const nlohmann::json& args) { return HandleFileRecv(args); });
     bridge_->RegisterCommand("file.save_temp",
         [this](const nlohmann::json& args) { return HandleFileSaveTemp(args); });
     bridge_->RegisterCommand("file.accept",
@@ -594,10 +360,6 @@ void CommandHandler::RegisterAllCommands() {
         [this](const nlohmann::json& args) { return HandleWindowRestore(args); });
     bridge_->RegisterCommand("window.set_always_on_top",
         [this](const nlohmann::json& args) { return HandleWindowSetAlwaysOnTop(args); });
-    bridge_->RegisterCommand("feiq.screenshot_send",
-        [this](const nlohmann::json& args) { return HandleFeiQScreenshotSend(args); });
-    bridge_->RegisterCommand("feiq.echo_screenshot",
-        [this](const nlohmann::json& args) { return HandleFeiQEchoScreenshot(args); });
     bridge_->RegisterCommand("dialog.save",
         [this](const nlohmann::json& args) { return HandleDialogSave(args); });
     bridge_->RegisterCommand("file.save_data",
@@ -1273,110 +1035,6 @@ nlohmann::json CommandHandler::HandleMessageSend(const nlohmann::json& args) {
     return {{"success", ok}, {"messageId", record.id}};
 }
 
-nlohmann::json CommandHandler::HandleMessageSendImage(const nlohmann::json& args) {
-    auto target = FindUserFromArgs(args);
-    if (!target) {
-        return {{"success", false}, {"error", "Target user not found"}};
-    }
-
-    std::string filePath = args.value("filePath", "");
-    if (filePath.empty()) {
-        return {{"success", false}, {"error", "Image file path is empty"}};
-    }
-
-    LogMessage("BRIDGE", "DEBUG", "[BACKEND-SEND]IMAGE to=" + target->Key() + ", filePath=\"" + filePath + "\"");
-
-    // Start TCP file transfer (register file info for serving)
-    std::string transferId = fileTransfer_->StartSendFile(
-        target->ipAddress, target->portNo, filePath, target->Key());
-
-    if (transferId.empty()) {
-        return {{"success", false}, {"error", "Failed to start file transfer"}};
-    }
-
-    // Get file info
-    auto fileInfo = fileTransfer_->GetFileInfo(transferId);
-    if (!fileInfo) {
-        return {{"success", false}, {"error", "Failed to get file info"}};
-    }
-
-    // Build file attach info for IPMsg protocol (Feiq format):
-    // "fileId:filename:hexSize:hexMtime:hexFileType:\a"
-    std::ostringstream attachOs;
-    // 协议层文件名必须是 GBK（飞秋/原生 UI 按 ANSI 解析），内部 fileInfo->fileName 是 UTF-8
-    std::string escapedFileName = Utf8ToGbk(fileInfo->fileName);
-    // Escape colons in filename (:: represents a literal colon)
-    {
-        std::string escaped;
-        for (char c : escapedFileName) {
-            if (c == ':') escaped += "::";
-            else escaped += c;
-        }
-        escapedFileName = escaped;
-    }
-    attachOs << fileInfo->fileId << ":" << escapedFileName << ":"
-             << std::hex << fileInfo->fileSize << ":"
-             << fileInfo->modifyTime << ":"
-             << fileInfo->fileAttr << ":\x07";
-    std::string fileAttachInfo = attachOs.str();
-
-    // Debug: print the file attach info with visible control chars
-    {
-        std::ostringstream dbgOs;
-        for (size_t i = 0; i < fileAttachInfo.size(); i++) {
-            unsigned char c = static_cast<unsigned char>(fileAttachInfo[i]);
-            if (c == '\0') dbgOs << "\\0";
-            else if (c == '\x07') dbgOs << "\\a";
-            else if (c == '\n') dbgOs << "\\n";
-            else if (c >= 32 && c < 127) dbgOs << c;
-            else dbgOs << "<" << std::hex << (int)c << ">";
-        }
-        LogMessage("BRIDGE", "DEBUG", "[SEND-FILE-EXTRA] " + dbgOs.str());
-        std::ostringstream detailOs;
-        detailOs << std::dec << "[SEND-FILE-EXTRA] fileId=" << fileInfo->fileId 
-                  << ", fileName=" << fileInfo->fileName
-                  << ", fileSize=" << fileInfo->fileSize
-                  << ", modifyTime=" << fileInfo->modifyTime
-                  << ", fileAttr=" << fileInfo->fileAttr;
-        LogMessage("BRIDGE", "DEBUG", detailOs.str());
-    }
-
-    // Normal mode: send UDP notification with file attachment info
-    uint64_t sentPktNo = msgMng_->SendMessageWithFile(*target, "[Image: " + fileInfo->fileName + "]", fileAttachInfo);
-
-    if (sentPktNo > 0) {
-        // Store the SENDMSG packetNo in FileInfo for matching GETFILEDATA requests
-        {
-            auto fi = fileTransfer_->GetFileInfo(transferId);
-            if (fi) {
-                fi->packetNo = sentPktNo;
-                fileTransfer_->RegisterFileInfo(transferId, *fi);
-            }
-        }
-        // Save to database
-        MessageRecord record;
-        record.id = transferId;
-        record.fromId = msgMng_->GetLocalUser().Key();
-        record.toId = target->Key();
-        record.content = filePath;  // Store file path
-        record.type = 1;  // image
-        record.timestamp = static_cast<int64_t>(std::time(nullptr));
-        record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
-        msgDb_->SaveMessage(record);
-
-        // Emit transfer started event
-        bridge_->Emit("file.transfer_started", {
-            {"transferId", transferId},
-            {"filename", fileInfo->fileName},
-            {"fileSize", fileInfo->fileSize},
-            {"isSending", true},
-            {"targetUser", target->Key()}
-        });
-    }
-
-    return {{"success", true}, {"transferId", transferId}, {"fileName", fileInfo->fileName}};
-}
-
 // ---------- File Commands ----------
 
 nlohmann::json CommandHandler::HandleFileSend(const nlohmann::json& args) {
@@ -1506,58 +1164,6 @@ nlohmann::json CommandHandler::HandleFileInfo(const nlohmann::json& args) {
     } catch (const std::exception& e) {
         return {{"success", false}, {"error", std::string(e.what())}};
     }
-}
-
-nlohmann::json CommandHandler::HandleFileRecv(const nlohmann::json& args) {
-    auto target = FindUserFromArgs(args);
-    if (!target) {
-        return {{"success", false}, {"error", "Target user not found"}};
-    }
-
-    std::string transferId = args.value("transferId", "");
-    std::string fileName = args.value("fileName", "");
-    int64_t fileSize = args.value("fileSize", 0);
-    std::string savePath = args.value("savePath", "");
-    uint64_t origPacketNo = args.value("packetNo", (uint64_t)0);
-    int origFileId = args.value("fileId", 0);
-
-    if (transferId.empty() || fileName.empty() || savePath.empty()) {
-        return {{"success", false}, {"error", "Missing required parameters"}};
-    }
-
-    LogMessage("BRIDGE", "", "[BACKEND-RECV] FILE from=" + target->Key() + ", fileName=\"" + fileName + "\", fileSize=" + std::to_string(fileSize) + ", savePath=\"" + savePath + "\"");
-
-    // Start receiving file via TCP (same port as UDP per IPMsg protocol)
-    std::string recvTransferId = fileTransfer_->StartRecvFile(
-        target->ipAddress, target->portNo, fileName, fileSize, savePath, target->Key(),
-        origPacketNo, origFileId);
-
-    if (recvTransferId.empty()) {
-        return {{"success", false}, {"error", "Failed to start file receive"}};
-    }
-
-    // Save to database
-    MessageRecord record;
-    record.id = recvTransferId;
-    record.fromId = target->Key();
-    record.toId = msgMng_->GetLocalUser().Key();
-    record.content = savePath;  // Store save path
-    record.type = 2;  // file
-    record.timestamp = static_cast<int64_t>(std::time(nullptr));
-    record.status = kMsgStatusSending;  // completed/failed is written by the progress callback
-    msgDb_->SaveMessage(record);
-
-    // Emit transfer started event
-    bridge_->Emit("file.transfer_started", {
-        {"transferId", recvTransferId},
-        {"filename", fileName},
-        {"fileSize", fileSize},
-        {"isSending", false},
-        {"targetUser", target->Key()},
-        {"savePath", savePath}
-    });
-
-    return {{"success", true}, {"transferId", recvTransferId}};
 }
 
 nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {
@@ -2393,209 +1999,6 @@ static bool LzwDecompress(const std::string& in, size_t inOff, size_t inLen,
     return !out.empty();
 }
 
-// LZW compressor that is the exact inverse of LzwDecompress above, so it
-// produces a stream FeiQ (and our own decoder) can decompress. Key details
-// that MUST match the decoder:
-//   * codes are packed LSB-first into the bitstream; bytes are MSB-first.
-//   * dictionary starts with 256 single-byte entries; next index = 256.
-//   * code width starts at 9 and widens using the "early change" convention:
-//     after each emitted code we do index++ and bump when (1<<codeSize)==index
-//     (mirrors the decoder's per-iteration index++ / bump exactly).
-static bool LzwCompress(const std::string& in, std::string& out) {
-    out.clear();
-    if (in.empty()) return false;
-    std::vector<uint8_t> buf;
-    uint32_t cur = 0;
-    int nbits = 0;
-    auto writeCode = [&](int code, int codeSize) {
-        for (int i = 0; i < codeSize; ++i) {
-            int bit = (code >> i) & 1;            // output code LSB first
-            // Pack MSB-first into the byte stream so it matches the decoder's
-            // readCode, which reads bit (7 - (bitPos&7)) i.e. MSB-first per byte.
-            cur = (cur << 1) | (uint32_t)bit;
-            ++nbits;
-            if (nbits == 8) {
-                buf.push_back((uint8_t)cur);
-                cur = 0;
-                nbits = 0;
-            }
-        }
-    };
-
-    // --- Must stay byte-for-byte symmetric with LzwDecompress ---
-    // Decoder reads the FIRST code outside its loop: it does NOT allocate a
-    // dictionary entry and does NOT bump the code width (its index starts at
-    // 257 after that first code). Every subsequent code it reads allocates one
-    // entry and bumps once. So the encoder must: emit the first code WITHOUT
-    // bumping (with index already at 257), and bump exactly once per every
-    // LATER code it emits. The previous version emitted an extra leading
-    // literal + bump, which desynced the dictionary growth and truncated the
-    // stream on decode.
-    int codeSize = 9;
-    int index = 257;                              // mirrors decoder right after code #1
-    int ds = 256;
-    std::unordered_map<std::string, int> dict;
-    for (int i = 0; i < 256; ++i) dict[std::string(1, (char)i)] = i;
-
-    auto bump = [&]() {
-        ++index;
-        if ((1 << codeSize) == index && codeSize < 12) ++codeSize;
-    };
-
-    bool first = true;                           // true until we emit the 1st code
-    std::string w;                               // empty prefix to start
-    for (size_t i = 0; i < in.size(); ++i) {
-        char c = in[i];
-        std::string wc = w + c;
-        auto it = dict.find(wc);
-        if (it != dict.end()) {
-            w = wc;                              // extend the match; do not emit
-        } else {
-            writeCode(dict[w], codeSize);        // emit current prefix
-            if (ds < 4096) { dict[wc] = ds; ++ds; }
-            // The first emitted code pairs with the decoder's out-of-loop code,
-            // which does NOT bump. All later codes bump once each.
-            if (!first) bump();
-            first = false;
-            w = std::string(1, c);
-        }
-    }
-    if (!w.empty()) {
-        writeCode(dict[w], codeSize);            // final prefix
-        // No later code follows, so bumping is irrelevant for the peer.
-    }
-    if (nbits > 0) buf.push_back((uint8_t)(cur << (8 - nbits)));  // flush
-    out.assign((const char*)buf.data(), buf.size());
-    return true;
-}
-
-bool CommandHandler::SendFeiQShotPayload(const UserInfo& target, const std::string& payload,
-                                           int dw, int dh, uint32_t refCmd, uint32_t fragCmd) {
-    if (refCmd == 0) refCmd = IPMSG_SENDMSG | IPMSG_SENDCHECKOPT | 0x1;   // 0x121
-    if (fragCmd == 0) fragCmd = IPMSG_FILEATTACHOPT | 0xC0;              // 0x2000C0
-
-    const size_t fragSize = 512;
-    size_t total = payload.size();
-    size_t fragCount = (total + fragSize - 1) / fragSize;
-    if (fragCount == 0) fragCount = 1;
-
-    // 8-hex screenshot id.
-    static unsigned ssSeq = 0;
-    uint32_t rnd = (uint32_t)((GetTickCount() ^
-                               (std::hash<std::string>{}(target.Key())) ^
-                               (++ssSeq * 2654435761u)) & 0xFFFFFFFF);
-    char idBuf[16];
-    snprintf(idBuf, sizeof(idBuf), "%08X", rnd);
-    std::string id = idBuf;
-
-    // Reference message: the inline-image marker "/~#><id>" matches the exact
-    // format FeiQ itself uses. Dimensions mirror the real image so FeiQ sizes
-    // the inline image correctly.
-    std::string ref = "/~#>" + id + "<B~{/font;-11 0 0 0 " +
-        std::to_string(dw) + " 0 0 0 " + std::to_string(dh) +
-        " 0 0 2 32 微软雅黑 8404992;}";
-    LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] Reference=\"" + ref + "\"");
-    msgMng_->SendMessage(target, ref, refCmd);
-
-    // DIAG dump of the verbatim payload for offline byte-diff (DEBUG only).
-    DumpDebugFile("FeiQ_OurTX_payload_" + id + ".bin", payload);
-    LogMessage("BRIDGE", "DEBUG", "[FEIQ-SHOT-TX] ref command=0x" +
-        std::to_string(refCmd) + " (decimal " + std::to_string(refCmd) + ")");
-
-    char mtBuf[16];
-    snprintf(mtBuf, sizeof(mtBuf), "%08X", 0);  // mtime always 0
-
-    for (size_t i = 0; i < fragCount; ++i) {
-        size_t off = i * fragSize;
-        size_t len = (total - off < fragSize) ? (total - off) : fragSize;
-        std::string chunk = payload.substr(off, len);
-
-        std::string hdr;
-        auto num = [&](size_t v) { hdr += std::to_string(v); hdr += '|'; };
-        hdr += id; hdr += '|';
-        num(total);
-        num(off);
-        num(fragCount);
-        num(i + 1);
-        num(len);
-        hdr += "0|2|0|";
-        hdr += mtBuf;
-        hdr += '#';
-
-        if (i == 0) {
-            LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] Fragment header (ours)=" + hdr +
-                "  [fields: id|total|off|fragCount|fragIndex|len|0|2|0|mtime]");
-            LogMessage("BRIDGE", "", "[FEIQ-SHOT-TX] frag command=0x" +
-                std::to_string(fragCmd) + " (decimal " + std::to_string(fragCmd) + ")");
-        }
-
-        // Fragment body = raw LZW payload immediately after '#'. The fragment
-        // command MUST be exactly fragCmd (SendMessage would OR in 0x20).
-        std::string body = hdr;
-        body += chunk;
-
-        if (i == 0) {
-            DumpDebugFile("FeiQ_OurTX_frag0_" + id + ".bin", body);
-        }
-
-        msgMng_->SendRawCommand(target, fragCmd, body);
-    }
-    return true;
-}
-
-nlohmann::json CommandHandler::HandleFeiQEchoScreenshot(const nlohmann::json& args) {
-    nlohmann::json r;
-    r["success"] = false;
-    try {
-        std::string payload, senderKey;
-        uint32_t refCmd = 0, fragCmd = 0;
-        int dw = 400, dh = 134;
-        {
-            std::lock_guard<std::mutex> lk(feiqMutex_);
-            payload = lastFeiQShotPayload_;
-            senderKey = lastFeiQShotSender_;
-            refCmd = lastFeiQShotRefCmd_;
-            fragCmd = lastFeiQShotFragCmd_;
-            dw = lastFeiQShotW_;
-            dh = lastFeiQShotH_;
-        }
-        if (payload.empty()) {
-            r["error"] = "没有可回显的飞秋截图（请先收到一张飞秋发来的截图）";
-            return r;
-        }
-        // Target: explicit arg wins; otherwise echo back to the original sender.
-        nlohmann::json a = args;
-        if ((!a.contains("target") || !a["target"].is_string() ||
-             a["target"].get<std::string>().empty()) && !senderKey.empty()) {
-            a["target"] = senderKey;
-        }
-        auto target = FindUserFromArgs(a);
-        if (!target) { r["error"] = "未找到目标用户"; return r; }
-
-        uint32_t useRef = refCmd ? refCmd : (IPMSG_SENDMSG | IPMSG_SENDCHECKOPT | 0x1);
-        uint32_t useFrag = fragCmd ? fragCmd : (IPMSG_FILEATTACHOPT | 0xC0);
-        LogMessage("BRIDGE", "", "[FEIQ-ECHO] ENTER target=" + target->Key() +
-            " payload=" + std::to_string(payload.size()) +
-            " refCmd=0x" + std::to_string(useRef) +
-            " fragCmd=0x" + std::to_string(useFrag));
-
-        SendFeiQShotPayload(*target, payload, dw, dh, useRef, useFrag);
-
-        // DIAG (DEBUG only): dump the echoed payload so it can be compared with
-        // the original FeiQ_RawLZW_*.bin byte-for-byte.
-        {
-            static unsigned eSeq = 0;
-            char buf[16]; snprintf(buf, sizeof(buf), "%08X", ++eSeq);
-            DumpDebugFile("FeiQ_EchoTX_payload_" + std::string(buf) + ".bin", payload);
-        }
-        r["success"] = true;
-        r["bytes"] = (int)payload.size();
-    } catch (const std::exception& e) {
-        r["error"] = e.what();
-    }
-    return r;
-}
-
 void CommandHandler::HandleFeiQScreenshotReference(const ipmsg::MsgBuf& msg, const std::string& body) {
     // body: "/~#><id><...>"
     size_t start = 4; // skip "/~#>"
@@ -2604,13 +2007,9 @@ void CommandHandler::HandleFeiQScreenshotReference(const ipmsg::MsgBuf& msg, con
     std::string id = body.substr(start, end - start);
     if (id.empty()) return;
 
-    LogMessage("BRIDGE", "", "[FEIQ-SHOT-RX] Reference body=\"" + body + "\" id=" + id);
+    LogMessage("BRIDGE", "DEBUG", "[FEIQ-SHOT-RX] Reference body=\"" + body + "\" id=" + id);
     LogMessage("BRIDGE", "", "[FEIQ-SHOT] Reference received id=" + id +
         " from=" + msg.sender.Key() + " command=0x" + std::to_string(msg.command));
-    {
-        std::lock_guard<std::mutex> lk(feiqMutex_);
-        lastFeiQShotRefCmd_ = msg.command;   // remember FeiQ's own ref command
-    }
     // NOTE: We deliberately do NOT emit file.receive_request here. FeiQ screenshots
     // are reassembled entirely on the backend, so there is no standard file transfer
     // for the frontend to "accept". Emitting it would create a stuck "waiting to
@@ -2623,11 +2022,6 @@ bool CommandHandler::HandleFeiQScreenshotFragment(const ipmsg::MsgBuf& msg) {
     const std::string& body = msg.body;
     size_t hash = body.find('#');
     if (hash == std::string::npos || hash == 0) return false;
-
-    {
-        std::lock_guard<std::mutex> lk(feiqMutex_);
-        lastFeiQShotFragCmd_ = msg.command;  // remember FeiQ's own fragment command
-    }
 
     // header must look like "<hexid>|<digits>|<digits>|<digits>|<digits>|<digits>|..."
     std::string header = body.substr(0, hash);
@@ -2728,16 +2122,6 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
         auto fit = shot.frags.find(i);
         if (fit == shot.frags.end()) { ++missing; continue; }
         buf += fit->second;
-    }
-
-    // Keep the verbatim FeiQ payload (the "LZW!" + size + crc + LZW(DIB) bytes we
-    // just reassembled) so the UI can echo it back to the sender byte-for-byte.
-    // NOTE: `buf` is later overwritten with a decoded BMP for display, so we must
-    // snapshot it here.
-    {
-        std::lock_guard<std::mutex> lk(feiqMutex_);
-        lastFeiQShotPayload_ = buf;
-        lastFeiQShotSender_ = shot.senderKey;
     }
 
     // Diagnostics: log magic bytes so we can verify the decoded image format
@@ -2871,11 +2255,6 @@ void CommandHandler::FinalizeFeiQScreenshot(const std::string& id) {
                     " biWidth=" + std::to_string(biWidth) +
                     " biHeight=" + std::to_string(biHeight) +
                     " bpp=" + std::to_string(biBitCount));
-                {
-                    std::lock_guard<std::mutex> lk(feiqMutex_);
-                    lastFeiQShotW_ = biWidth;
-                    lastFeiQShotH_ = biHeight;
-                }
             }
         }
         if (!validDib) {

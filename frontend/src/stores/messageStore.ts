@@ -85,8 +85,6 @@ function historyState(m: any): { status: Message['status']; transferProgress?: n
 interface MessageStore {
   /** Map of userId -> messages array */
   messages: Map<string, Message[]>;
-  /** Monotonically increasing counter bumped on each message receive - used to force React re-render */
-  messageVersion: number;
   loading: boolean;
   error: string | null;
 
@@ -102,8 +100,6 @@ interface MessageStore {
   /** Send an image to a user */
   sendImage: (target: string, base64Data: string, filename: string) => Promise<boolean>;
 
-  /** Send a file to a user (via base64 + temp copy) */
-  sendFile: (target: string, base64Data: string, filename: string) => Promise<boolean>;
   /** Send a file to a user using a real file path (no base64/temp copy, fast for large files) */
   sendFileByPath: (target: string, filePath: string) => Promise<boolean>;
 
@@ -143,7 +139,6 @@ interface MessageStore {
 
 export const useMessageStore = create<MessageStore>((set, get) => ({
   messages: new Map(),
-  messageVersion: 0,
   loading: false,
   error: null,
   localUserId: '',
@@ -229,54 +224,6 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
       return false;
     } catch (err) {
       console.error('sendImage error:', err);
-      return false;
-    }
-  },
-
-  sendFile: async (target, base64Data, filename) => {
-    console.log(`[FILE_SEND] target=${target}, filename=${filename}, dataSize=${base64Data.length}`);
-    try {
-      const saveResult = await invoke<{ success: boolean; filePath?: string; error?: string }>(
-        'file.save_temp',
-        { data: base64Data, filename }
-      );
-
-      if (!saveResult.success || !saveResult.filePath) {
-        console.error('Failed to save temp file:', saveResult.error);
-        return false;
-      }
-
-      const result = await invoke<{ success: boolean; transferId?: string; fileName?: string; error?: string }>(
-        'file.send',
-        { target, filePath: saveResult.filePath }
-      );
-
-      if (result.success) {
-        // Use backend's fileName (timestamp prefix stripped) if available
-        const displayName = result.fileName || filename;
-        console.log(`[FILE_SEND] result: transferId=${result.transferId}, fileName=${result.fileName}, displayName=${displayName}`);
-        const msg: Message = {
-          id: result.transferId || Date.now().toString(),
-          from: 'self',
-          to: target,
-          content: displayName,
-          type: 'file',
-          timestamp: Date.now(),
-          status: 'sending',
-          fileInfo: {
-            fileName: displayName,
-            fileSize: 0,
-            filePath: saveResult.filePath,
-            transferId: result.transferId,
-          },
-          transferProgress: 0,
-        };
-        get().recvMessage(msg);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error('sendFile error:', err);
       return false;
     }
   },
@@ -390,7 +337,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
               newMessages.set(userId, updated);
             }
           }
-          return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+          return { messages: newMessages };
         });
       } else if (result.transferId) {
         // Update message with the real transferId from backend for progress tracking
@@ -411,7 +358,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
               newMessages.set(userId, updated);
             }
           }
-          return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+          return { messages: newMessages };
         });
       }
       return result.success;
@@ -473,7 +420,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
         return state;
       }
       newMessages.set(userId, [...userMsgs, message]);
-      return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+      return { messages: newMessages };
     });
   },
 
@@ -504,7 +451,7 @@ updateTransferProgress: (transferId, progress, isSending) => {
         status: progress >= 100 ? 'delivered' : updated[loc.idx].status,
       };
       newMessages.set(loc.userId, updated);
-      return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+      return { messages: newMessages };
     });
   },
 
@@ -911,7 +858,7 @@ updateTransferProgress: (transferId, progress, isSending) => {
               : { fileName: data.filename || '', fileSize: 0, filePath: data.savePath },
           };
           newMessages.set(loc.userId, updated);
-          return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+          return { messages: newMessages };
         });
       }
     }));
@@ -931,7 +878,7 @@ updateTransferProgress: (transferId, progress, isSending) => {
             break;
           }
         }
-        return { messages: newMessages, messageVersion: state.messageVersion + 1 };
+        return { messages: newMessages };
       });
     }));
 
@@ -989,7 +936,6 @@ updateTransferProgress: (transferId, progress, isSending) => {
         fromUser: data.fromUser,
         fileInfo: { fileName: data.fileName, fileSize: data.fileSize || 0, filePath: data.savePath },
         transferProgress: 100,
-        isFeiqShot: true,
       };
       get().recvMessage(msg);
     }));

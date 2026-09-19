@@ -160,13 +160,6 @@ public:
     uint64_t SendMessage(const UserInfo& target, const std::string& message,
                          uint32_t options = 0);
 
-    /// Send a message with an explicit (raw) command word, bypassing the
-    /// automatic IPMSG_SENDMSG | options composition. Required for FeiQ
-    /// (飞秋) inline-screenshot fragments, which use command 0x2000C0
-    /// (FILEATTACHOPT | 0xC0) and must NOT have IPMSG_SENDMSG OR-ed in.
-    bool SendRawCommand(const UserInfo& target, uint32_t command,
-                        const std::string& message);
-
     /// Send a message with file attachment info
     /// @return packetNo of the sent message (0 on failure)
     uint64_t SendMessageWithFile(const UserInfo& target, const std::string& message,

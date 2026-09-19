@@ -59,12 +59,6 @@ struct FileInfo {
 /// Callback for transfer progress updates
 using TransferProgressCallback = std::function<void(const TransferProgress&)>;
 
-/// Callback for file receive request
-using FileReceiveRequestCallback = std::function<void(const std::string& fromUser, 
-                                                       const std::string& fileName,
-                                                       int64_t fileSize,
-                                                       const std::string& transferId)>;
-
 /// File Transfer Manager
 class FileTransferManager {
 public:
@@ -139,11 +133,6 @@ public:
         onProgress_ = std::move(cb);
     }
 
-    /// Set file receive request callback
-    void SetFileReceiveRequestCallback(FileReceiveRequestCallback cb) {
-        onFileReceiveRequest_ = std::move(cb);
-    }
-
     // ---------- File Info Management ----------
 
     /// Register file info for sending
@@ -165,10 +154,6 @@ private:
     /// Update transfer progress
     void UpdateTransferProgress(const std::string& transferId, int64_t transferred,
                                 TransferStatus status);
-
-    /// Send IPMSG_GETFILEDATA request
-    bool SendFileRequest(const std::string& targetIp, int targetPort,
-                         const std::string& transferId, int fileId);
 
 private:
     SOCKET tcpListenSocket_ = INVALID_SOCKET;
@@ -193,7 +178,6 @@ private:
 
     // Callbacks
     TransferProgressCallback onProgress_;
-    FileReceiveRequestCallback onFileReceiveRequest_;
 };
 
 } // namespace ipmsg

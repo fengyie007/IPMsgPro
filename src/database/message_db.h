@@ -86,9 +86,6 @@ public:
     /// Clear messages for a specific user, or all if userId is empty
     bool ClearMessages(const std::string& userId = "");
 
-    /// Get total message count for a user
-    int GetMessageCount(const std::string& userId);
-
     /// Get recent conversations - latest message per user for conversation list
     /// localUserId is the current user's key to determine conversation partners
     /// Returns up to limit conversations, sorted by latest message timestamp DESC
