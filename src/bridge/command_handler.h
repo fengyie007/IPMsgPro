@@ -9,8 +9,8 @@
 #include "ipmsg/msgmng.h"
 #include "database/message_db.h"
 #include "file/file_transfer.h"
+#include "bridge/feiq_screenshot.h"
 #include <map>
-#include <set>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -138,33 +138,10 @@ private:
     std::string TakePendingAck(uint64_t packetNo);
 
     // --- FeiQ inline screenshot (custom fragmented image protocol) ---
-    struct FeiQScreenshot {
-        std::string id;
-        std::string senderKey;
-        uint64_t refPacketNo = 0;
-        int totalSize = 0;
-        int fragCount = 0;
-        bool hasRef = false;
-        ipmsg::UserInfo sender;                // captured from the reference message
-        std::map<int, std::string> frags;      // fragIndex -> chunk bytes (leading 0x00 stripped)
-    };
-    std::map<std::string, FeiQScreenshot> feiqShots_;
-    // Set of screenshot ids we have already reassembled + emitted. FeiQ has no
-    // reliable ack for inline screenshots and periodically re-sends the whole
-    // fragment set (observed ~every 30s) until it gives up. Any fragment whose
-    // id is in this set is dropped outright so we never reassemble / re-emit the
-    // same image. (FeiQ ids are random 8-hex values, so a genuine collision with
-    // a future, distinct screenshot is negligible.) Kept for the whole session;
-    // the volume of screenshots is tiny.
-    std::set<std::string> emittedIds_;
-    std::mutex feiqMutex_;
-    void HandleFeiQScreenshotReference(const ipmsg::MsgBuf& msg, const std::string& body);
-    bool HandleFeiQScreenshotFragment(const ipmsg::MsgBuf& msg);
-    void FinalizeFeiQScreenshot(const std::string& key);
+    // Reassembly lives in FeiQScreenshotAssembler; this class only forwards
+    // the finished image to the frontend.
+    FeiQScreenshotAssembler feiqAssembler_;
+    void EmitFeiQScreenshot(const FeiQScreenshotResult& shot);
 };
-
-/// Return the current user's Downloads folder, e.g. C:\Users\<user>\Downloads.
-/// Falls back to USERPROFILE\Downloads if the known-folder lookup fails.
-std::string GetUserDownloadsDir();
 
 } // namespace ipmsg

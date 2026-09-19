@@ -523,3 +523,21 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：拆分 `command_handler.cpp` 与 `main.cpp`
+
+**问题**：`command_handler.cpp` 近 1700 行仍混着 Base64、提示音（MCI）、GDI+ 截屏、飞秋截图分片重组与 LZW 解码；`main.cpp` 里嵌着约 450 行 CLI 测试器。
+
+### 修改 61：按职责拆成独立编译单元（代码原样搬移，接口不变）
+| 新文件 | 内容 |
+|------|------|
+| `src/util/base64.{h,cpp}` | `Base64Encode` / `Base64Decode` |
+| `src/bridge/notification_sound.{h,cpp}` | 提示音资源提取与 MCI 播放 |
+| `src/bridge/screen_capture.{h,cpp}` | `CaptureMonitorToPng`（GDI + GDI+） |
+| `src/bridge/feiq_screenshot.{h,cpp}` | `FeiQScreenshotAssembler`：飞秋截图引用/分片识别、重组、LZW 解码、落盘；结果以 `FeiQScreenshotResult` 返回，由 `CommandHandler::EmitFeiQScreenshot` 发给前端；调试转储通过回调注入 |
+| `src/cli_runner.{h,cpp}` | `ipmsg::cli::Run`：`--mode=cli` 的 server / test 两种模式 |
+- `command_handler.cpp` 2323 行 → 1707 行，只剩命令注册、事件转发与各命令处理器；`main.cpp` 1000 行 → 499 行
+- `CMakeLists.txt` 加入新源文件
+- 状态：✅ 已完成
+
+---

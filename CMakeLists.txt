@@ -178,12 +178,17 @@ endif()
 # ============================================================================
 set(IPMSGPRO_SOURCES
     src/main.cpp
+    src/cli_runner.cpp
     src/logger.cpp
     src/util/encoding.cpp
     src/util/app_paths.cpp
+    src/util/base64.cpp
     src/ipmsg/msgmng.cpp
     src/ipmsg/network.cpp
     src/bridge/command_handler.cpp
+    src/bridge/notification_sound.cpp
+    src/bridge/screen_capture.cpp
+    src/bridge/feiq_screenshot.cpp
     src/database/message_db.cpp
     src/file/file_transfer.cpp
 )
