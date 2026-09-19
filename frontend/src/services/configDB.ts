@@ -9,6 +9,14 @@ const DB_NAME = 'ipmsg-config';
 const DB_VERSION = 1;
 const STORE_NAME = 'config';
 
+/** True when `value` has the same runtime shape as `reference` (the default). */
+function isCompatible(value: unknown, reference: unknown): boolean {
+  if (Array.isArray(reference)) {
+    return Array.isArray(value) && value.every((v) => typeof v === 'string');
+  }
+  return typeof value === typeof reference;
+}
+
 class ConfigDB {
   private db: IDBDatabase | null = null;
 
@@ -96,40 +104,28 @@ class ConfigDB {
     });
   }
 
-  /** Load the full config object */
+  /**
+   * Load the full config object. Every key of DEFAULT_CONFIG is read from the
+   * store; a stored value replaces the default only when it has the expected
+   * type, so a corrupted or legacy entry cannot poison the config.
+   */
   async loadConfig(): Promise<Config> {
     const config: Config = { ...DEFAULT_CONFIG };
-
-    const nickname = await this.get<string>('nickname');
-    if (nickname) config.nickname = nickname;
-
-    const segments = await this.get<string[]>('segments');
-    if (segments) config.segments = segments;
-
-    const port = await this.get<number>('port');
-    if (port) config.port = port;
-
-    const autoDiscovery = await this.get<boolean>('autoDiscovery');
-    if (autoDiscovery !== null) config.autoDiscovery = autoDiscovery;
-
-    const dataDir = await this.get<string>('dataDir');
-    if (dataDir) config.dataDir = dataDir;
-
-    const group = await this.get<string>('group');
-    if (group) config.group = group;
-
-    const minimizeBehavior = await this.get<string>('minimizeBehavior');
-    if (minimizeBehavior === 'taskbar' || minimizeBehavior === 'tray') config.minimizeBehavior = minimizeBehavior;
-
-    const notificationSound = await this.get<boolean>('notificationSound');
-    if (notificationSound !== null) config.notificationSound = notificationSound;
-
-    const directUsers = await this.get<string[]>('directUsers');
-    if (directUsers) config.directUsers = directUsers;
-
-    const ipScanRanges = await this.get<string[]>('ipScanRanges');
-    if (ipScanRanges) config.ipScanRanges = ipScanRanges;
-
+    for (const key of Object.keys(DEFAULT_CONFIG) as (keyof Config)[]) {
+      const stored = await this.get<unknown>(key);
+      if (stored === null || stored === undefined) continue;
+      if (isCompatible(stored, DEFAULT_CONFIG[key])) {
+        (config as any)[key] = stored;
+      } else {
+        console.warn(`[ConfigDB] Ignoring stored "${key}" with unexpected type:`, stored);
+      }
+    }
+    if (config.minimizeBehavior !== 'taskbar' && config.minimizeBehavior !== 'tray') {
+      config.minimizeBehavior = DEFAULT_CONFIG.minimizeBehavior;
+    }
+    if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65535) {
+      config.port = DEFAULT_CONFIG.port;
+    }
     return config;
   }
 

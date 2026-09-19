@@ -408,3 +408,19 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：配置同步收敛为一次 `config.set`
+
+**问题**：`configStore` 启动时最多发 8 次、保存时最多发 8 次 `config.set`，每个字段一段几乎相同的代码；`configDB.loadConfig` 对每个字段手写一遍读取，新增配置项要改三处。
+
+### 修改 44：`frontend/src/stores/configStore.ts`
+- 定义 `BACKEND_KEYS`（后端 `HandleConfigSet` 消费的 8 个键；`port`、`autoDiscovery` 仅前端使用）
+- `loadConfig` 把持久化配置一次性发给后端（空 `dataDir` 省略，避免后端无谓地重开日志与数据库）；`saveConfig` 只转发本次变更中的后端相关键，同样只发一次
+- 后端 `HandleConfigSet` 本就支持一次接收全部键，无需改动
+
+### 修改 45：`frontend/src/services/configDB.ts`
+- `loadConfig` 改为按 `DEFAULT_CONFIG` 的键循环读取，并按默认值的类型校验存储值（类型不符时忽略并告警），`minimizeBehavior` 与 `port` 做取值范围校验
+- 新增配置项只需在 `types/index.ts` 的 `Config` / `DEFAULT_CONFIG` 中声明，读取与同步自动覆盖
+- 状态：✅ 已完成
+
+---

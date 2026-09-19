@@ -8,6 +8,33 @@ import { Config, DEFAULT_CONFIG } from '../types';
 import { configDB } from '../services/configDB';
 import { invoke } from '../services/bridge';
 
+/**
+ * Config keys the C++ backend consumes (HandleConfigSet). `port` and
+ * `autoDiscovery` are frontend-only. One `config.set` call carries every key
+ * present in the payload; the backend only touches the keys it receives.
+ */
+const BACKEND_KEYS = [
+  'nickname', 'group', 'dataDir', 'minimizeBehavior', 'notificationSound',
+  'segments', 'directUsers', 'ipScanRanges',
+] as const satisfies readonly (keyof Config)[];
+
+function backendPayload(partial: Partial<Config>): Partial<Config> {
+  const payload: Partial<Config> = {};
+  for (const key of BACKEND_KEYS) {
+    if (partial[key] !== undefined) (payload as any)[key] = partial[key];
+  }
+  return payload;
+}
+
+async function pushToBackend(payload: Partial<Config>, context: string) {
+  if (Object.keys(payload).length === 0) return;
+  try {
+    await invoke('config.set', payload);
+  } catch (e) {
+    console.error(`[ConfigStore] config.set failed (${context}):`, e);
+  }
+}
+
 interface ConfigStore {
   config: Config;
   loaded: boolean;
@@ -51,80 +78,12 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 
       set({ config, loaded: true });
 
-      // Apply saved nickname to backend immediately on startup
-      if (config.nickname && config.nickname.length > 0) {
-        console.log('[ConfigStore] Applying saved nickname to backend:', config.nickname);
-        try {
-          await invoke('config.set', { nickname: config.nickname });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set nickname on backend:', e);
-        }
-      }
-
-      // Apply saved dataDir to backend immediately on startup
-      if (config.dataDir) {
-        console.log('[ConfigStore] Applying saved dataDir to backend:', config.dataDir);
-        try {
-          await invoke('config.set', { dataDir: config.dataDir });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set dataDir on backend:', e);
-        }
-      }
-
-      // Apply saved minimizeBehavior to backend
-      try {
-        await invoke('config.set', { minimizeBehavior: config.minimizeBehavior });
-      } catch (e) {
-        console.error('[ConfigStore] Failed to set minimizeBehavior on backend:', e);
-      }
-
-      // Apply saved notificationSound to backend
-      try {
-        await invoke('config.set', { notificationSound: config.notificationSound });
-      } catch (e) {
-        console.error('[ConfigStore] Failed to set notificationSound on backend:', e);
-      }
-
-      // Apply saved group to backend
-      if (config.group) {
-        console.log('[ConfigStore] Applying saved group to backend:', config.group);
-        try {
-          await invoke('config.set', { group: config.group });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set group on backend:', e);
-        }
-      }
-
-      // Apply saved segments to backend
-      if (config.segments && config.segments.length > 0) {
-        console.log('[ConfigStore] Applying saved segments to backend:', config.segments);
-        try {
-          await invoke('config.set', { segments: config.segments });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set segments on backend:', e);
-        }
-      }
-
-      // Apply saved directUsers to backend
-      if (config.directUsers && config.directUsers.length > 0) {
-        console.log('[ConfigStore] Applying saved directUsers to backend:', config.directUsers);
-        try {
-          await invoke('config.set', { directUsers: config.directUsers });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set directUsers on backend:', e);
-        }
-      }
-
-      // Apply saved ipScanRanges to backend
-      if (config.ipScanRanges && config.ipScanRanges.length > 0) {
-        console.log('[ConfigStore] Applying saved ipScanRanges to backend:', config.ipScanRanges);
-        try {
-          await invoke('config.set', { ipScanRanges: config.ipScanRanges });
-        } catch (e) {
-          console.error('[ConfigStore] Failed to set ipScanRanges on backend:', e);
-        }
-      }
-
+      // Replay the persisted config to the backend in ONE call. An empty
+      // dataDir is omitted: the backend already runs on the default directory,
+      // and sending '' would make it re-open the log and database for nothing.
+      const payload = backendPayload(config);
+      if (!config.dataDir) delete payload.dataDir;
+      await pushToBackend(payload, 'startup');
     } catch (err) {
       console.error('[ConfigStore] Failed to load config:', err);
       set({ loaded: true });
@@ -138,63 +97,8 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
     try {
       console.log('[ConfigStore] Saving config to IndexedDB:', JSON.stringify(partial));
       await configDB.saveConfig(partial);
-      console.log('[ConfigStore] Config saved successfully');
-
-      // Notify backend of nickname changes
-      const nickname = partial.nickname;
-      if (nickname !== undefined) {
-        console.log('[ConfigStore] Notifying backend of nickname change:', nickname);
-        await invoke('config.set', { nickname });
-      }
-
-      // Notify backend of dataDir changes
-      const dataDir = partial.dataDir;
-      if (dataDir !== undefined) {
-        console.log('[ConfigStore] Notifying backend of dataDir change:', dataDir);
-        await invoke('config.set', { dataDir });
-      }
-
-      // Notify backend of minimizeBehavior changes
-      const minimizeBehavior = partial.minimizeBehavior;
-      if (minimizeBehavior !== undefined) {
-        console.log('[ConfigStore] Notifying backend of minimizeBehavior change:', minimizeBehavior);
-        await invoke('config.set', { minimizeBehavior });
-      }
-
-      // Notify backend of notificationSound changes
-      const notificationSound = partial.notificationSound;
-      if (notificationSound !== undefined) {
-        console.log('[ConfigStore] Notifying backend of notificationSound change:', notificationSound);
-        await invoke('config.set', { notificationSound });
-      }
-
-      // Notify backend of group changes
-      const group = partial.group;
-      if (group !== undefined) {
-        console.log('[ConfigStore] Notifying backend of group change:', group);
-        await invoke('config.set', { group });
-      }
-
-      // Notify backend of segments changes
-      const segments = partial.segments;
-      if (segments !== undefined) {
-        console.log('[ConfigStore] Notifying backend of segments change:', segments);
-        await invoke('config.set', { segments });
-      }
-
-      // Notify backend of directUsers changes
-      const directUsers = partial.directUsers;
-      if (directUsers !== undefined) {
-        console.log('[ConfigStore] Notifying backend of directUsers change:', directUsers);
-        await invoke('config.set', { directUsers });
-      }
-
-      // Notify backend of ipScanRanges changes
-      const ipScanRanges = partial.ipScanRanges;
-      if (ipScanRanges !== undefined) {
-        console.log('[ConfigStore] Notifying backend of ipScanRanges change:', ipScanRanges);
-        await invoke('config.set', { ipScanRanges });
-      }
+      // Forward only the changed backend-relevant keys, in one call.
+      await pushToBackend(backendPayload(partial), 'save');
     } catch (err) {
       console.error('[ConfigStore] Failed to save config:', err);
     }
