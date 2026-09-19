@@ -1,4 +1,4 @@
-# 迅秋 (SpeedIPMsg) v1.4.5
+# 迅秋 (SpeedIPMsg) v1.5.0
 
 基于 [TauriCPP](https://github.com/masonwu21/TauriCPP) 框架和 [ipmsg-master](https://ipmsg.org/) 协议实现的局域网即时通讯应用，兼容飞秋和IPMsg v3.0 协议（UDP 2425 端口）。
 
@@ -103,7 +103,7 @@ cmake --build build_x86 --config Release
 
 ## 更新日志
 
-### v1.4.5
+### v1.5.0
 - **截图编辑器重构**
   - 将文字工具替换为铅笔涂写工具，支持自由绘制
   - 工具栏按钮改为 SVG 图标样式（矩形、箭头、铅笔、马赛克），视觉更直观

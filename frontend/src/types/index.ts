@@ -60,7 +60,7 @@ export interface Config {
 }
 
 /** Application version */
-export const APP_VERSION = '1.4.5';
+export const APP_VERSION = '1.5.0';
 
 /** File transfer type */
 export interface FileTransfer {

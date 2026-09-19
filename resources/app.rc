@@ -27,13 +27,13 @@ BEGIN
         BEGIN
             VALUE "CompanyName",     "masonwu21"
             VALUE "FileDescription", "迅秋 (SpeedIPMsg) - 局域网即时通讯"
-            VALUE "FileVersion",     "1.4.5"
+            VALUE "FileVersion",     "1.5.0"
             VALUE "InternalName",    "IPMsgPro"
             VALUE "LegalCopyright",  "MIT License © 2026 masonwu21"
 
             VALUE "OriginalFilename","IPMsgPro.exe"
             VALUE "ProductName",     "迅秋 (SpeedIPMsg)"
-            VALUE "ProductVersion",  "1.4.5"
+            VALUE "ProductVersion",  "1.5.0"
         END
     END
     BLOCK "VarFileInfo"

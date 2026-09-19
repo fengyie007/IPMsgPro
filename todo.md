@@ -161,8 +161,47 @@
 
 ---
 
-## 注意事项
+## 功能：IP 范围扫描（跨网段主动发现）
 
-- 用户仍需在设置中输入**广播地址**（如 `10.8.33.255`），而非 CIDR（`10.8.33.0/24`）。CIDR 转换可作为后续优化。
-- 跨网段发现：广播需路由器开启 `ip directed-broadcast`；直接添加用户走单播，不依赖路由器转发。
-- 任务栏图标缓存需取消固定重新固定或重启 explorer.exe 刷新。
+**需求**：路由器不支持跨网段广播，需支持在 Settings 中配置 IP 范围（如 `10.8.33.1-254`），启动时自动扫描。
+
+### 修改 14：前端类型与存储
+- `frontend/src/types/index.ts`：`Config` 增加 `ipScanRanges: string[]` 字段，`DEFAULT_CONFIG` 初始化为空数组
+- `frontend/src/services/configDB.ts`：`loadConfig`/`saveConfig` 增加 `ipScanRanges` 读取/保存
+- `frontend/src/stores/configStore.ts`：`loadConfig`/`saveConfig` 同步 `ipScanRanges` 到后端
+
+### 修改 15：Settings UI
+- `frontend/src/components/Settings.tsx`：新增「IP 范围扫描 (跨网段主动发现)」区块
+  - 列表显示已添加范围（格式 `起始IP-结束IP`，如 `10.8.33.1-254`），可删除
+  - 输入框支持 `起始IP-结束IP` 格式（支持完整 IP `10.8.33.1-10.8.33.254` 和简写 `10.8.33.1-254`），回车或点击 + 添加
+  - 端口、延迟(ms) 可配置
+  - 扫描时显示进度条、已发现数量
+
+### 修改 16：后端配置处理
+- `src/bridge/command_handler.cpp`：
+  - `HandleConfigSet` 处理 `ipScanRanges` 数组，调用 `MsgMng::AddScanRange`/`ClearScanRanges`
+  - `HandleConfigLoaded` 启动时自动调用 `ScanIpRanges`
+  - `HandleNetworkScanRange` 支持 `ranges` 数组格式（兼容旧 `startIp/endIp`）
+
+### 修改 17：MsgMng IP 范围扫描核心实现
+- `src/ipmsg/msgmng.h/.cpp`：
+  - 新增 `scanRanges_` 存储范围字符串
+  - `AddScanRange`/`ClearScanRanges`/`GetScanRanges`
+  - `ScanIpRanges(ranges, port, delayMs)`：支持多范围顺序扫描，逐个 IP 发送 BR_ENTRY
+  - 扫描后 3 秒宽限期等待异步响应
+  - 扫描进度回调（每 10 个 IP 触发）、完成回调
+
+### 修改 18：前端自动触发
+- `frontend/src/App.tsx`：启动时检查 `ipScanRanges`，自动调用 `invoke('network.scan_range')`
+- `Settings.tsx`：保存时同步 `ipScanRanges`，扫描按钮调用 `network.scan_range` 传递 `ranges` 数组
+
+### 修改 19：简写 IP 范围支持
+- 支持完整 IP 格式：`10.8.33.1-10.8.33.254`
+- 支持简写格式：`10.8.33.1-254`（自动补全前三段）
+
+### 修改 20：扫描日志增强
+- 扫描开始/结束、每个 IP 发送 BR_ENTRY 详细日志
+- 发现新用户时记录日志
+- 进度、完成日志包含发现数量
+
+---

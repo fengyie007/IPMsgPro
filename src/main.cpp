@@ -42,7 +42,7 @@ static void Log(const std::string& level, const std::string& msg) {
 }
 
 // 应用版本号（与 CMakeLists.txt / resources/app.rc 保持一致）
-static const char* kAppVersion = "1.4.5";
+static const char* kAppVersion = "1.5.0";
 
 #define LOG_INFO(msg) Log("INFO", msg)
 #define LOG_WARN(msg) Log("WARN", msg)
