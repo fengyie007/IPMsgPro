@@ -310,3 +310,16 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：不同发送方的消息主键可能碰撞导致历史丢失
+
+**问题**：两个对端在同一秒发来的消息，或同一对端重启后重复使用的包号，会在数据库中得到相同的 id，`INSERT OR IGNORE` 静默丢弃后一条。
+
+**根因**：收到的消息直接以对端的 packetNo 作主键，而 packetNo 只在单个发送方内唯一（各自从启动时间开始计数）。
+
+### 修改 32：`src/bridge/command_handler.cpp` — 收到的消息 id 改为 `发送方Key:packetNo`
+- `message.received` 事件与数据库记录使用同一个复合 id，实时消息与历史记录保持一致
+- 文件接收请求里的 `transferId` 仍为裸 packetNo（`file.reject` 需要解析它来发送 RELEASEFILES），不受影响；旧数据保留原 id
+- 状态：✅ 已完成
+
+---

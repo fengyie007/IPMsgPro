@@ -979,8 +979,13 @@ void CommandHandler::SetupEventForwarding() {
                 }
             }
 
+            // Message id = sender key + packetNo. packetNo alone is only unique
+            // per sender (each peer counts from its own start time), so two
+            // peers could produce the same id and INSERT OR IGNORE would then
+            // silently drop the second message from the history.
+            const std::string messageId = msg.sender.Key() + ":" + std::to_string(msg.packetNo);
             nlohmann::json j = {
-                {"id", std::to_string(msg.packetNo)},
+                {"id", messageId},
                 {"from", msg.sender.Key()},
                 {"fromUser", UserToJson(msg.sender)},
                 {"content", msg.body},
@@ -994,7 +999,7 @@ void CommandHandler::SetupEventForwarding() {
             // File attachment messages will be saved when the transfer completes
             if (!isFileAttach) {
                 MessageRecord record;
-                record.id = std::to_string(msg.packetNo);
+                record.id = messageId;
                 record.fromId = msg.sender.Key();
                 record.toId = msgMng_->GetLocalUser().Key();
                 record.content = msg.body;
