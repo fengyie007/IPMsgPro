@@ -13,6 +13,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '../services/bridge';
+import { toast } from '../stores/toastStore';
 
 type Tool = 'rect' | 'arrow' | 'pencil' | 'mosaic';
 
@@ -401,10 +402,11 @@ export default function ScreenshotEditor({ image, screenCount, onCancel, onConfi
       const res: any = await invoke('dialog.save', { title: '保存截图', default_name: `Beixin_${ts}_screenshot.png` });
       if (res && res.success && res.path) {
         const sres: any = await invoke('file.save_data', { data: base64, path: res.path });
-        if (!sres || !sres.success) alert('保存失败: ' + ((sres && sres.error) || '未知错误'));
+        if (!sres || !sres.success) toast.error('保存失败: ' + ((sres && sres.error) || '未知错误'));
+        else toast.success('截图已保存');
       }
     } catch (err) {
-      alert('保存失败: ' + err);
+      toast.error('保存失败: ' + err);
     }
   };
 

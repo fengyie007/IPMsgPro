@@ -3,6 +3,7 @@ import LeftSidebar, { ViewMode } from './components/LeftSidebar';
 import UserListPanel from './components/UserListPanel';
 import ChatPanel from './components/ChatPanel';
 import Settings from './components/Settings';
+import ToastHost from './components/Toast';
 import { useUserStore } from './stores/userStore';
 import { useMessageStore } from './stores/messageStore';
 import { useConfigStore } from './stores/configStore';
@@ -82,6 +83,7 @@ function App() {
       ) : (
         <EmptyChatView />
       )}
+      <ToastHost />
     </div>
   );
 }

@@ -87,6 +87,8 @@ interface MessageStore {
   messages: Map<string, Message[]>;
   /** Map of userId -> number of incoming messages not yet viewed */
   unread: Map<string, number>;
+  /** Map of userId -> how much history has been paged in from the backend */
+  historyPages: Map<string, { offset: number; hasMore: boolean }>;
   loading: boolean;
   error: string | null;
 
@@ -120,8 +122,11 @@ interface MessageStore {
   /** Update transfer progress for a message */
   updateTransferProgress: (transferId: string, progress: number, isSending: boolean) => void;
 
-  /** Load chat history for a user from the backend */
+  /** Load chat history for a user from the backend (newest page; resets paging) */
   loadHistory: (userId: string, limit?: number, offset?: number) => Promise<void>;
+
+  /** Load the next older page of history for a user (prepends) */
+  loadMoreHistory: (userId: string) => Promise<void>;
 
   /** Search messages by keyword */
   searchMessages: (keyword: string) => Promise<Message[]>;
@@ -145,6 +150,7 @@ interface MessageStore {
 export const useMessageStore = create<MessageStore>((set, get) => ({
   messages: new Map(),
   unread: new Map(),
+  historyPages: new Map(),
   loading: false,
   error: null,
   localUserId: '',
@@ -550,7 +556,15 @@ updateTransferProgress: (transferId, progress, isSending) => {
           // Combine: history + realtime-only, sorted by timestamp
           const combined = [...msgs, ...realtimeOnly].sort((a, b) => a.timestamp - b.timestamp);
           newMessages.set(userId, combined);
-          return { messages: newMessages };
+
+          // Paging bookkeeping: the backend returns the newest `limit` after
+          // skipping `offset`, so the next older page starts at offset + count.
+          const historyPages = new Map(state.historyPages);
+          historyPages.set(userId, {
+            offset: offset + result.messages.length,
+            hasMore: result.messages.length >= limit,
+          });
+          return { messages: newMessages, historyPages };
         });
       }
     } catch (err: any) {
@@ -558,6 +572,12 @@ updateTransferProgress: (transferId, progress, isSending) => {
     } finally {
       set({ loading: false });
     }
+  },
+
+  loadMoreHistory: async (userId) => {
+    const page = get().historyPages.get(userId);
+    if (!page || !page.hasMore || get().loading) return;
+    await get().loadHistory(userId, 50, page.offset);
   },
 
   loadRecentConversations: async () => {
@@ -661,10 +681,12 @@ updateTransferProgress: (transferId, progress, isSending) => {
         set((state) => {
           const newMessages = new Map(state.messages);
           newMessages.delete(userId);
-          return { messages: newMessages };
+          const historyPages = new Map(state.historyPages);
+          historyPages.delete(userId);
+          return { messages: newMessages, historyPages };
         });
       } else {
-        set({ messages: new Map() });
+        set({ messages: new Map(), historyPages: new Map() });
       }
     } catch (err: any) {
       set({ error: err.message });

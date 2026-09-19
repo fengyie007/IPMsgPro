@@ -494,3 +494,21 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：应用内提示替代原生弹窗；文本消息送达状态；日期分隔；加载更早消息
+
+### 修改 56：新增 `stores/toastStore.ts` + `components/Toast.tsx` + `components/ConfirmDialog.tsx`
+- 轻量 toast（info / success / error，自动消失，可手动关闭），挂在 `App` 根部
+- 应用内确认对话框（Esc 取消、Enter 确认），替代 `window.confirm`
+- `ChatPanel` 的截图失败、打开文件夹回退、文本发送失败，`ScreenshotEditor` 的保存结果，全部改为 toast；「清空聊天记录」改用确认对话框
+
+### 修改 57：`ChatPanel.tsx` — 文本消息状态与日期分隔
+- 自己发出的文本消息在时间旁显示状态图标：时钟（已发送等待确认）、绿勾（对方已收到，依赖 `message.ack`）、红叹号（失败）
+- 相邻两条消息跨天时插入「今天 / 昨天 / 9月18日 周四」分隔条
+
+### 修改 58：`messageStore.ts` / `ChatPanel.tsx` — 加载更早的消息
+- 新增 `historyPages`（每个会话的 offset 与 hasMore）与 `loadMoreHistory`，利用后端已支持的 `offset` 向更早翻页（每页 50 条）
+- 消息列表顶部出现「加载更早的消息」按钮；加载后按新增高度补偿滚动位置，视图停留在原来的消息上
+- 状态：✅ 已完成
+
+---

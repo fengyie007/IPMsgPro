@@ -1,11 +1,13 @@
 import React, { useRef, useEffect, useState, memo, useCallback } from 'react';
-import { FiCamera, FiImage, FiFile, FiSmile, FiX, FiCheck, FiAlertCircle, FiDownload, FiFolder, FiMoreHorizontal, FiTrash2 } from 'react-icons/fi';
+import { FiCamera, FiImage, FiFile, FiSmile, FiX, FiCheck, FiAlertCircle, FiDownload, FiFolder, FiMoreHorizontal, FiTrash2, FiClock, FiChevronUp } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore, PendingFileReceive } from '../stores/messageStore';
+import { toast } from '../stores/toastStore';
 import { Message } from '../types';
 import { invoke, listen } from '../services/bridge';
 import { EMOJIS, buildEmojiMessage, parseEmojiId, emojiStyle, EMOJI_TOKEN_RE } from '../emojiData';
 import ScreenshotEditor from './ScreenshotEditor';
+import ConfirmDialog from './ConfirmDialog';
 
 // ============================================================================
 // Send Preview Modal - shown before sending a file
@@ -74,6 +76,7 @@ export default function ChatPanel() {
   const sendImage = useMessageStore((s) => s.sendImage);
   const sendFileByPath = useMessageStore((s) => s.sendFileByPath);
   const loadHistory = useMessageStore((s) => s.loadHistory);
+  const loadMoreHistory = useMessageStore((s) => s.loadMoreHistory);
   const clearHistory = useMessageStore((s) => s.clearHistory);
   const clearUnread = useMessageStore((s) => s.clearUnread);
   const pendingFileReceives = useMessageStore((s) => s.pendingFileReceives);
@@ -97,12 +100,15 @@ export default function ChatPanel() {
   const [pendingFileSize, setPendingFileSize] = useState<number | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
 
   const userId = currentUser?.id || '';
 
   // Get messages for current user
   const userMessages = useMessageStore((s) => s.messages.get(userId)) || [];
+  const hasMoreHistory = useMessageStore((s) => s.historyPages.get(userId)?.hasMore ?? false);
+  const historyLoading = useMessageStore((s) => s.loading);
 
   // Get pending receives for current user
   const currentUserPendingReceives = pendingFileReceives.filter(
@@ -131,10 +137,26 @@ export default function ChatPanel() {
   useEffect(() => {
     const el = messageListRef.current;
     if (!el) return;
+    if (prependRef.current !== null) {
+      // Older messages were prepended: keep the viewport on the same message
+      // instead of jumping, by compensating for the added height.
+      el.scrollTop += el.scrollHeight - prependRef.current;
+      prependRef.current = null;
+      return;
+    }
     if (nearBottomRef.current || lastMessage?.from === 'self') {
       el.scrollTop = el.scrollHeight;
     }
   }, [lastMessageKey]);
+
+  // "Load earlier messages": remember the scroll height so the effect above
+  // can restore the position after the older page is merged in.
+  const prependRef = useRef<number | null>(null);
+  const handleLoadMore = async () => {
+    const el = messageListRef.current;
+    prependRef.current = el ? el.scrollHeight : null;
+    await loadMoreHistory(userId);
+  };
 
   // ---- Serialize the contentEditable input into the wire format ----
   // Text nodes are kept verbatim; inline emoji spans become WeChat-style XML;
@@ -178,6 +200,8 @@ export default function ChatPanel() {
     if (success) {
       if (editorRef.current) editorRef.current.innerHTML = '';
       setHasInput(false);
+    } else {
+      toast.error('发送失败，对方可能已离线');
     }
   };
 
@@ -241,7 +265,7 @@ export default function ChatPanel() {
     try {
       const res: any = await invoke('screenshot.capture');
       if (!res || !res.success || !res.image) {
-        alert('截图失败：' + ((res && res.error) || '未知错误'));
+        toast.error('截图失败：' + ((res && res.error) || '未知错误'));
         return;
       }
       setScreenshot({
@@ -254,7 +278,7 @@ export default function ChatPanel() {
         await invoke('window.set_always_on_top', { on_top: true });
       } catch { /* ignore */ }
     } catch (err) {
-      alert('截图失败：' + err);
+      toast.error('截图失败：' + err);
     }
   };
 
@@ -395,9 +419,7 @@ export default function ChatPanel() {
                   type="button"
                   onClick={() => {
                     setShowMoreMenu(false);
-                    if (window.confirm(`确定要清空与 ${currentUser.nickname} 的聊天记录吗？`)) {
-                      clearHistory(userId);
-                    }
+                    setShowClearConfirm(true);
                   }}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-600 hover:bg-gray-100"
                 >
@@ -412,20 +434,45 @@ export default function ChatPanel() {
 
       {/* Message list */}
       <div ref={messageListRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#F5F5F5]">
+        {hasMoreHistory && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              disabled={historyLoading}
+              onClick={handleLoadMore}
+              className="flex items-center gap-1 px-3 py-1 text-xs text-gray-500 bg-white/70 rounded-full hover:bg-white hover:text-gray-700 disabled:opacity-50 transition-colors"
+            >
+              <FiChevronUp size={12} />
+              {historyLoading ? '加载中…' : '加载更早的消息'}
+            </button>
+          </div>
+        )}
         {userMessages.length === 0 && currentUserPendingReceives.length === 0 ? (
           <div className="text-center text-gray-400 text-sm mt-10">
             暂无消息，发送一条消息开始聊天
           </div>
         ) : (
-          userMessages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              pendingReceives={pendingFileReceives}
-              onAccept={handleAcceptFile}
-              onReject={handleRejectFile}
-            />
-          ))
+          userMessages.map((msg, i) => {
+            const prev = userMessages[i - 1];
+            const showDate = !prev || !isSameDay(prev.timestamp, msg.timestamp);
+            return (
+              <React.Fragment key={msg.id}>
+                {showDate && (
+                  <div className="flex justify-center">
+                    <span className="px-2 py-0.5 text-[11px] text-gray-500 bg-gray-200/70 rounded">
+                      {formatDateSeparator(msg.timestamp)}
+                    </span>
+                  </div>
+                )}
+                <MessageBubble
+                  message={msg}
+                  pendingReceives={pendingFileReceives}
+                  onAccept={handleAcceptFile}
+                  onReject={handleRejectFile}
+                />
+              </React.Fragment>
+            );
+          })
         )}
       </div>
 
@@ -529,6 +576,22 @@ export default function ChatPanel() {
           onConfirm={(dataUrl) => finishScreenshot(true, dataUrl)}
         />
       )}
+
+      {/* Clear-history confirmation */}
+      {showClearConfirm && (
+        <ConfirmDialog
+          title="清空聊天记录"
+          message={`确定要清空与 ${currentUser.nickname} 的全部聊天记录吗？此操作不可恢复。`}
+          confirmText="清空"
+          danger
+          onConfirm={() => {
+            setShowClearConfirm(false);
+            clearHistory(userId);
+            toast.success('聊天记录已清空');
+          }}
+          onCancel={() => setShowClearConfirm(false)}
+        />
+      )}
     </div>
   );
 }
@@ -559,13 +622,46 @@ const MessageBubble = memo(function MessageBubble({ message, pendingReceives, on
         >
           {renderContent(message, pendingReceives, onAccept, onReject)}
         </div>
-        <div className={`text-[10px] text-gray-400 mt-0.5 ${isSelf ? 'text-right' : 'text-left'}`}>
-          {formatTime(message.timestamp)}
+        <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-0.5 ${isSelf ? 'justify-end' : 'justify-start'}`}>
+          <span>{formatTime(message.timestamp)}</span>
+          {isSelf && message.type === 'text' && <TextStatusIcon status={message.status} />}
         </div>
       </div>
     </div>
   );
 });
+
+// Delivery state of our own text messages (files have their own indicators).
+function TextStatusIcon({ status }: { status: Message['status'] }) {
+  switch (status) {
+    case 'sending':
+      return <FiClock size={10} className="text-gray-400" title="已发送，等待对方确认" />;
+    case 'delivered':
+      return <FiCheck size={10} className="text-green-500" title="对方已收到" />;
+    case 'failed':
+      return <FiAlertCircle size={10} className="text-red-500" title="发送失败" />;
+    default:
+      return null;
+  }
+}
+
+function isSameDay(a: number, b: number): boolean {
+  const da = new Date(a), db = new Date(b);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+}
+
+function formatDateSeparator(timestamp: number): string {
+  const d = new Date(timestamp);
+  const today = new Date();
+  if (isSameDay(timestamp, today.getTime())) return '今天';
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameDay(timestamp, yesterday.getTime())) return '昨天';
+  const sameYear = d.getFullYear() === today.getFullYear();
+  return d.toLocaleDateString('zh-CN', sameYear
+    ? { month: 'long', day: 'numeric', weekday: 'short' }
+    : { year: 'numeric', month: 'long', day: 'numeric' });
+}
 
 // Split a message that mixes plain text and inline emoji XML tokens into an
 // ordered list of segments for inline rendering.
@@ -934,22 +1030,16 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-/** Open the containing folder of a file */
+/** Open the containing folder of a file (Explorer with the file selected). */
 function openFolder(filePath: string) {
-  // Use shell command to open the folder and select the file
-  // In Tauri, we'd need to invoke a backend command
-  // For now, just copy path to clipboard and alert
-  try {
-    // Try to use the backend to open folder
-    invoke('file.open_folder', { path: filePath }).catch(() => {
-      // Fallback: copy to clipboard
-      navigator.clipboard.writeText(filePath).then(() => {
-        alert(`文件路径已复制到剪贴板：${filePath}`);
-      }).catch(() => {
-        alert(`文件保存位置：${filePath}`);
-      });
+  invoke<{ success?: boolean }>('file.open_folder', { path: filePath })
+    .then((r) => {
+      if (r && r.success === false) toast.error(`无法打开文件夹：${filePath}`);
+    })
+    .catch(() => {
+      // Fallback: put the path on the clipboard so the user can still find it
+      navigator.clipboard.writeText(filePath)
+        .then(() => toast.info(`文件路径已复制到剪贴板：${filePath}`))
+        .catch(() => toast.info(`文件保存位置：${filePath}`));
     });
-  } catch {
-    alert(`文件保存位置：${filePath}`);
-  }
 }
