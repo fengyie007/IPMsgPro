@@ -460,3 +460,22 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：设置页整理与输入校验
+
+**问题**：「端口号」出现两次且绑定同一字段，而后端只读启动参数 `--port`，改了不生效；「自动发现」开关没有任何代码读取；三个列表输入不做格式校验，非法值直到后端才被跳过或静默失败。
+
+### 修改 51：`frontend/src/types/index.ts` / `configDB.ts` / `configStore.ts`
+- `Config` 删除无效的 `port` 与 `autoDiscovery`（IndexedDB 里的旧值会被 `loadConfig` 忽略）
+
+### 修改 52：新增 `frontend/src/utils/netValidation.ts`
+- `normalizeSegment`：接受广播地址或 CIDR（CIDR 自动换算为定向广播地址，与后端期望一致）
+- `normalizeDirectUser`：`IP:端口`，端口 1~65535
+- `normalizeScanRange`：`起始IP-结束IP` 或 `起始IP-末段`，简写展开为完整形式存储，结束不得小于起始，最多 65536 个地址
+
+### 修改 53：`frontend/src/components/Settings.tsx`
+- 「网络设置」改为只读显示本机监听端口（来自 `user.local`）并说明由 `--port` 决定；删除「自动发现」开关与扫描区里重复的端口输入
+- 三个列表输入接入校验：非法时红框 + 红字提示且不入列表，输入变化时清除提示；网段配置增加说明文字
+- 状态：✅ 已完成
+
+---

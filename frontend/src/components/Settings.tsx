@@ -3,6 +3,7 @@ import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, F
 import { useConfigStore } from '../stores/configStore';
 import { Config, APP_VERSION } from '../types';
 import { invoke, listen } from '../services/bridge';
+import { normalizeSegment, normalizeDirectUser, normalizeScanRange } from '../utils/netValidation';
 
 interface SettingsProps {
   onClose: () => void;
@@ -21,6 +22,12 @@ export default function Settings({ onClose }: SettingsProps) {
   const [newSegment, setNewSegment] = useState('');
   const [newDirectUser, setNewDirectUser] = useState('');
   const [newScanRange, setNewScanRange] = useState('');
+  // Inline validation messages for the three list inputs
+  const [segmentError, setSegmentError] = useState('');
+  const [directUserError, setDirectUserError] = useState('');
+  const [scanRangeError, setScanRangeError] = useState('');
+  // Listening port of this instance (read-only: fixed by --port at startup)
+  const [localPort, setLocalPort] = useState<number | null>(null);
 
   // IP Range Scanner state, driven by backend events. A scan may also have been
   // started by the backend at startup (config.loaded), so we always listen.
@@ -30,6 +37,12 @@ export default function Settings({ onClose }: SettingsProps) {
   useEffect(() => {
     setLocalConfig({ ...config });
   }, [config]);
+
+  useEffect(() => {
+    invoke<{ success?: boolean; port?: number }>('user.local')
+      .then((r) => setLocalPort(r && r.success && r.port ? r.port : null))
+      .catch(() => setLocalPort(null));
+  }, []);
 
   useEffect(() => {
     const offProgress = listen('network.scan_progress', (data: any) => {
@@ -60,13 +73,13 @@ export default function Settings({ onClose }: SettingsProps) {
   };
 
   const handleAddSegment = () => {
-    if (newSegment.trim() && !localConfig.segments.includes(newSegment.trim())) {
-      setLocalConfig({
-        ...localConfig,
-        segments: [...localConfig.segments, newSegment.trim()],
-      });
-      setNewSegment('');
+    const r = normalizeSegment(newSegment);
+    if ('error' in r) { setSegmentError(r.error); return; }
+    if (!localConfig.segments.includes(r.value)) {
+      setLocalConfig({ ...localConfig, segments: [...localConfig.segments, r.value] });
     }
+    setNewSegment('');
+    setSegmentError('');
   };
 
   const handleRemoveSegment = (index: number) => {
@@ -77,13 +90,13 @@ export default function Settings({ onClose }: SettingsProps) {
   };
 
   const handleAddDirectUser = () => {
-    if (newDirectUser.trim() && !localConfig.directUsers.includes(newDirectUser.trim())) {
-      setLocalConfig({
-        ...localConfig,
-        directUsers: [...localConfig.directUsers, newDirectUser.trim()],
-      });
-      setNewDirectUser('');
+    const r = normalizeDirectUser(newDirectUser);
+    if ('error' in r) { setDirectUserError(r.error); return; }
+    if (!localConfig.directUsers.includes(r.value)) {
+      setLocalConfig({ ...localConfig, directUsers: [...localConfig.directUsers, r.value] });
     }
+    setNewDirectUser('');
+    setDirectUserError('');
   };
 
   const handleRemoveDirectUser = (index: number) => {
@@ -94,13 +107,13 @@ export default function Settings({ onClose }: SettingsProps) {
   };
 
   const handleAddScanRange = () => {
-    if (newScanRange.trim() && !localConfig.ipScanRanges.includes(newScanRange.trim())) {
-      setLocalConfig({
-        ...localConfig,
-        ipScanRanges: [...localConfig.ipScanRanges, newScanRange.trim()],
-      });
-      setNewScanRange('');
+    const r = normalizeScanRange(newScanRange);
+    if ('error' in r) { setScanRangeError(r.error); return; }
+    if (!localConfig.ipScanRanges.includes(r.value)) {
+      setLocalConfig({ ...localConfig, ipScanRanges: [...localConfig.ipScanRanges, r.value] });
     }
+    setNewScanRange('');
+    setScanRangeError('');
   };
 
   const handleRemoveScanRange = (index: number) => {
@@ -212,32 +225,23 @@ export default function Settings({ onClose }: SettingsProps) {
 
           {/* Network */}
           <Section title="网络设置">
-            <Field label="端口号">
-              <input
-                type="number"
-                value={localConfig.port}
-                onChange={(e) => setLocalConfig({ ...localConfig, port: parseInt(e.target.value) || 2425 })}
-                className="input-field"
-                min={1}
-                max={65535}
-              />
-            </Field>
-
-            <Field label="自动发现用户">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={localConfig.autoDiscovery}
-                  onChange={(e) => setLocalConfig({ ...localConfig, autoDiscovery: e.target.checked })}
-                  className="w-4 h-4 text-primary-500 rounded"
-                />
-                <span className="text-sm text-gray-600">启动时自动搜索局域网用户</span>
-              </label>
+            <Field label="监听端口">
+              <div className="flex items-center gap-2">
+                <span className="text-sm bg-gray-50 px-3 py-1.5 rounded border border-gray-200 text-gray-700">
+                  {localPort ?? '—'}
+                </span>
+                <span className="text-xs text-gray-400">
+                  由启动参数 --port=端口 决定，与对端（如飞秋）保持一致；默认 2425
+                </span>
+              </div>
             </Field>
           </Section>
 
           {/* Segments */}
           <Section title="网段配置">
+            <p className="text-xs text-gray-500 mb-2">
+              默认向本机每个网卡所在网段广播。如需覆盖其他网段，可填写该网段的广播地址（如 192.168.1.255）或 CIDR（如 192.168.1.0/24，会自动换算为广播地址）。
+            </p>
             <div className="space-y-2">
               {localConfig.segments.map((seg, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -256,9 +260,9 @@ export default function Settings({ onClose }: SettingsProps) {
                 <input
                   type="text"
                   value={newSegment}
-                  onChange={(e) => setNewSegment(e.target.value)}
-                  className="input-field flex-1"
-                  placeholder="输入广播地址，如 192.168.1.255"
+                  onChange={(e) => { setNewSegment(e.target.value); setSegmentError(''); }}
+                  className={`input-field flex-1 ${segmentError ? 'border-red-400' : ''}`}
+                  placeholder="广播地址或 CIDR，如 192.168.1.255 / 192.168.1.0/24"
                   onKeyDown={(e) => e.key === 'Enter' && handleAddSegment()}
                 />
                 <button
@@ -268,6 +272,7 @@ export default function Settings({ onClose }: SettingsProps) {
                   <FiPlus size={16} />
                 </button>
               </div>
+              {segmentError && <p className="text-xs text-red-500">{segmentError}</p>}
             </div>
           </Section>
 
@@ -294,8 +299,8 @@ export default function Settings({ onClose }: SettingsProps) {
                 <input
                   type="text"
                   value={newDirectUser}
-                  onChange={(e) => setNewDirectUser(e.target.value)}
-                  className="input-field flex-1"
+                  onChange={(e) => { setNewDirectUser(e.target.value); setDirectUserError(''); }}
+                  className={`input-field flex-1 ${directUserError ? 'border-red-400' : ''}`}
                   placeholder="输入 IP:端口，如 10.8.33.50:2425"
                   onKeyDown={(e) => e.key === 'Enter' && handleAddDirectUser()}
                 />
@@ -306,6 +311,7 @@ export default function Settings({ onClose }: SettingsProps) {
                   <FiUserPlus size={16} />
                 </button>
               </div>
+              {directUserError && <p className="text-xs text-red-500">{directUserError}</p>}
             </div>
           </Section>
 
@@ -332,8 +338,8 @@ export default function Settings({ onClose }: SettingsProps) {
                 <input
                   type="text"
                   value={newScanRange}
-                  onChange={(e) => setNewScanRange(e.target.value)}
-                  className="input-field flex-1"
+                  onChange={(e) => { setNewScanRange(e.target.value); setScanRangeError(''); }}
+                  className={`input-field flex-1 ${scanRangeError ? 'border-red-400' : ''}`}
                   placeholder="输入 IP 范围，如 10.8.33.1-254"
                   onKeyDown={(e) => e.key === 'Enter' && handleAddScanRange()}
                 />
@@ -344,17 +350,8 @@ export default function Settings({ onClose }: SettingsProps) {
                   <FiPlus size={16} />
                 </button>
               </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500 w-20">端口</label>
-                <input
-                  type="number"
-                  value={localConfig.port}
-                  onChange={(e) => setLocalConfig({ ...localConfig, port: parseInt(e.target.value) || 2425 })}
-                  className="input-field w-24"
-                  min={1}
-                  max={65535}
-                />
-              </div>
+              {scanRangeError && <p className="text-xs text-red-500">{scanRangeError}</p>}
+              <p className="text-xs text-gray-400">扫描使用本机监听端口（{localPort ?? 2425}），保存后下次启动会自动扫描。</p>
               <div className="flex items-center gap-2">
                 {isScanning ? (
                   <button

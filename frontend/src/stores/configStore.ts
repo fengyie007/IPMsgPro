@@ -9,9 +9,9 @@ import { configDB } from '../services/configDB';
 import { invoke } from '../services/bridge';
 
 /**
- * Config keys the C++ backend consumes (HandleConfigSet). `port` and
- * `autoDiscovery` are frontend-only. One `config.set` call carries every key
- * present in the payload; the backend only touches the keys it receives.
+ * Config keys the C++ backend consumes (HandleConfigSet). One `config.set`
+ * call carries every key present in the payload; the backend only touches the
+ * keys it receives.
  */
 const BACKEND_KEYS = [
   'nickname', 'group', 'dataDir', 'minimizeBehavior', 'notificationSound',

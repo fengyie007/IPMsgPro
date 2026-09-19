@@ -42,13 +42,13 @@ export interface FileInfoAttachment {
   transferId?: string;
 }
 
-/** Config type */
+/** Config type. Persisted in IndexedDB; the backend receives the keys listed
+ *  in configStore's BACKEND_KEYS via config.set. The listening port is a
+ *  process-level setting (--port=N) and is therefore not part of the config. */
 export interface Config {
   nickname: string;
   group: string;        // user group name shown to peers
   segments: string[];   // multi-segment broadcast addresses
-  port: number;
-  autoDiscovery: boolean;
   dataDir: string;      // chat history & data directory (debug dir follows this)
   minimizeBehavior: 'taskbar' | 'tray';  // minimize to taskbar or system tray
   notificationSound: boolean;  // play notification sound on new messages
@@ -126,8 +126,6 @@ export const DEFAULT_CONFIG: Config = {
   nickname: '',
   group: '',
   segments: [],
-  port: 2425,
-  autoDiscovery: true,
   dataDir: '',
   minimizeBehavior: 'tray',
   notificationSound: true,

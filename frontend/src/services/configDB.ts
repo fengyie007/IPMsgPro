@@ -123,9 +123,6 @@ class ConfigDB {
     if (config.minimizeBehavior !== 'taskbar' && config.minimizeBehavior !== 'tray') {
       config.minimizeBehavior = DEFAULT_CONFIG.minimizeBehavior;
     }
-    if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65535) {
-      config.port = DEFAULT_CONFIG.port;
-    }
     return config;
   }
 
