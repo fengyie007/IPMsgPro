@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -411,18 +412,17 @@ static void RunCliTestRunner(int port, const std::string& configPath,
                     continue;
                 }
 
-                // Check file exists
-                std::ifstream checkFile(filePath, std::ios::binary);
-                if (!checkFile.good()) {
+                // Check file exists (paths from the JSON config are UTF-8)
+                std::error_code ec;
+                const auto fsPath = enc::PathFromUtf8(filePath);
+                if (!std::filesystem::is_regular_file(fsPath, ec)) {
                     LOG_ERROR("[SEND FILE] File not found: " + filePath);
                     continue;
                 }
-                checkFile.close();
 
                 // Get file size
-                std::ifstream fileSizeStream(filePath, std::ios::binary | std::ios::ate);
-                int64_t fileSize = fileSizeStream.tellg();
-                fileSizeStream.close();
+                int64_t fileSize = static_cast<int64_t>(std::filesystem::file_size(fsPath, ec));
+                if (ec) fileSize = 0;
 
                 // Get file name
                 auto lastSep = filePath.find_last_of("/\\");

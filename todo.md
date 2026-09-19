@@ -560,3 +560,17 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：同机第二个实例发来的消息被桥接层当作自身回显丢弃
+
+**问题**：用 `tools/e2e_smoke.py`（CLI 测试器 → GUI 实例）做端到端验证时，GUI 日志里能看到消息正文，但既不入库也不显示。
+
+**根因**：同一台机器上的两个实例用户 Key 都是 `用户名@主机名`。`MsgMng::ProcessRecvBuffer` 已按「Key 相同且端口相同」判定自身回显，`CommandHandler` 的消息回调却只比较 Key，把另一个端口的实例发来的消息全部丢掉；两处判断中的第二处更是完全重复。
+
+### 修改 64：`src/bridge/command_handler.cpp` / `src/cli_runner.cpp` / `tools/e2e_smoke.py`
+- 回调里的自身回显判断改为「Key + 端口」，与 MsgMng 一致，并删除重复的第二处判断
+- CLI 测试器发送文件前的存在性 / 大小检查改用 `enc::PathFromUtf8`（JSON 配置里的路径是 UTF-8，窄字符 `ifstream` 打不开含中文的路径）
+- 新增 `tools/e2e_smoke.py`：启动一个 GUI 实例，用 CLI 测试器向它发送文本与文件，打印双方关键日志与 GUI 数据库行；输出强制 UTF-8，避免 GBK 控制台报错
+- 状态：✅ 已完成
+
+---

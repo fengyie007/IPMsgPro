@@ -350,8 +350,12 @@ void CommandHandler::SetupEventForwarding() {
                 return;
             }
 
-            // Ignore our own broadcasted messages (including our own screenshot echoes)
-            if (msg.sender.Key() == msgMng_->GetLocalUser().Key()) {
+            // Ignore our own messages looping back. A peer is "us" only when key
+            // AND port match (same rule as MsgMng::ProcessRecvBuffer): a second
+            // instance on this machine shares user@host but listens elsewhere.
+            const UserInfo local = msgMng_->GetLocalUser();
+            const bool isSelfEcho = msg.sender.Key() == local.Key() && msg.sender.portNo == local.portNo;
+            if (isSelfEcho) {
                 return;
             }
 
@@ -377,13 +381,6 @@ void CommandHandler::SetupEventForwarding() {
 
             // Only handle SENDMSG from here onwards
             if (mode != IPMSG_SENDMSG) return;
-
-            // Ignore our own broadcasted messages. The sender's own socket also
-            // receives the SENDMSG it broadcasts, which would otherwise create a
-            // spurious incoming "file receive request" for our own outgoing file.
-            if (msg.sender.Key() == msgMng_->GetLocalUser().Key()) {
-                return;
-            }
 
             // Ensure all sender fields are UTF-8 (FeiQ may send GBK even without UTF8OPT flag)
             auto& sender = const_cast<UserInfo&>(msg.sender);
