@@ -7,6 +7,7 @@
 #include "file_transfer.h"
 #include "ipmsg/protocol.h"
 #include "logger.h"
+#include "util/encoding.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -50,25 +51,12 @@ void SetSocketTimeouts(SOCKET s, int recvMs, int sendMs) {
 
 }  // namespace
 
-// Convert a UTF-8 path string to a wide string. The backend receives paths from
-// the frontend as UTF-8 (which may contain Chinese user names / file names, e.g.
-// "C:\\Users\\冯波\\Downloads"). Building std::filesystem::path directly from a
-// UTF-8 std::string via the deprecated u8path() mis-handles the encoding on MSVC
-// and triggers "No mapping for the Unicode character exists in the target
-// multi-byte code page" when the path is opened. Going through an explicit
-// UTF-16 (std::wstring) keeps everything on the wide API path (CreateFileW etc.).
-static std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    if (len <= 0) return {};
-    std::wstring w(len, 0);
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &w[0], len);
-    return w;
-}
-
-static fs::path PathFromUtf8(const std::string& s) {
-    return fs::path(Utf8ToWide(s));
-}
+// UTF-8 <-> UTF-16 path handling comes from util/encoding.h. The backend
+// receives paths from the frontend as UTF-8 (which may contain Chinese user
+// names / file names); building std::filesystem::path from a narrow string
+// would go through the ANSI code page and fail to open them.
+using enc::PathFromUtf8;
+using enc::Utf8ToWide;
 
 FileTransferManager::FileTransferManager() = default;
 

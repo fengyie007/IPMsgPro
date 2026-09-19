@@ -5,6 +5,7 @@
 // WinSock2 must come before Windows.h (included via network.h)
 #include "network.h"
 #include "logger.h"
+#include "util/encoding.h"
 #include <Windows.h>
 #include <Lmcons.h>  // UNLEN
 #include <regex>
@@ -163,24 +164,17 @@ std::string GetHostName() {
     DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
     if (!GetComputerNameW(buf, &size)) return "";
     // Return UTF-8. The rest of the app treats localUser.hostName as UTF-8,
-    // and MakeMsg converts it to GBK for FeiQ via UTF8ToGBK. Using the *A
-    // variant here would return GBK bytes that get double-encoded into mojibake.
-    int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return "";
-    std::string out(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &out[0], len, nullptr, nullptr);
-    return out;
+    // and MakeMsg converts it to GBK for FeiQ. Using the *A variant here would
+    // return GBK bytes that get double-encoded into mojibake.
+    return enc::WideToUtf8(std::wstring(buf, size));
 }
 
 std::string GetUserName() {
     wchar_t buf[UNLEN + 1] = {};
     DWORD size = UNLEN + 1;
     if (!::GetUserNameW(buf, &size)) return "";
-    int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return "";
-    std::string out(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &out[0], len, nullptr, nullptr);
-    return out;
+    // GetUserNameW's size includes the terminating NUL.
+    return enc::WideToUtf8(std::wstring(buf, size > 0 ? size - 1 : 0));
 }
 
 std::string GetLocalMacAddress() {

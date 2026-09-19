@@ -4,6 +4,7 @@
 
 #include "msgmng.h"
 #include "logger.h"
+#include "util/encoding.h"
 #include <algorithm>
 #include <sstream>
 #include <chrono>
@@ -24,101 +25,12 @@
 
 namespace ipmsg {
 
-// ============================================================================
-// Encoding Conversion (GBK <-> UTF-8)
-// ============================================================================
-
-// Check if a string is valid UTF-8
-static bool IsValidUTF8(const std::string& str) {
-    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(str.c_str());
-    size_t len = str.length();
-    size_t i = 0;
-    
-    while (i < len) {
-        unsigned char b = bytes[i];
-        int bytes_needed = 0;
-        
-        if (b < 0x80) {
-            bytes_needed = 1;
-        } else if ((b & 0xE0) == 0xC0) {
-            bytes_needed = 2;
-        } else if ((b & 0xF0) == 0xE0) {
-            bytes_needed = 3;
-        } else if ((b & 0xF8) == 0xF0) {
-            bytes_needed = 4;
-        } else {
-            return false; // Invalid UTF-8 start byte
-        }
-        
-        if (i + bytes_needed > len) return false;
-        
-        for (int j = 1; j < bytes_needed; ++j) {
-            if ((bytes[i + j] & 0xC0) != 0x80) return false;
-        }
-        
-        i += bytes_needed;
-    }
-    
-    return true;
-}
-
-// Convert GBK to UTF-8 using Windows API
-static std::string GBKToUTF8(const std::string& gbkStr) {
-#ifdef _WIN32
-    if (gbkStr.empty()) return gbkStr;
-    
-    // GBK -> UTF-16
-    int wlen = MultiByteToWideChar(CP_ACP, 0, gbkStr.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return gbkStr;
-    
-    std::wstring wstr(wlen - 1, L'\0');
-    MultiByteToWideChar(CP_ACP, 0, gbkStr.c_str(), -1, &wstr[0], wlen);
-    
-    // UTF-16 -> UTF-8
-    int ulen = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (ulen <= 0) return gbkStr;
-    
-    std::string utf8Str(ulen - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8Str[0], ulen, nullptr, nullptr);
-    
-    return utf8Str;
-#else
-    return gbkStr; // Fallback: return as-is
-#endif
-}
-
-// Convert UTF-8 to GBK using Windows API
-static std::string UTF8ToGBK(const std::string& utf8Str) {
-#ifdef _WIN32
-    if (utf8Str.empty()) return utf8Str;
-    
-    // UTF-8 -> UTF-16
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Str.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return utf8Str;
-    
-    std::wstring wstr(wlen - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8Str.c_str(), -1, &wstr[0], wlen);
-    
-    // UTF-16 -> GBK
-    int glen = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (glen <= 0) return utf8Str;
-    
-    std::string gbkStr(glen - 1, '\0');
-    WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, &gbkStr[0], glen, nullptr, nullptr);
-    
-    return gbkStr;
-#else
-    return utf8Str;
-#endif
-}
-
-// Ensure a string is UTF-8 (convert from GBK if needed)
-static std::string EnsureUTF8(const std::string& str) {
-    if (str.empty()) return str;
-    if (IsValidUTF8(str)) return str;
-    // Not valid UTF-8, assume GBK and convert
-    return GBKToUTF8(str);
-}
+// Encoding conversion (GBK <-> UTF-8) is provided by util/encoding.h; the
+// local names below keep the protocol code readable.
+using enc::EnsureUtf8;
+static inline std::string GBKToUTF8(const std::string& s) { return enc::AnsiToUtf8(s); }
+static inline std::string UTF8ToGBK(const std::string& s) { return enc::Utf8ToAnsi(s); }
+static inline std::string EnsureUTF8(const std::string& s) { return enc::EnsureUtf8(s); }
 
 MsgMng::MsgMng() = default;
 

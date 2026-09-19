@@ -378,3 +378,17 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：编码转换收敛到 `util/encoding`，删除四份重复实现
+
+**问题**：UTF-8/GBK/宽字符互转在 `main.cpp`、`msgmng.cpp`、`file_transfer.cpp`、`command_handler.cpp` 各有一份静态副本，细节（是否去掉尾部 NUL、ASCII 快速路径、失败时返回值）互不一致；`network.cpp`、`HandleDialogSave` 还各自手写了一遍 `WideCharToMultiByte`。
+
+### 修改 41：全部调用点改用 `enc::*`
+- `msgmng.cpp` / `command_handler.cpp` 保留原有短名（`GBKToUTF8`、`Utf8ToGbk` 等）作为一行内联转发，协议代码不必改动；`file_transfer.cpp` 直接 `using enc::PathFromUtf8`
+- `network.cpp` 的 `GetHostName` / `GetUserName`、`HandleDialogSave` 的路径回传改用 `enc::WideToUtf8`
+- 提示音临时文件改用 `paths::AppTempDir()` 与宽字符 `mciSendStringW`，`%TEMP%` 含中文时也能播放
+- 现在整个 `src/` 只有 `util/encoding.cpp` 直接调用 `MultiByteToWideChar` / `WideCharToMultiByte`
+- 顺带：`TauriCPP/src/window.cpp` 每 2 秒一次的 `[drop] RegisterNativeDropTargets done` 输出删除（它经 cerr 重定向进应用日志，是日志尾部反复出现的噪音）
+- 状态：✅ 已完成
+
+---

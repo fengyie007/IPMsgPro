@@ -120,96 +120,14 @@ static uint32_t Crc32(const std::string& data) {
 }
 
 // ============================================================================
-// Utility: Convert GBK to UTF-8 on Windows
+// Text encoding: single implementation in util/encoding.h. The short aliases
+// keep the protocol code below readable (GBK = system ANSI code page).
 // ============================================================================
-static std::string GbkToUtf8(const std::string& gbk) {
-    if (gbk.empty()) return gbk;
-    // Check if already valid UTF-8 (quick heuristic: no bytes >= 0x80 means ASCII)
-    bool isAscii = true;
-    for (unsigned char c : gbk) {
-        if (c >= 0x80) { isAscii = false; break; }
-    }
-    if (isAscii) return gbk;
-
-    // GBK -> UTF-16
-    int wlen = MultiByteToWideChar(CP_ACP, 0, gbk.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return gbk;
-    std::wstring wstr(wlen, L'\0');
-    MultiByteToWideChar(CP_ACP, 0, gbk.c_str(), -1, &wstr[0], wlen);
-
-    // UTF-16 -> UTF-8
-    int ulen = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (ulen <= 0) return gbk;
-    std::string utf8(ulen, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8[0], ulen, nullptr, nullptr);
-    if (!utf8.empty() && utf8.back() == '\0') utf8.pop_back();
-
-    return utf8;
-}
-
-// UTF-8 -> GBK (本地代码页)。用于把内部 UTF-8 文件名转换为 IPMsg/FeiQ 协议层所需的
-// ANSI/GBK 字节，否则对方的飞秋/原生 UI 会把 UTF-8 字节当成 GBK 解码产生乱码。
-static std::string Utf8ToGbk(const std::string& utf8) {
-    if (utf8.empty()) return utf8;
-    bool isAscii = true;
-    for (unsigned char c : utf8) {
-        if (c >= 0x80) { isAscii = false; break; }
-    }
-    if (isAscii) return utf8;
-
-    // UTF-8 -> UTF-16
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return utf8;
-    std::wstring wstr(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wlen);
-
-    // UTF-16 -> GBK
-    int glen = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (glen <= 0) return utf8;
-    std::string gbk(glen, '\0');
-    WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, &gbk[0], glen, nullptr, nullptr);
-    if (!gbk.empty() && gbk.back() == '\0') gbk.pop_back();
-
-    return gbk;
-}
-
-// UTF-8 -> UTF-16 (wide string) for Win32 APIs.
-static std::wstring Utf8ToWide(const std::string& utf8) {
-    if (utf8.empty()) return {};
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return {};
-    std::wstring wstr(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wlen);
-    if (!wstr.empty() && wstr.back() == L'\0') wstr.pop_back();
-    return wstr;
-}
-
-static bool IsValidUtf8(const std::string& str) {
-    // Quick check: if all bytes are ASCII, it's valid UTF-8
-    bool hasNonAscii = false;
-    for (unsigned char c : str) {
-        if (c >= 0x80) { hasNonAscii = true; break; }
-    }
-    if (!hasNonAscii) return true;
-
-    // Full validation
-    const unsigned char* p = reinterpret_cast<const unsigned char*>(str.data());
-    const unsigned char* end = p + str.size();
-    while (p < end) {
-        if (*p < 0x80) { ++p; continue; }
-        else if (*p < 0xC0) return false; // Unexpected continuation byte
-        else if (*p < 0xE0) { if (end - p < 2 || (p[1] & 0xC0) != 0x80) return false; p += 2; }
-        else if (*p < 0xF0) { if (end - p < 3 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80) return false; p += 3; }
-        else if (*p < 0xF8) { if (end - p < 4 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80) return false; p += 4; }
-        else return false;
-    }
-    return true;
-}
-
-static std::string EnsureUtf8(const std::string& str) {
-    if (IsValidUtf8(str)) return str;
-    return GbkToUtf8(str);
-}
+static inline std::string GbkToUtf8(const std::string& s) { return ipmsg::enc::AnsiToUtf8(s); }
+static inline std::string Utf8ToGbk(const std::string& s) { return ipmsg::enc::Utf8ToAnsi(s); }
+static inline std::wstring Utf8ToWide(const std::string& s) { return ipmsg::enc::Utf8ToWide(s); }
+static inline bool IsValidUtf8(const std::string& s) { return ipmsg::enc::IsValidUtf8(s); }
+static inline std::string EnsureUtf8(const std::string& s) { return ipmsg::enc::EnsureUtf8(s); }
 
 // Reduce a peer-supplied file name to a safe leaf name: drop any directory
 // part (so "..\\x" or "C:\\y" cannot escape the target folder), replace the
@@ -267,24 +185,21 @@ namespace {
 
     // Extract embedded notification.mp3 resource to a temp file (once) and return its path
     std::string GetNotificationSoundPath() {
-        // Temp file path: %TEMP%/IPMsgPro/notification.mp3
-        char tempPath[MAX_PATH] = {};
-        GetTempPathA(MAX_PATH, tempPath);
-        std::string dir = std::string(tempPath) + "IPMsgPro";
-        CreateDirectoryA(dir.c_str(), nullptr);
-        std::string outPath = dir + "\\notification.mp3";
+        // %TEMP%\IPMsgPro\notification.mp3 (UTF-8; MCI needs the ANSI form)
+        std::string outPath = paths::AppTempDir() + "\\notification.mp3";
+        const fs::path outFsPath = enc::PathFromUtf8(outPath);
 
         // If already extracted, reuse it
         {
-            std::ifstream f(outPath, std::ios::binary);
-            if (f.good()) return outPath;
+            std::error_code ec;
+            if (fs::exists(outFsPath, ec)) return outPath;
         }
 
         // Extract from embedded resource
         HMODULE hModule = GetModuleHandle(nullptr);
         HRSRC hRes = FindResourceA(hModule, MAKEINTRESOURCEA(IDR_NOTIFICATION_MP3), RT_RCDATA);
         if (!hRes) {
-            LogMessage("BRIDGE", "", "[SOUND] Failed to find notification.mp3 resource");
+            LogMessage("BRIDGE", "ERROR", "[SOUND] Failed to find notification.mp3 resource");
             return "";
         }
         HGLOBAL hGlobal = LoadResource(hModule, hRes);
@@ -293,7 +208,7 @@ namespace {
         void* pData = LockResource(hGlobal);
         if (!pData || size == 0) return "";
 
-        std::ofstream out(outPath, std::ios::binary);
+        std::ofstream out(outFsPath, std::ios::binary);
         if (!out.good()) return "";
         out.write(reinterpret_cast<const char*>(pData), size);
         out.close();
@@ -305,31 +220,33 @@ namespace {
     void PlayNotificationSound() {
         std::string soundPath = GetNotificationSoundPath();
         if (soundPath.empty()) {
-            LogMessage("BRIDGE", "", "[SOUND] No sound path, aborting");
+            LogMessage("BRIDGE", "WARN", "[SOUND] No sound path, aborting");
             return;
         }
 
         // Close any previous playback to avoid device conflicts
-        mciSendStringA("close notify_snd", nullptr, 0, nullptr);
+        mciSendStringW(L"close notify_snd", nullptr, 0, nullptr);
 
-        // Use mciSendString to play MP3 asynchronously
-        std::string openCmd = "open \"" + soundPath + "\" type mpegvideo alias notify_snd";
-        MCIERROR err = mciSendStringA(openCmd.c_str(), nullptr, 0, nullptr);
+        // Use mciSendString to play MP3 asynchronously. The wide API is used so
+        // a %TEMP% under a non-ASCII user name still resolves.
+        std::wstring wPath = Utf8ToWide(soundPath);
+        std::wstring openCmd = L"open \"" + wPath + L"\" type mpegvideo alias notify_snd";
+        MCIERROR err = mciSendStringW(openCmd.c_str(), nullptr, 0, nullptr);
         if (err != 0) {
             // Fallback: try without explicit type
-            std::string openCmd2 = "open \"" + soundPath + "\" alias notify_snd";
-            err = mciSendStringA(openCmd2.c_str(), nullptr, 0, nullptr);
+            std::wstring openCmd2 = L"open \"" + wPath + L"\" alias notify_snd";
+            err = mciSendStringW(openCmd2.c_str(), nullptr, 0, nullptr);
         }
         if (err == 0) {
-            mciSendStringA("play notify_snd from 0", nullptr, 0, nullptr);
+            mciSendStringW(L"play notify_snd from 0", nullptr, 0, nullptr);
             // Auto-close after a delay to release the device
-            std::thread([soundPath]() {
+            std::thread([]() {
                 Sleep(3000);
-                mciSendStringA("close notify_snd", nullptr, 0, nullptr);
+                mciSendStringW(L"close notify_snd", nullptr, 0, nullptr);
             }).detach();
-            LogMessage("BRIDGE", "", "[SOUND] Playing notification sound");
+            LogMessage("BRIDGE", "DEBUG", "[SOUND] Playing notification sound");
         } else {
-            LogMessage("BRIDGE", "", "[SOUND] mciSendString open failed, err=" + std::to_string(err));
+            LogMessage("BRIDGE", "WARN", "[SOUND] mciSendString open failed, err=" + std::to_string(err));
         }
     }
 }
@@ -2054,11 +1971,7 @@ nlohmann::json CommandHandler::HandleDialogSave(const nlohmann::json& args) {
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
 
     if (GetSaveFileNameW(&ofn)) {
-        std::wstring wpath(szFile);
-        int len = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, NULL, 0, NULL, NULL);
-        std::string path(len, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, &path[0], len, NULL, NULL);
-        if (!path.empty() && path.back() == '\0') path.pop_back();
+        std::string path = enc::WideToUtf8(std::wstring(szFile));
         return {{"success", true}, {"path", path}};
     }
     return {{"success", false}, {"cancelled", true}};

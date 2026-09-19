@@ -517,7 +517,8 @@ void Window::RegisterNativeDropTargets() {
         }
     };
     regAll(hwnd_);
-    std::cerr << "[drop] RegisterNativeDropTargets done" << std::endl;
+    // Intentionally silent: this runs every 2 s from the re-apply timer and
+    // std::cerr is redirected into the application log.
 }
 
 void Window::EnableNativeFileDrop() {
