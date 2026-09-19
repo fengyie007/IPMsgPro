@@ -30,12 +30,12 @@ void WSACleanup() {
     ::WSACleanup();
 }
 
-std::vector<std::string> GetLocalIPAddresses() {
-    std::vector<std::string> addresses;
+std::vector<LocalAddress> GetLocalAddresses() {
+    std::vector<LocalAddress> addresses;
 
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
     ULONG bufLen = 0;
-    GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
-                         GAA_FLAG_SKIP_DNS_SERVER, nullptr, nullptr, &bufLen);
+    GetAdaptersAddresses(AF_INET, flags, nullptr, nullptr, &bufLen);
     if (bufLen == 0) {
         LogMessage("NETWORK", "", "[Network] GetAdaptersAddresses returned zero buffer length");
         return addresses;
@@ -44,8 +44,7 @@ std::vector<std::string> GetLocalIPAddresses() {
     std::vector<uint8_t> buffer(bufLen);
     auto adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
 
-    ULONG ret = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
-                                     GAA_FLAG_SKIP_DNS_SERVER, nullptr, adapters, &bufLen);
+    ULONG ret = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufLen);
     if (ret != ERROR_SUCCESS) {
         LogMessage("NETWORK", "", "[Network] GetAdaptersAddresses failed, error=" + std::to_string(ret));
         return addresses;
@@ -70,8 +69,11 @@ std::vector<std::string> GetLocalIPAddresses() {
             auto sa = reinterpret_cast<sockaddr_in*>(addr->Address.lpSockaddr);
             char ipStr[INET_ADDRSTRLEN] = {};
             inet_ntop(AF_INET, &sa->sin_addr, ipStr, sizeof(ipStr));
-            addresses.push_back(ipStr);
-            LogMessage("NETWORK", "", "[Network] Found local IP: " + std::string(ipStr));
+            LocalAddress la;
+            la.ip = ipStr;
+            la.prefixLength = static_cast<int>(addr->OnLinkPrefixLength);
+            addresses.push_back(la);
+            LogMessage("NETWORK", "", "[Network] Found local IP: " + la.ip + "/" + std::to_string(la.prefixLength));
         }
     }
 
@@ -79,21 +81,26 @@ std::vector<std::string> GetLocalIPAddresses() {
     return addresses;
 }
 
-std::string GetBroadcastAddress(const std::string& ip) {
-    uint32_t ipVal = IPToUint32(ip);
-    if (ipVal == 0) return "";
+std::vector<std::string> GetLocalIPAddresses() {
+    std::vector<std::string> ips;
+    for (const auto& la : GetLocalAddresses()) {
+        ips.push_back(la.ip);
+    }
+    return ips;
+}
 
-    // Convert to host byte order for calculations
-    uint32_t ipHost = ntohl(ipVal);
-    
-    // Simple heuristic: assume /24 subnet for common home/office networks
-    // 255.255.255.0 in host byte order
-    uint32_t mask = 0xFFFFFF00;
-    uint32_t network = ipHost & mask;
-    uint32_t broadcast = network | 0x000000FF;
+std::string GetBroadcastAddress(const std::string& ip, int prefixLength) {
+    uint32_t ipHost = IPToUint32(ip);  // host byte order
+    if (ipHost == 0) return "";
 
-    // Convert back to network byte order for output
-    return Uint32ToIP(htonl(broadcast));
+    // Unknown prefix: assume the common /24. Point-to-point links (/31, /32)
+    // have no directed broadcast address.
+    if (prefixLength <= 0) prefixLength = 24;
+    if (prefixLength >= 31) return "";
+
+    uint32_t mask = 0xFFFFFFFFu << (32 - prefixLength);
+    uint32_t broadcast = (ipHost & mask) | ~mask;
+    return Uint32ToIP(broadcast);
 }
 
 std::vector<std::string> GetAllBroadcastAddresses() {
@@ -102,15 +109,16 @@ std::vector<std::string> GetAllBroadcastAddresses() {
     // Always include limited broadcast (works within same subnet)
     broadcasts.push_back("255.255.255.255");
 
-    // Calculate directed broadcast for each local interface
-    auto localIPs = GetLocalIPAddresses();
-    for (const auto& ip : localIPs) {
-        std::string bc = GetBroadcastAddress(ip);
+    // Directed broadcast per local interface, using the real subnet mask so
+    // /16 or /22 networks are covered instead of an assumed /24.
+    for (const auto& la : GetLocalAddresses()) {
+        std::string bc = GetBroadcastAddress(la.ip, la.prefixLength);
         if (!bc.empty() && bc != "255.255.255.255") {
             // Avoid duplicates
             if (std::find(broadcasts.begin(), broadcasts.end(), bc) == broadcasts.end()) {
                 broadcasts.push_back(bc);
-                LogMessage("NETWORK", "", "[Network] Directed broadcast for " + ip + " -> " + bc);
+                LogMessage("NETWORK", "", "[Network] Directed broadcast for " + la.ip + "/" +
+                           std::to_string(la.prefixLength) + " -> " + bc);
             }
         }
     }

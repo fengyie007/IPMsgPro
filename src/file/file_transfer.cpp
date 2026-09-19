@@ -79,53 +79,38 @@ FileTransferManager::~FileTransferManager() {
 bool FileTransferManager::Init(int tcpPort) {
     if (ready_) return true;
 
-    // Use same port as UDP for TCP (IPMsg protocol uses same port for both)
-    int basePort = (tcpPort == 0) ? IPMSG_DEFAULT_PORT : tcpPort;
+    // IPMsg uses the same port number for UDP messaging and TCP file transfer.
+    // Peers connect to the port our UDP packets came from, so binding any
+    // other TCP port would make every outgoing file transfer fail silently.
+    tcpPort_ = (tcpPort == 0) ? IPMSG_DEFAULT_PORT : tcpPort;
 
-    // Try to bind to the base port; if fails, try basePort+1, basePort+2
-    const int maxRetries = 3;
-    bool bindSuccess = false;
-
-    for (int attempt = 0; attempt < maxRetries; attempt++) {
-        tcpPort_ = basePort + attempt;
-
-        // Create TCP listening socket
-        tcpListenSocket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (tcpListenSocket_ == INVALID_SOCKET) {
-            LogMessage("FILE_XFER", "", "[FileTransfer] Failed to create TCP socket: " + std::to_string(WSAGetLastError()));
-            return false;
-        }
-
-        // Set socket options
-        int optval = 1;
-        setsockopt(tcpListenSocket_, SOL_SOCKET, SO_REUSEADDR,
-                   reinterpret_cast<const char*>(&optval), sizeof(optval));
-
-        // Bind to port
-        sockaddr_in addr = {};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(static_cast<u_short>(tcpPort_));
-
-        if (bind(tcpListenSocket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
-            bindSuccess = true;
-            break; // Bind succeeded
-        }
-
-        int bindErr = WSAGetLastError();
-        LogMessage("FILE_XFER", "", "[FileTransfer] Failed to bind TCP port " + std::to_string(tcpPort_) + ": " + std::to_string(bindErr) + " (will try next port)");
-        closesocket(tcpListenSocket_);
-        tcpListenSocket_ = INVALID_SOCKET;
+    tcpListenSocket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (tcpListenSocket_ == INVALID_SOCKET) {
+        LogMessage("FILE_XFER", "ERROR", "[FileTransfer] Failed to create TCP socket: " + std::to_string(WSAGetLastError()));
+        return false;
     }
 
-    if (!bindSuccess) {
-        LogMessage("FILE_XFER", "", "[FileTransfer] Failed to bind any TCP port after " + std::to_string(maxRetries) + " attempts");
+    int optval = 1;
+    setsockopt(tcpListenSocket_, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&optval), sizeof(optval));
+
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(static_cast<u_short>(tcpPort_));
+
+    if (bind(tcpListenSocket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        int bindErr = WSAGetLastError();
+        LogMessage("FILE_XFER", "ERROR", "[FileTransfer] Failed to bind TCP port " + std::to_string(tcpPort_) +
+                   ": " + std::to_string(bindErr) + " (file transfer disabled; is another IPMsg client running?)");
+        closesocket(tcpListenSocket_);
+        tcpListenSocket_ = INVALID_SOCKET;
         return false;
     }
 
     // Listen for connections
     if (listen(tcpListenSocket_, SOMAXCONN) == SOCKET_ERROR) {
-        LogMessage("FILE_XFER", "", "[FileTransfer] Failed to listen: " + std::to_string(WSAGetLastError()));
+        LogMessage("FILE_XFER", "ERROR", "[FileTransfer] Failed to listen: " + std::to_string(WSAGetLastError()));
         closesocket(tcpListenSocket_);
         tcpListenSocket_ = INVALID_SOCKET;
         return false;

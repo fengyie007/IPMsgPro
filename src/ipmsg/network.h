@@ -26,13 +26,26 @@ bool WSAInit();
 /// Cleanup Winsock (call once at shutdown)
 void WSACleanup();
 
-/// Get all local IPv4 addresses
+/// A local IPv4 address together with its on-link prefix length.
+struct LocalAddress {
+    std::string ip;
+    int prefixLength = 0;   // e.g. 24 for 255.255.255.0; 0 when unknown
+};
+
+/// Get all local IPv4 addresses (adapters that are up, excluding loopback)
+/// with their prefix lengths, as reported by GetAdaptersAddresses.
+std::vector<LocalAddress> GetLocalAddresses();
+
+/// Get all local IPv4 addresses (convenience wrapper over GetLocalAddresses)
 std::vector<std::string> GetLocalIPAddresses();
 
-/// Get subnet broadcast address for a given IP (e.g., "192.168.1.100" -> "192.168.1.255")
-std::string GetBroadcastAddress(const std::string& ip);
+/// Get the directed broadcast address for an IP and prefix length
+/// (e.g. "10.8.34.11"/24 -> "10.8.34.255", "10.0.0.5"/16 -> "10.0.255.255").
+/// prefixLength <= 0 falls back to /24; >= 31 (point-to-point) returns "".
+std::string GetBroadcastAddress(const std::string& ip, int prefixLength = 24);
 
 /// Get all broadcast addresses for all local interfaces
+/// (limited broadcast 255.255.255.255 plus one directed broadcast per interface)
 std::vector<std::string> GetAllBroadcastAddresses();
 
 /// Convert IP string to uint32_t (network byte order)

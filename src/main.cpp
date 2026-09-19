@@ -905,7 +905,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
             int port = ipmsg::IPMSG_DEFAULT_PORT;
             if (colonPos != std::string::npos) {
                 ip = userEntry.substr(0, colonPos);
-                port = std::stoi(userEntry.substr(colonPos + 1));
+                // A bad --adduser value must not abort startup before the window exists.
+                try { port = std::stoi(userEntry.substr(colonPos + 1)); } catch (...) { port = 0; }
+            }
+            if (ip.empty() || port <= 0 || port > 65535) {
+                LOG_WARN("Ignoring invalid --adduser entry: " + userEntry);
+                continue;
             }
             LOG_INFO("Auto-adding user: " + ip + ":" + std::to_string(port));
             // Send BR_ENTRY directly to the target's listening port so both sides

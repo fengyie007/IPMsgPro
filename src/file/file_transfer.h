@@ -76,7 +76,9 @@ public:
     FileTransferManager& operator=(const FileTransferManager&) = delete;
 
     /// Initialize the file transfer manager
-    /// @param tcpPort TCP port for file transfer (0 = use IPMsg default port + 1)
+    /// @param tcpPort TCP port for file transfer (0 = IPMsg default port).
+    ///        Must equal the UDP port: peers connect to the port our BR_ENTRY
+    ///        came from, so there is no fallback to other ports.
     bool Init(int tcpPort = 0);
 
     /// Shutdown. Cancels active transfers and waits (bounded) for the

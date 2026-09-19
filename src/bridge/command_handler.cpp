@@ -1245,13 +1245,19 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
             if (user.is_string()) {
                 std::string entry = user.get<std::string>();
                 size_t colonPos = entry.find(':');
-                if (colonPos != std::string::npos) {
-                    std::string ip = entry.substr(0, colonPos);
-                    int port = std::stoi(entry.substr(colonPos + 1));
-                    msgMng_->AddDirectUser(ip, port);
-                    // Send BR_ENTRY immediately so user appears without restart
-                    msgMng_->SendDirectEntry(ip, port);
+                if (colonPos == std::string::npos) continue;
+                std::string ip = entry.substr(0, colonPos);
+                // A malformed port ("10.8.33.50:abc") must skip this entry, not
+                // throw out of the whole config.set call.
+                int port = 0;
+                try { port = std::stoi(entry.substr(colonPos + 1)); } catch (...) { port = 0; }
+                if (ip.empty() || port <= 0 || port > 65535) {
+                    LogMessage("BRIDGE", "WARN", "Config: ignoring invalid direct user entry \"" + entry + "\"");
+                    continue;
                 }
+                msgMng_->AddDirectUser(ip, port);
+                // Send BR_ENTRY immediately so user appears without restart
+                msgMng_->SendDirectEntry(ip, port);
             }
         }
         LogMessage("BRIDGE", "", "Config updated: directUsers synced (" +

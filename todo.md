@@ -342,3 +342,18 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：几处会静默失效或直接抛异常的健壮性问题
+
+### 修改 35：`src/ipmsg/network.{h,cpp}` — 定向广播使用真实子网掩码
+- 原先 `GetBroadcastAddress` 硬编码 /24，/16、/22 等网段的定向广播地址算错，导致跨交换机的同网段用户发现不到
+- 新增 `LocalAddress{ip, prefixLength}` 与 `GetLocalAddresses()`（取 `GetAdaptersAddresses` 的 `OnLinkPrefixLength`），`GetBroadcastAddress(ip, prefixLength)` 按掩码计算；/31、/32 点对点链路不产生定向广播
+
+### 修改 36：`src/file/file_transfer.{h,cpp}` — 去掉 TCP 端口 +1/+2 回退
+- 对端只会连接我们 UDP 包的源端口，回退到 2426/2427 后所有发出的文件都会静默失败；改为绑定失败直接记录 ERROR 并禁用文件传输
+
+### 修改 37：`src/bridge/command_handler.cpp` / `src/main.cpp` — 解析 `IP:端口` 时不再抛异常
+- `HandleConfigSet` 处理 `directUsers`、`WinMain` 处理 `--adduser` 时，端口非法（非数字、超出 1~65535）只跳过该条并记日志，原先 `std::stoi` 抛出后整个 `config.set` 失败或启动前崩溃
+- 状态：✅ 已完成
+
+---
