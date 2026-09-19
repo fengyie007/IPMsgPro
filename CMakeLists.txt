@@ -179,6 +179,8 @@ endif()
 set(IPMSGPRO_SOURCES
     src/main.cpp
     src/logger.cpp
+    src/util/encoding.cpp
+    src/util/app_paths.cpp
     src/ipmsg/msgmng.cpp
     src/ipmsg/network.cpp
     src/bridge/command_handler.cpp

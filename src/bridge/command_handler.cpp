@@ -15,6 +15,8 @@
 #include "command_handler.h"
 #include "ipmsg/protocol.h"
 #include "logger.h"
+#include "util/app_paths.h"
+#include "util/encoding.h"
 #include "../resources/resource.h"
 #include <ctime>
 #include <random>
@@ -1155,24 +1157,27 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
     // Store custom data directory (used for downloads, database, etc.)
     if (!dataDir.empty()) {
         dataDir_ = dataDir;
-        CreateDirectoryA(dataDir_.c_str(), nullptr);
-        LogMessage("BRIDGE", "", "Config updated: dataDir=" + dataDir_);
+        // Paths are UTF-8; the *A APIs would create a mojibake directory for
+        // non-ASCII names, and the registry copy read back at the next start
+        // would not match what SQLite (which takes UTF-8) opens.
+        const std::string effectiveDir = GetDataDir();
+        {
+            std::error_code ec;
+            fs::create_directories(enc::PathFromUtf8(effectiveDir), ec);
+        }
+        LogMessage("BRIDGE", "", "Config updated: dataDir=" + dataDir_ + " (effective: " + effectiveDir + ")");
 
         // Save to registry so it's available at next startup before frontend loads
-        HKEY hKey;
-        if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS) {
-            RegSetValueExA(hKey, "DataDir", 0, REG_SZ, (const BYTE*)dataDir_.c_str(), dataDir_.size() + 1);
-            RegCloseKey(hKey);
-        }
+        paths::WriteCustomDataDir(dataDir_);
 
         // Reinitialize logger to new data directory
-        ipmsg::ReinitLogger(dataDir_);
+        ipmsg::ReinitLogger(effectiveDir);
 
         // Re-initialize database with new data directory. Init() swaps the
         // connection under the database mutex; an explicit Close() first would
         // open a window where the receive thread drops incoming messages.
         if (msgDb_) {
-            std::string dbPath = dataDir_ + "\\ipmsg.db";
+            std::string dbPath = effectiveDir + "\\ipmsg.db";
             if (!msgDb_->Init(dbPath)) {
                 LogMessage("BRIDGE", "", "[BRIDGE] ERROR: Failed to reinitialize database at " + dbPath);
             } else {
@@ -1185,11 +1190,7 @@ nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
         LogMessage("BRIDGE", "", "Config updated: dataDir reset to default");
 
         // Remove from registry
-        HKEY hKey;
-        if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
-            RegDeleteValueA(hKey, "DataDir");
-            RegCloseKey(hKey);
-        }
+        paths::WriteCustomDataDir("");
 
         // Reinitialize logger to default data directory
         std::string defaultDir = GetDataDir();
@@ -1688,16 +1689,11 @@ nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {
         return {{"success", false}, {"error", "Failed to decode base64 data"}};
     }
 
-    // Create temp directory
-    char tempPath[MAX_PATH];
-    GetTempPathA(MAX_PATH, tempPath);
-    std::string tempDir = std::string(tempPath) + "IPMsgPro";
-    if (!CreateDirectoryA(tempDir.c_str(), nullptr)) {
-        DWORD err = GetLastError();
-        if (err != ERROR_ALREADY_EXISTS) {
-            return {{"success", false}, {"error", "Failed to create temp dir: " + std::to_string(err)}};
-        }
-    }
+    // Temp directory (%TEMP%\IPMsgPro). Everything here is UTF-8 and written
+    // through the wide file API: the returned path is later opened by
+    // StartSendFile via PathFromUtf8, so an ANSI %TEMP% (e.g. a Chinese user
+    // name) mixed into a UTF-8 file name would never be found again.
+    std::string tempDir = paths::AppTempDir();
 
     // Sanitize filename - remove path separators and special chars
     std::string safeFilename = SanitizeFileName(filename);
@@ -1706,7 +1702,7 @@ nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {
     std::string tempFile = tempDir + "\\" + std::to_string(std::time(nullptr)) + "_" + safeFilename;
 
     // Write to file
-    std::ofstream outFile(tempFile, std::ios::binary);
+    std::ofstream outFile(enc::PathFromUtf8(tempFile), std::ios::binary);
     if (!outFile.is_open()) {
         DWORD err = GetLastError();
         return {{"success", false}, {"error", "Failed to create temp file: " + std::string(tempFile) + " err=" + std::to_string(err)}};
@@ -2071,15 +2067,16 @@ nlohmann::json CommandHandler::HandleFileSaveData(const nlohmann::json& args) {
     }
     std::string decoded = Base64Decode(base64Data);
 
-    // Make sure the parent directory exists.
-    fs::path p(path);
+    // The path is UTF-8 (from dialog.save); go through the wide API so a
+    // Chinese folder name is not mangled by the ANSI code page.
+    fs::path p = enc::PathFromUtf8(path);
     if (auto parent = p.parent_path(); !parent.empty()) {
         std::error_code ec;
         fs::create_directories(parent, ec);
     }
 
     {
-        std::ofstream out(path, std::ios::binary);
+        std::ofstream out(p, std::ios::binary);
         if (!out) {
             return {{"success", false}, {"error", "Cannot open target path"}};
         }
@@ -2366,51 +2363,20 @@ nlohmann::json CommandHandler::HandleDialogOpen(const nlohmann::json& args) {
 
 
 std::string CommandHandler::GetDataDir() const {
-    // If custom dataDir is set, use it; otherwise use default (USERPROFILE\.speedipmsg)
+    // Same rule as startup (paths::ResolveDataDir): custom dir from this
+    // session or the registry, else %USERPROFILE%\.speedipmsg, plus the port
+    // suffix so a second instance on another port keeps its own data.
+    const int port = msgMng_ ? msgMng_->GetLocalPort() : IPMSG_DEFAULT_PORT;
     if (!dataDir_.empty()) {
-        return dataDir_;
+        return paths::ApplyPortSuffix(dataDir_, port);
     }
-    // Try to read from registry first
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        char buffer[MAX_PATH] = {};
-        DWORD size = sizeof(buffer);
-        if (RegQueryValueExA(hKey, "DataDir", nullptr, nullptr, (LPBYTE)buffer, &size) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return std::string(buffer);
-        }
-        RegCloseKey(hKey);
-    }
-    char userProfile[MAX_PATH] = {};
-    if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
-        SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, userProfile);
-    }
-    return std::string(userProfile) + "\\.speedipmsg";
+    return paths::ResolveDataDir(port);
 }
 
 std::string GetUserDownloadsDir() {
-    // The user's Downloads folder lives under the user profile directory,
-    // e.g. C:\Users\<user>\Downloads. Use USERPROFILE (the documented
-    // location) to avoid depending on shell known-folder CSIDL constants
-    // that may be unavailable with WIN32_LEAN_AND_MEAN.
-    //
-    // IMPORTANT: return the path as UTF-8. Downstream code (the receive
-    // save-path in RecvFileThread -> PathFromUtf8, and the FeiQ screenshot
-    // save -> std::filesystem::u8path) all expect UTF-8. Using the *A (ANSI)
-    // variant would yield code-page (GBK) bytes that fail to map for
-    // non-ASCII user names (e.g. C:\Users\冯波\Downloads), causing
-    // "Access is denied" / "No mapping for the Unicode character" errors.
-    wchar_t userProfile[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"USERPROFILE", userProfile, MAX_PATH) > 0) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, userProfile, -1, nullptr, 0, nullptr, nullptr);
-        if (len > 0) {
-            std::string utf8(len, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, userProfile, -1, &utf8[0], len, nullptr, nullptr);
-            if (!utf8.empty() && utf8.back() == '\0') utf8.pop_back();
-            return utf8 + "\\Downloads";
-        }
-    }
-    return "Downloads";
+    // UTF-8, e.g. C:\Users\冯波\Downloads. Downstream code (RecvFileThread ->
+    // PathFromUtf8, FeiQ screenshot save -> u8path) expects UTF-8.
+    return paths::UserDownloadsDir();
 }
 
 // ---------- FeiQ inline screenshot (custom fragmented image protocol) ----------

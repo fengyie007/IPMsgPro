@@ -2,6 +2,7 @@
 // Unified logger implementation
 // ============================================================================
 #include "logger.h"
+#include "util/encoding.h"
 
 #include <chrono>
 #include <cstdio>
@@ -79,8 +80,9 @@ void InitLogger(const std::string& dataDir) {
 
     g_logPath = dataDir + "\\ipmsg_gui_debug.log";
 
-    // Fresh file every startup (truncate any previous content).
-    g_log.open(g_logPath, std::ios::trunc);
+    // Fresh file every startup (truncate any previous content). The path is
+    // UTF-8, so open through a wide std::filesystem::path.
+    g_log.open(enc::PathFromUtf8(g_logPath), std::ios::trunc);
     if (!g_log.is_open()) {
         std::cerr << "Failed to open unified log file: " << g_logPath << std::endl;
         return;
@@ -120,7 +122,7 @@ void ReinitLogger(const std::string& newDataDir) {
 
     // Open new log at new location (append mode to preserve old logs)
     g_logPath = newDataDir + "\\ipmsg_gui_debug.log";
-    g_log.open(g_logPath, std::ios::app);
+    g_log.open(enc::PathFromUtf8(g_logPath), std::ios::app);
     if (!g_log.is_open()) {
         std::cerr << "Failed to open unified log file at new location: " << g_logPath << std::endl;
         return;
@@ -140,7 +142,7 @@ void LogMessage(const std::string& tag, const std::string& level,
 
     // Lazily open (append) if logging happened before InitLogger().
     if (!g_log.is_open() && !g_logPath.empty()) {
-        g_log.open(g_logPath, std::ios::app);
+        g_log.open(enc::PathFromUtf8(g_logPath), std::ios::app);
     }
     if (!g_log.is_open()) return;
 

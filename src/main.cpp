@@ -9,7 +9,6 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
-#include <ShlObj.h>
 
 #include <tauricpp/app.hpp>
 #include <tauricpp/dialog.hpp>
@@ -19,6 +18,8 @@
 #include "ipmsg/network.h"
 #include "database/message_db.h"
 #include "file/file_transfer.h"
+#include "util/app_paths.h"
+#include "util/encoding.h"
 
 #include <string>
 #include <atomic>
@@ -54,53 +55,9 @@ static ipmsg::MsgMng* g_msgMng = nullptr;
 static ipmsg::MessageDB* g_msgDb = nullptr;
 static ipmsg::FileTransferManager* g_fileTransfer = nullptr;
 
-/// Get the application data directory for storing database etc.
-/// Uses USERPROFILE\.speedipmsg (user home directory), or custom path from registry
-static std::string GetAppDataDir(int port) {
-    // First, try to read custom dataDir from registry
-    HKEY hKey = nullptr;
-    std::string customDir;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\SpeedIPMsg", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        char buffer[MAX_PATH] = {};
-        DWORD size = sizeof(buffer);
-        if (RegQueryValueExA(hKey, "DataDir", nullptr, nullptr, (LPBYTE)buffer, &size) == ERROR_SUCCESS) {
-            customDir = buffer;
-        }
-        RegCloseKey(hKey);
-    }
-
-    if (!customDir.empty()) {
-        if (port != ipmsg::IPMSG_DEFAULT_PORT) {
-            customDir += "_" + std::to_string(port);
-        }
-        CreateDirectoryA(customDir.c_str(), nullptr);
-        return customDir;
-    }
-
-    // Fallback to default
-    char userProfile[MAX_PATH] = {};
-    if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) <= 0) {
-        SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, userProfile);
-    }
-    std::string dir = std::string(userProfile) + "\\.speedipmsg";
-    if (port != ipmsg::IPMSG_DEFAULT_PORT) {
-        dir += "_" + std::to_string(port);
-    }
-    CreateDirectoryA(dir.c_str(), nullptr);
-    return dir;
-}
-
-// Convert a UTF-8 path to a wide string for Win32 *W APIs (so paths with
-// non-ASCII user names like C:\Users\冯波\Downloads work correctly).
-static std::wstring Utf8ToWide(const std::string& utf8) {
-    if (utf8.empty()) return {};
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return {};
-    std::wstring wstr(wlen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wlen);
-    if (!wstr.empty() && wstr.back() == L'\0') wstr.pop_back();
-    return wstr;
-}
+// All paths in this file are UTF-8; convert at the Win32 boundary.
+using ipmsg::enc::Utf8ToWide;
+using ipmsg::enc::WideToUtf8;
 
 // ============================================================================
 // Helper: Parse colon-separated file attachment fields (:: escaped colons)
@@ -675,14 +632,6 @@ static CliArgs ParseCommandLine(LPSTR lpCmdLine) {
 // ============================================================================
 // System info logging at startup (version / OS / locale / IP)
 // ============================================================================
-static std::string WideToUtf8(const std::wstring& w) {
-    if (w.empty()) return "";
-    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-    return s;
-}
-
 static std::string GetWindowsVersionString() {
     std::string result;
     HKEY hKey = nullptr;
@@ -754,8 +703,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
         setvbuf(stderr, nullptr, _IONBF, 0);
     }
 
-    // Initialize unified logger (fresh ipmsg_gui_debug.log, redirect cout/cerr)
-    std::string dataDir = GetAppDataDir(cliArgs.port);
+    // Initialize unified logger (fresh ipmsg_gui_debug.log, redirect cout/cerr).
+    // The data directory is UTF-8 (custom dir from the registry or
+    // %USERPROFILE%\.speedipmsg, with a port suffix for non-default ports).
+    std::string dataDir = ipmsg::paths::ResolveDataDir(cliArgs.port);
     ipmsg::InitLogger(dataDir);
 
     // Install global crash handlers so hard faults (access violation / heap

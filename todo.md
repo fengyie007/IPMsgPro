@@ -323,3 +323,22 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：路径处理混用 ANSI 与 UTF-8，中文用户名 / 中文目录下数据库、日志、临时文件失效
+
+**问题**：自定义数据目录经 `CreateDirectoryA` / `RegSetValueExA` 写入 UTF-8 字节，含中文时生成乱码目录，下次启动从注册表读回的路径也对不上；默认数据目录用 `GetEnvironmentVariableA` 得到 ANSI 字节，却直接交给只认 UTF-8 的 `sqlite3_open`，中文用户名的机器上历史数据库打不开；日志文件、截图临时文件、`file.save_data` 均用窄字符路径打开；前端注入的 `defaultDataDir` 也是 ANSI 字节。
+
+### 修改 33：新增 `src/util/encoding.{h,cpp}` 与 `src/util/app_paths.{h,cpp}`
+- `enc::Utf8ToWide` / `WideToUtf8` / `Utf8ToAnsi` / `AnsiToUtf8` / `IsValidUtf8` / `EnsureUtf8` / `PathFromUtf8` / `GetEnvUtf8`：全后端唯一定义（各文件里的重复静态副本留待后续清理）
+- `paths::DefaultDataDir` / `ReadCustomDataDir` / `WriteCustomDataDir`（注册表 `*W` 版）/ `ApplyPortSuffix` / `ResolveDataDir` / `UserDownloadsDir` / `AppTempDir`：所有返回值均为 UTF-8
+- `CMakeLists.txt` 加入两个新源文件
+
+### 修改 34：调用方切换到宽字符 API
+- `src/main.cpp`：删除本地 `GetAppDataDir` / `Utf8ToWide` / `WideToUtf8`，启动数据目录改用 `paths::ResolveDataDir(port)`
+- `src/logger.cpp`：日志文件通过 `enc::PathFromUtf8` 打开（Init / Reinit / 延迟打开三处）
+- `src/bridge/command_handler.cpp`：`HandleConfigSet` 用 `fs::create_directories(宽路径)` + `paths::WriteCustomDataDir`；`GetDataDir()` 与启动规则一致（含端口后缀，修正了运行时切换目录后与启动时目录不一致的问题）；`HandleFileSaveTemp` 临时目录改用 `paths::AppTempDir()` 并以宽路径写入；`HandleFileSaveData` 以宽路径创建目录和文件；`GetUserDownloadsDir` 改为转调 `paths::UserDownloadsDir`
+- `src/file/file_transfer.cpp`：失败后删除半截文件改用 `PathFromUtf8`
+- `TauriCPP/src/bridge.cpp`：注入前端的 `homeDir` / `defaultDataDir` 改由 `GetEnvironmentVariableW` + UTF-8 转换得到
+- 状态：✅ 已完成
+
+---

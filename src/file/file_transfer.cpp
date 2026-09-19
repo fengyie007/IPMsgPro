@@ -869,7 +869,8 @@ void FileTransferManager::RecvFileThread(const std::string& transferId, const st
     } else {
         LogMessage("FILE_XFER", "", "File receive failed: " + savePath + " (received " + std::to_string(totalReceived) + "/" + std::to_string(fileSize) + " bytes)");
         UpdateTransferProgress(transferId, totalReceived, TransferStatus::Failed);
-        fs::remove(savePath);
+        std::error_code ec;
+        fs::remove(PathFromUtf8(savePath), ec);  // wide-aware; a narrow path would mangle Chinese names
     }
 }
 

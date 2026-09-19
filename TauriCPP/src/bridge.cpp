@@ -103,17 +103,27 @@ void Bridge::SetExecuteJsCallback(ExecuteJsCallback cb) {
 std::string Bridge::GetBridgeJs() {
     // Get user home directory for injecting into frontend
     std::string homeDir;        // forward slashes, for JS path operations
-    std::string defaultDataDir; // matches backend GetAppDataDir (backslashes)
+    std::string defaultDataDir; // matches backend paths::DefaultDataDir (backslashes)
 #ifdef _WIN32
-    char userProfile[MAX_PATH] = {};
-    if (GetEnvironmentVariableA("USERPROFILE", userProfile, MAX_PATH) > 0) {
-        homeDir = userProfile;
-        defaultDataDir = std::string(userProfile) + "\\.speedipmsg";
-    } else {
-        SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, userProfile);
-        homeDir = userProfile;
-        defaultDataDir = std::string(userProfile) + "\\.speedipmsg";
+    // Always go through the *W APIs and convert to UTF-8: the ANSI variants
+    // return code-page bytes (GBK for a Chinese user name), which the frontend
+    // would then round-trip back to the backend as "UTF-8" and corrupt.
+    auto wideToUtf8 = [](const std::wstring& w) -> std::string {
+        if (w.empty()) return {};
+        int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+        if (len <= 0) return {};
+        std::string out((size_t)len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &out[0], len, nullptr, nullptr);
+        return out;
+    };
+    wchar_t userProfile[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", userProfile, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        userProfile[0] = L'\0';
+        SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, userProfile);
     }
+    homeDir = wideToUtf8(userProfile);
+    defaultDataDir = homeDir + "\\.speedipmsg";
     // Convert backslashes to forward slashes for homeDir (JS)
     for (auto& c : homeDir) {
         if (c == '\\') c = '/';
