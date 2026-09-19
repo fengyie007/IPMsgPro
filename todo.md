@@ -541,3 +541,22 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：拆分 `ChatPanel.tsx`，消息气泡只接收自己的待接收请求
+
+**问题**：`ChatPanel.tsx` 超过 1000 行，混着发送预览弹窗、表情选择器、消息气泡（文本 / 图片 / 文件）、缩略图加载与格式化工具；整个 `pendingFileReceives` 数组传给每个 `memo` 过的气泡，任何进度事件都让所有气泡重渲染。
+
+### 修改 62：按职责拆分
+| 新文件 | 内容 |
+|------|------|
+| `components/MessageBubble.tsx` | `MessageBubble` 及 `ImageContent` / `FileContent`，抽出公共的 `transferState`、`FileReceivePrompt`、`ProgressBar`、状态角标 |
+| `components/EmojiPicker.tsx` / `EmojiSprite.tsx` | 表情选择器与雪碧图单个表情 |
+| `components/SendPreviewModal.tsx` | 发送文件确认弹窗 |
+| `utils/format.ts` | `formatTime` / `formatFileSize` / `isSameDay` / `formatDateSeparator` |
+- `ChatPanel.tsx` 1046 行 → 约 530 行，只剩会话头、消息列表、输入区与各类交互流程
+
+### 修改 63：气泡 memo 生效
+- `ChatPanel` 用 `useMemo` 把当前会话的待接收请求按占位消息 id（`recv_<packetNo>`）建索引，每个气泡只接收自己的那一条 `pendingRequest`；传输进度或其他气泡的请求变化不再触发无关气泡重渲染
+- 状态：✅ 已完成
+
+---
