@@ -181,8 +181,12 @@ public:
     /// Find a user by key (userName@hostName)
     std::optional<UserInfo> FindUser(const std::string& key) const;
 
-    /// Update local user info (nickname, group etc.)
-    void UpdateLocalInfo(const std::string& nickName, const std::string& groupName);
+    /// Update local user info (nickname / group) and re-broadcast entry.
+    /// Only the fields that are provided (has_value) are changed, so callers
+    /// that receive nickname and group in separate requests cannot wipe the
+    /// other field. An empty nickname falls back to the login user name.
+    void UpdateLocalInfo(const std::optional<std::string>& nickName,
+                         const std::optional<std::string>& groupName);
 
     /// Get local user info
     const UserInfo& GetLocalUser() const { return localUser_; }

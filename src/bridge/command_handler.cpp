@@ -1068,15 +1068,23 @@ nlohmann::json CommandHandler::HandleUserLocal(const nlohmann::json& args) {
 }
 
 nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
-    std::string nickname = args.value("nickname", "");
-    std::string group = args.value("group", "");
     std::string dataDir = args.value("dataDir", "");
-    std::string minimizeBehavior = args.value("minimizeBehavior", "");
-    
-    if (!nickname.empty() || !group.empty()) {
+
+    // The frontend sends nickname and group in separate config.set calls, so
+    // only the fields present in THIS call may be applied. Passing both
+    // unconditionally let whichever call came last wipe the other field.
+    std::optional<std::string> nickname;
+    std::optional<std::string> group;
+    if (args.contains("nickname") && args["nickname"].is_string()) {
+        nickname = args["nickname"].get<std::string>();
+    }
+    if (args.contains("group") && args["group"].is_string()) {
+        group = args["group"].get<std::string>();
+    }
+    if (nickname || group) {
         msgMng_->UpdateLocalInfo(nickname, group);
-        LogMessage("BRIDGE", "", "[BACKEND-CONFIG] Updated: nickname=" + nickname + ", group=" + group);
-        LogMessage("BRIDGE", "", "Config updated: nickname=" + nickname + ", group=" + group);
+        LogMessage("BRIDGE", "", "Config updated: nickname=" + nickname.value_or("(unchanged)") +
+                   ", group=" + group.value_or("(unchanged)"));
     }
 
     // Store custom data directory (used for downloads, database, etc.)

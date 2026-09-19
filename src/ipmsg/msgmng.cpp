@@ -901,12 +901,24 @@ std::optional<UserInfo> MsgMng::FindUser(const std::string& key) const {
     return std::nullopt;
 }
 
-void MsgMng::UpdateLocalInfo(const std::string& nickName, const std::string& groupName) {
-    localUser_.nickName = nickName;
-    localUser_.groupName = groupName;
+void MsgMng::UpdateLocalInfo(const std::optional<std::string>& nickName,
+                             const std::optional<std::string>& groupName) {
+    bool changed = false;
+    if (nickName) {
+        // Same fallback as Init(): peers must never see an empty nickname.
+        std::string nn = nickName->empty() ? localUser_.userName : *nickName;
+        if (nn != localUser_.nickName) {
+            localUser_.nickName = nn;
+            changed = true;
+        }
+    }
+    if (groupName && *groupName != localUser_.groupName) {
+        localUser_.groupName = *groupName;
+        changed = true;
+    }
 
-    // Re-broadcast entry with new info
-    if (ready_) {
+    // Re-broadcast entry so peers pick up the new info
+    if (changed && ready_) {
         BroadcastEntry();
     }
 }

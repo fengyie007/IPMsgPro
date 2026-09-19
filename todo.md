@@ -240,3 +240,16 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：昵称与分组互相覆盖
+
+**问题**：同时设置了昵称和分组后，对端（飞秋 / 第二实例）看到的昵称变成登录名，或分组为空；重启后现象不定。
+
+**根因**：前端 `configStore` 把 `nickname` 和 `group` 拆成两次 `config.set` 发送，而 `MsgMng::UpdateLocalInfo` 每次都无条件覆盖两个字段，后发的一次把另一个清空。
+
+### 修改 24：`src/ipmsg/msgmng.{h,cpp}` / `src/bridge/command_handler.cpp` — 只更新本次传入的字段
+- `UpdateLocalInfo` 参数改为 `std::optional<std::string>`，只在有值时更新对应字段；昵称为空时回退为登录名（与 `Init` 一致）；仅在有变化时重新广播 BR_ENTRY
+- `HandleConfigSet` 只在请求里存在 `nickname` / `group` 键时才传值
+- 状态：✅ 已完成
+
+---
