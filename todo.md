@@ -276,3 +276,15 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：接收文件名未消毒且同名文件被静默覆盖
+
+**问题**：对端发来的文件名直接拼进 `Downloads\` 路径，带 `..\` 可写到目录之外；同名文件直接被截断覆盖。
+
+### 修改 28：`src/bridge/command_handler.cpp` — `SanitizeFileName` / `UniqueSavePath`
+- 新增 `SanitizeFileName`：只保留最后一级文件名，替换 Windows 非法字符与控制字符，去掉末尾的点和空格，规避 CON/NUL/COM1 等保留设备名；`HandleFileSaveTemp` 原有的内联消毒逻辑改为复用它
+- 新增 `UniqueSavePath`：目标已存在时依次尝试 `名字 (1).ext`、`名字 (2).ext`
+- `HandleFileAccept` 自动生成保存路径时同时使用二者；数据库与 `file.transfer_started` 事件中的路径即最终落盘路径
+- 状态：✅ 已完成
+
+---

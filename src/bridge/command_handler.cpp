@@ -208,6 +208,52 @@ static std::string EnsureUtf8(const std::string& str) {
     if (IsValidUtf8(str)) return str;
     return GbkToUtf8(str);
 }
+
+// Reduce a peer-supplied file name to a safe leaf name: drop any directory
+// part (so "..\\x" or "C:\\y" cannot escape the target folder), replace the
+// characters Windows forbids, strip trailing dots/spaces (Win32 drops them
+// silently, which would alias another name) and avoid reserved device names.
+// Never returns an empty string.
+static std::string SanitizeFileName(const std::string& name) {
+    size_t sep = name.find_last_of("/\\");
+    std::string leaf = (sep == std::string::npos) ? name : name.substr(sep + 1);
+    for (auto& c : leaf) {
+        if (c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' ||
+            static_cast<unsigned char>(c) < 0x20) {
+            c = '_';
+        }
+    }
+    while (!leaf.empty() && (leaf.back() == '.' || leaf.back() == ' ')) leaf.pop_back();
+    if (leaf.empty()) return "file";
+
+    std::string stem = leaf.substr(0, leaf.find('.'));
+    std::transform(stem.begin(), stem.end(), stem.begin(), ::toupper);
+    static const char* kReserved[] = {"CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+    for (const char* r : kReserved) {
+        if (stem == r) return "_" + leaf;
+    }
+    return leaf;
+}
+
+// Return `dir\name`, or `dir\stem (n).ext` for the first n that does not exist
+// yet, so an incoming file never silently overwrites an existing one.
+static std::string UniqueSavePath(const std::string& dir, const std::string& name) {
+    std::error_code ec;
+    std::string candidate = dir + "\\" + name;
+    if (!fs::exists(fs::path(Utf8ToWide(candidate)), ec)) return candidate;
+
+    size_t dot = name.find_last_of('.');
+    bool hasExt = (dot != std::string::npos && dot > 0);
+    std::string stem = hasExt ? name.substr(0, dot) : name;
+    std::string ext = hasExt ? name.substr(dot) : "";
+    for (int n = 1; n < 10000; ++n) {
+        candidate = dir + "\\" + stem + " (" + std::to_string(n) + ")" + ext;
+        if (!fs::exists(fs::path(Utf8ToWide(candidate)), ec)) return candidate;
+    }
+    return candidate;
+}
 #include <iostream>
 #include <chrono>
 
@@ -1649,14 +1695,7 @@ nlohmann::json CommandHandler::HandleFileSaveTemp(const nlohmann::json& args) {
     }
 
     // Sanitize filename - remove path separators and special chars
-    std::string safeFilename = filename;
-    for (auto& c : safeFilename) {
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' ||
-            c == '<' || c == '>' || c == '|') {
-            c = '_';
-        }
-    }
-    if (safeFilename.empty()) safeFilename = "temp_file";
+    std::string safeFilename = SanitizeFileName(filename);
 
     // Generate unique filename
     std::string tempFile = tempDir + "\\" + std::to_string(std::time(nullptr)) + "_" + safeFilename;
@@ -1691,11 +1730,13 @@ nlohmann::json CommandHandler::HandleFileAccept(const nlohmann::json& args) {
     uint64_t origPacketNo = args.value("packetNo", (uint64_t)0);
     int origFileId = args.value("fileId", 0);
 
-    // If savePath is empty, auto-generate using the user's Downloads folder
+    // If savePath is empty, auto-generate using the user's Downloads folder.
+    // The name comes from the peer: reduce it to a safe leaf name (no
+    // directory components) and never overwrite an existing file.
     if (savePath.empty() && !fileName.empty()) {
         std::string saveDir = GetUserDownloadsDir();
         CreateDirectoryW(Utf8ToWide(saveDir).c_str(), nullptr);
-        savePath = saveDir + "\\" + fileName;
+        savePath = UniqueSavePath(saveDir, SanitizeFileName(fileName));
     }
     LogMessage("BRIDGE", "", "[BACKEND-ACCEPT] savePath=" + savePath);
 
