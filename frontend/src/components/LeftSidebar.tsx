@@ -1,6 +1,6 @@
 import React from 'react';
 import { FiMessageSquare, FiUsers, FiSettings } from 'react-icons/fi';
-import { useConfigStore } from '../stores/configStore';
+import { useMessageStore } from '../stores/messageStore';
 import { APP_VERSION } from '../types';
 
 export type ViewMode = 'chat' | 'contacts' | 'settings';
@@ -11,6 +11,9 @@ interface LeftSidebarProps {
 }
 
 export default function LeftSidebar({ viewMode, onViewChange }: LeftSidebarProps) {
+  const unread = useMessageStore((s) => s.unread);
+  let totalUnread = 0;
+  for (const n of unread.values()) totalUnread += n;
 
   return (
     <div className="w-[60px] bg-[#2C2C2C] flex flex-col items-center py-4 shrink-0">
@@ -26,6 +29,7 @@ export default function LeftSidebar({ viewMode, onViewChange }: LeftSidebarProps
           active={viewMode === 'chat'}
           onClick={() => onViewChange('chat')}
           title="对话"
+          badge={totalUnread}
         />
         <NavButton
           icon={<FiUsers size={22} />}
@@ -49,11 +53,12 @@ export default function LeftSidebar({ viewMode, onViewChange }: LeftSidebarProps
   );
 }
 
-function NavButton({ icon, active, onClick, title }: {
+function NavButton({ icon, active, onClick, title, badge = 0 }: {
   icon: React.ReactNode;
   active: boolean;
   onClick: () => void;
   title: string;
+  badge?: number;
 }) {
   return (
     <button
@@ -66,6 +71,11 @@ function NavButton({ icon, active, onClick, title }: {
         <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-primary-500 rounded-r" />
       )}
       {icon}
+      {badge > 0 && (
+        <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-4 text-center">
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </button>
   );
 }

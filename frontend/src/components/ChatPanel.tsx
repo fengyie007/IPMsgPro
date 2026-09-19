@@ -75,6 +75,7 @@ export default function ChatPanel() {
   const sendFileByPath = useMessageStore((s) => s.sendFileByPath);
   const loadHistory = useMessageStore((s) => s.loadHistory);
   const clearHistory = useMessageStore((s) => s.clearHistory);
+  const clearUnread = useMessageStore((s) => s.clearUnread);
   const pendingFileReceives = useMessageStore((s) => s.pendingFileReceives);
   const acceptFileReceive = useMessageStore((s) => s.acceptFileReceive);
   const rejectFileReceive = useMessageStore((s) => s.rejectFileReceive);
@@ -108,19 +109,32 @@ export default function ChatPanel() {
     r => r.fromUser === userId
   );
 
-  // Load history when user changes
+  // Load history when user changes; opening a conversation marks it as read
   useEffect(() => {
     if (userId) {
       loadHistory(userId);
+      clearUnread(userId);
     }
   }, [userId]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll only when the user is already at the bottom, or the newest
+  // message is our own. A transfer progress tick or a history reload must not
+  // yank the view away from older messages the user is reading.
+  const lastMessage = userMessages[userMessages.length - 1];
+  const lastMessageKey = lastMessage ? `${lastMessage.id}|${userMessages.length}` : '';
+  const nearBottomRef = useRef(true);
+  const handleListScroll = () => {
+    const el = messageListRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
   useEffect(() => {
-    if (messageListRef.current) {
-      messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
+    const el = messageListRef.current;
+    if (!el) return;
+    if (nearBottomRef.current || lastMessage?.from === 'self') {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [userMessages, currentUserPendingReceives]);
+  }, [lastMessageKey]);
 
   // ---- Serialize the contentEditable input into the wire format ----
   // Text nodes are kept verbatim; inline emoji spans become WeChat-style XML;
@@ -397,7 +411,7 @@ export default function ChatPanel() {
       </div>
 
       {/* Message list */}
-      <div ref={messageListRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#F5F5F5]">
+      <div ref={messageListRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#F5F5F5]">
         {userMessages.length === 0 && currentUserPendingReceives.length === 0 ? (
           <div className="text-center text-gray-400 text-sm mt-10">
             暂无消息，发送一条消息开始聊天

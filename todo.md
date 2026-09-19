@@ -424,3 +424,22 @@
 - 状态：✅ 已完成
 
 ---
+
+## 改进：收到消息不再抢焦点，改为未读角标；自动滚动只在贴底时触发
+
+**问题**：任何人发来消息都会把当前会话切过去，`ChatPanel` 按用户 id 重建，正在输入的草稿直接丢失；传文件时每个进度事件都把消息列表拽到底部，用户无法翻看历史。
+
+### 修改 46：`frontend/src/stores/messageStore.ts` — 未读计数
+- 新增 `unread: Map<userId, number>` 与 `clearUnread(userId)`；`recvMessage` 收到非当前会话的他人消息（含文件接收请求）时计数 +1
+- 删除 `message.received` 与 `feiq.screenshot_received` 里自动 `setCurrentUser` 的逻辑（发送方仍会自动加入联系人列表）
+
+### 修改 47：`frontend/src/components/ChatPanel.tsx` — 打开会话清未读、滚动策略
+- 打开会话时调用 `clearUnread`
+- 自动滚动改为：仅当用户本来就在底部附近（40px 内）或最新一条是自己发的才滚到底；依赖项改为最后一条消息 id + 条数，不再因进度事件或待接收列表变化触发
+
+### 修改 48：`UserListPanel.tsx` / `LeftSidebar.tsx` — 角标
+- 会话卡片右下角显示红色未读数（99+ 封顶），有未读时昵称加粗
+- 左侧「对话」导航按钮显示未读总数角标
+- 状态：✅ 已完成
+
+---

@@ -18,6 +18,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   const discoverUsers = useUserStore((s) => s.discoverUsers);
   const loading = useUserStore((s) => s.loading);
   const messages = useMessageStore((s) => s.messages);
+  const unread = useMessageStore((s) => s.unread);
 
   // Get conversation users - users with any messages, sorted by latest message
   const conversationUsers = useMemo(() => {
@@ -154,6 +155,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
                 user={user}
                 selected={currentUser?.id === user.id}
                 lastMessage={lastContent}
+                unread={unread.get(user.id) ?? 0}
                 onClick={() => handleSelectUser(user)}
               />
             ))
@@ -164,11 +166,12 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   );
 }
 
-// Conversation card - shows user with last message preview
-function ConversationCard({ user, selected, lastMessage, onClick }: {
+// Conversation card - shows user with last message preview and unread badge
+function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
   user: User;
   selected: boolean;
   lastMessage: string;
+  unread: number;
   onClick: () => void;
 }) {
   const statusColor = user.status === 'online'
@@ -193,7 +196,7 @@ function ConversationCard({ user, selected, lastMessage, onClick }: {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-medium text-gray-800 truncate">
+          <span className={`text-sm truncate ${unread > 0 ? 'font-semibold text-gray-900' : 'font-medium text-gray-800'}`}>
             {user.nickname}
           </span>
           <span className="flex items-center gap-2 shrink-0">
@@ -203,9 +206,19 @@ function ConversationCard({ user, selected, lastMessage, onClick }: {
             <span className="text-[10px] text-gray-400">{user.ip}</span>
           </span>
         </div>
-        <p className="text-xs text-gray-400 truncate mt-0.5">
-          {lastMessage || `${user.ip}:${user.port}`}
-        </p>
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <p className="text-xs text-gray-400 truncate">
+            {lastMessage || `${user.ip}:${user.port}`}
+          </p>
+          {unread > 0 && (
+            <span
+              className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[18px] text-center"
+              title={`${unread} 条未读`}
+            >
+              {unread > 99 ? '99+' : unread}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

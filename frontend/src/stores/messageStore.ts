@@ -85,6 +85,8 @@ function historyState(m: any): { status: Message['status']; transferProgress?: n
 interface MessageStore {
   /** Map of userId -> messages array */
   messages: Map<string, Message[]>;
+  /** Map of userId -> number of incoming messages not yet viewed */
+  unread: Map<string, number>;
   loading: boolean;
   error: string | null;
 
@@ -111,6 +113,9 @@ interface MessageStore {
 
   /** Receive an incoming message */
   recvMessage: (message: Message) => void;
+
+  /** Mark a conversation as viewed (called when it is opened) */
+  clearUnread: (userId: string) => void;
 
   /** Update transfer progress for a message */
   updateTransferProgress: (transferId: string, progress: number, isSending: boolean) => void;
@@ -139,6 +144,7 @@ interface MessageStore {
 
 export const useMessageStore = create<MessageStore>((set, get) => ({
   messages: new Map(),
+  unread: new Map(),
   loading: false,
   error: null,
   localUserId: '',
@@ -420,7 +426,27 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
         return state;
       }
       newMessages.set(userId, [...userMsgs, message]);
+
+      // Unread counter: an incoming message for a conversation that is not the
+      // one currently open. The chat panel clears it when that user is opened.
+      // We deliberately do NOT switch the active conversation here: stealing
+      // focus destroyed the draft the user was typing.
+      const currentId = useUserStore.getState().currentUser?.id;
+      if (message.from !== 'self' && userId !== currentId) {
+        const unread = new Map(state.unread);
+        unread.set(userId, (unread.get(userId) ?? 0) + 1);
+        return { messages: newMessages, unread };
+      }
       return { messages: newMessages };
+    });
+  },
+
+  clearUnread: (userId) => {
+    set((state) => {
+      if (!state.unread.has(userId)) return {};
+      const unread = new Map(state.unread);
+      unread.delete(userId);
+      return { unread };
     });
   },
 
@@ -744,16 +770,8 @@ updateTransferProgress: (transferId, progress, isSending) => {
           console.log('[MSGRECV] Auto-adding user to list:', newUser.id);
           userStore.addUser(newUser);
         }
-
-        // Auto-select the sender in ChatPanel so the message is visible immediately
-        const currentUser = userStore.currentUser;
-        if (!currentUser || currentUser.id !== data.from) {
-          const sender = userStore.users.find(u => u.id === data.from);
-          if (sender) {
-            console.log('[MSGRECV] Auto-selecting user:', sender.id);
-            userStore.setCurrentUser(sender);
-          }
-        }
+        // The sender is NOT auto-selected: the conversation list shows an
+        // unread badge instead, so the user's current draft is preserved.
       }
       // For file attachments, the message was already added by file.receive_request handler
     }));
@@ -900,8 +918,8 @@ updateTransferProgress: (transferId, progress, isSending) => {
       lastFeiqSig = sig;
       lastFeiqAt = now;
 
-      // Auto-add the sender to the contact list if missing, and auto-select so
-      // the incoming screenshot becomes visible immediately.
+      // Auto-add the sender to the contact list if missing. Like normal
+      // messages, the conversation is not auto-selected (unread badge instead).
       if (data.fromUser) {
         const userStore = useUserStore.getState();
         const exists = userStore.users.some(u => u.id === data.fromUser.id);
@@ -917,11 +935,6 @@ updateTransferProgress: (transferId, progress, isSending) => {
             status: 'online',
             version: data.fromUser.version || '',
           });
-        }
-        const current = userStore.currentUser;
-        if (!current || current.id !== data.fromUser.id) {
-          const sender = userStore.users.find(u => u.id === data.fromUser.id);
-          if (sender) userStore.setCurrentUser(sender);
         }
       }
 
