@@ -49,7 +49,8 @@ public:
     /// Get messages for a specific user (conversation partner)
     /// userId is the key of the other party (userName@hostName)
     /// localUserId is the current user's key
-    /// Returns messages ordered by timestamp ASC (oldest first)
+    /// Returns the NEWEST `limit` messages after skipping `offset` newer ones
+    /// (offset pages backwards in time), ordered by timestamp ASC (oldest first)
     bool GetMessages(const std::string& userId, const std::string& localUserId,
                      int limit, int offset,
                      std::vector<MessageRecord>& messages);

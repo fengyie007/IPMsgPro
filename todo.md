@@ -226,3 +226,17 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：聊天记录超过 50 条后只显示最旧的 50 条
+
+**问题**：与某人的消息超过 50 条后，打开会话看到的是最早的 50 条，最新的消息看不到。
+
+**根因**：`MessageDB::GetMessages` 的 SQL 先按时间升序再 `LIMIT 50`，取到的是最旧的一页；前端 `loadHistory` 默认 `limit=50, offset=0`。
+
+### 修改 23：`src/database/message_db.cpp` — 取最新 N 条再按时间升序返回
+- 内层子查询按 `timestamp DESC, rowid DESC` 取 `LIMIT ? OFFSET ?`（offset 语义变为向更早的历史翻页），外层再按 `timestamp ASC, rowid ASC` 排序供聊天面板显示
+- 以 `rowid` 作为同一秒内多条消息的次序，避免分页时跳过或重复
+- `message_db.h` 注释同步更新；前端调用方式不变
+- 状态：✅ 已完成
+
+---

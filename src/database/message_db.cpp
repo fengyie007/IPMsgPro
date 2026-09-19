@@ -114,13 +114,20 @@ bool MessageDB::GetMessages(const std::string& userId, const std::string& localU
     // Messages where:
     // - from_id = localUserId AND to_id = userId (sent by me to you)
     // - from_id = userId AND to_id = localUserId (sent by you to me)
-    // ORDER BY ASC so oldest messages appear first (chat display order)
+    // The inner query selects the NEWEST `limit` messages (skipping `offset`
+    // newer ones, so offset paginates backwards in time); the outer query
+    // re-sorts them oldest-first for chat display order. rowid breaks ties
+    // between messages sharing the same second so pagination is stable.
     const char* sql = R"(
         SELECT id, from_id, to_id, content, type, timestamp, status
-        FROM messages
-        WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)
-        ORDER BY timestamp ASC
-        LIMIT ? OFFSET ?
+        FROM (
+            SELECT rowid AS rid, id, from_id, to_id, content, type, timestamp, status
+            FROM messages
+            WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)
+            ORDER BY timestamp DESC, rid DESC
+            LIMIT ? OFFSET ?
+        )
+        ORDER BY timestamp ASC, rid ASC
     )";
 
     sqlite3_stmt* stmt = nullptr;
