@@ -585,3 +585,18 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：多行消息发送后丢失换行，换行后的表情被丢弃
+
+**问题**：输入 `abc`，Ctrl+Enter 换行后输入 `def`，对方收到 `abcdef`；三行只剩两行。第二行以后插入的表情整段消失。输入框提示写「Ctrl+Enter 换行」，实际换行完全依赖浏览器默认行为，Shift+Enter 与 Ctrl+Enter 产生的 DOM 还不一样。
+
+**根因**：Chromium 的 contentEditable 把第一行留作裸文本节点，之后每行包进 `<div>`，即 `abc<div>def</div>`。原序列化只遍历第一层子节点，把换行加在块元素之后而不是之前，于是第一个换行丢失；块元素内部直接取 `textContent`，嵌在其中的表情 `<span data-emoji-id>` 被拍平成空字符串。
+
+### 修改 66：`frontend/src/components/ChatPanel.tsx`
+- `serializeEditor` 改为组件外的递归函数：文本原样输出，表情 span 输出 XML，`<br>` 输出 `\n`；块元素（`DIV`/`P` 等）前后各补一个换行，但输出已在行首时不重复补，这样既保住第一个换行，也吸收块末尾占位用的 `<br>`
+- Shift+Enter 与 Ctrl+Enter 都拦截默认行为，统一用 `insertLineBreak` 插入 `<br>`；Enter 发送
+- 输入框提示改为「Enter 发送，Shift+Enter 或 Ctrl+Enter 换行」
+- 验证：用无头 Edge 驱动真实 contentEditable 跑 11 种输入组合（div 换行、br 换行、空行、首行空行、第二行表情、表情后换行、混合），新序列化全部符合预期；旧序列化在其中 6 种出错，与上述问题一致
+- 状态：✅ 已完成
+
+---

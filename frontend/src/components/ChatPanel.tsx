@@ -12,6 +12,39 @@ import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
 import SendPreviewModal from './SendPreviewModal';
 
+const BLOCK_TAG = /^(DIV|P|LI|TR|PRE|BLOCKQUOTE|H[1-6])$/;
+
+// Chromium wraps lines 2+ in <div>s, so a block breaks the line unless already at a line start.
+function serializeEditor(root: HTMLElement): string {
+  let out = '';
+  const lineBreak = () => {
+    if (out && !out.endsWith('\n')) out += '\n';
+  };
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent || '';
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const elem = node as HTMLElement;
+    const emojiId = elem.dataset.emojiId;
+    if (emojiId) {
+      out += buildEmojiMessage(emojiId);
+      return;
+    }
+    if (elem.tagName === 'BR') {
+      out += '\n';
+      return;
+    }
+    const block = BLOCK_TAG.test(elem.tagName);
+    if (block) lineBreak();
+    elem.childNodes.forEach(walk);
+    if (block) lineBreak();
+  };
+  root.childNodes.forEach(walk);
+  return out;
+}
+
 // ============================================================================
 // ChatPanel - main chat component
 // ============================================================================
@@ -111,31 +144,6 @@ export default function ChatPanel() {
     await loadMoreHistory(userId);
   };
 
-  // ---- Serialize the contentEditable input into the wire format ----
-  // Text nodes are kept verbatim; inline emoji spans become WeChat-style XML;
-  // <br>/block breaks become newlines.
-  const serializeEditor = (): string => {
-    const el = editorRef.current;
-    if (!el) return '';
-    let out = '';
-    el.childNodes.forEach((node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        out += node.textContent || '';
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        const elem = node as HTMLElement;
-        const emojiId = elem.dataset.emojiId;
-        if (emojiId) {
-          out += buildEmojiMessage(emojiId);
-        } else if (elem.tagName === 'BR') {
-          out += '\n';
-        } else {
-          out += (elem.textContent || '') + (elem.tagName === 'DIV' || elem.tagName === 'P' ? '\n' : '');
-        }
-      }
-    });
-    return out;
-  };
-
   const syncHasInput = () => {
     const el = editorRef.current;
     if (!el) return setHasInput(false);
@@ -146,8 +154,8 @@ export default function ChatPanel() {
 
   // ---- Text send ----
   const handleSend = async () => {
-    if (!currentUser) return;
-    const content = serializeEditor().replace(/\s+$/g, '');
+    if (!currentUser || !editorRef.current) return;
+    const content = serializeEditor(editorRef.current).replace(/\s+$/g, '');
     if (!content.trim()) return;
     const success = await sendMessage(currentUser.id, content);
     if (success) {
@@ -158,9 +166,13 @@ export default function ChatPanel() {
     }
   };
 
+  // Insert the <br> ourselves: Chromium's default differs per modifier (<br> vs. a new <div>).
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
-      e.preventDefault();
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (e.shiftKey || e.ctrlKey) {
+      document.execCommand('insertLineBreak');
+    } else {
       handleSend();
     }
   };
@@ -472,7 +484,7 @@ export default function ChatPanel() {
             onMouseUp={saveSelection}
             onBlur={saveSelection}
             onInput={syncHasInput}
-            data-placeholder="输入消息，Enter发送，Ctrl+Enter换行"
+            data-placeholder="输入消息，Enter 发送，Shift+Enter 或 Ctrl+Enter 换行"
             className="chat-editor w-full min-h-[4.5rem] max-h-40 overflow-y-auto text-sm leading-relaxed p-2 rounded border border-gray-200
                        focus:outline-none focus:ring-1 focus:ring-primary-400
                        whitespace-pre-wrap break-words"
