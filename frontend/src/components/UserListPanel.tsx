@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { FiSearch, FiRefreshCw, FiMessageSquare, FiUsers } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
-import { User } from '../types';
+import { Message, User } from '../types';
+import { formatListTime, formatPreview } from '../utils/format';
 import { ViewMode } from './LeftSidebar';
 
 interface UserListPanelProps {
@@ -22,18 +23,14 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
 
   // Get conversation users - users with any messages, sorted by latest message
   const conversationUsers = useMemo(() => {
-    const userLastMsg: { user: User; lastTimestamp: number; lastContent: string }[] = [];
+    const userLastMsg: { user: User; lastMsg: Message }[] = [];
 
     // First, add users from userStore who have messages
     for (const user of users) {
       const userMsgs = messages.get(user.id);
       if (userMsgs && userMsgs.length > 0) {
         const lastMsg = userMsgs[userMsgs.length - 1];
-        userLastMsg.push({
-          user,
-          lastTimestamp: lastMsg.timestamp,
-          lastContent: lastMsg.content,
-        });
+        userLastMsg.push({ user, lastMsg });
       }
     }
 
@@ -54,16 +51,12 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
           status: 'offline',
           version: '',
         };
-        userLastMsg.push({
-          user: virtualUser,
-          lastTimestamp: lastMsg.timestamp,
-          lastContent: lastMsg.content,
-        });
+        userLastMsg.push({ user: virtualUser, lastMsg });
       }
     }
 
     // Sort by latest message timestamp (newest first)
-    userLastMsg.sort((a, b) => b.lastTimestamp - a.lastTimestamp);
+    userLastMsg.sort((a, b) => b.lastMsg.timestamp - a.lastMsg.timestamp);
     return userLastMsg;
   }, [users, messages]);
 
@@ -149,12 +142,12 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
               <p className="text-xs mt-1">在通讯录中选择用户开始聊天</p>
             </div>
           ) : (
-            filteredConversations.map(({ user, lastContent }) => (
+            filteredConversations.map(({ user, lastMsg }) => (
               <ConversationCard
                 key={user.id}
                 user={user}
                 selected={currentUser?.id === user.id}
-                lastMessage={lastContent}
+                lastMessage={lastMsg}
                 unread={unread.get(user.id) ?? 0}
                 onClick={() => handleSelectUser(user)}
               />
@@ -170,7 +163,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
 function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
   user: User;
   selected: boolean;
-  lastMessage: string;
+  lastMessage: Message;
   unread: number;
   onClick: () => void;
 }) {
@@ -199,16 +192,11 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
           <span className={`text-sm truncate ${unread > 0 ? 'font-semibold text-gray-900' : 'font-medium text-gray-800'}`}>
             {user.nickname}
           </span>
-          <span className="flex items-center gap-2 shrink-0">
-            {user.group && (
-              <span className="text-xs text-gray-400">{user.group}</span>
-            )}
-            <span className="text-[10px] text-gray-400">{user.ip}</span>
-          </span>
+          <span className="text-[11px] text-gray-400 shrink-0">{formatListTime(lastMessage.timestamp)}</span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <p className="text-xs text-gray-400 truncate">
-            {lastMessage || `${user.ip}:${user.port}`}
+            {formatPreview(lastMessage)}
           </p>
           {unread > 0 && (
             <span
