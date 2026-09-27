@@ -94,6 +94,30 @@ static std::string UniqueSavePath(const std::string& dir, const std::string& nam
     return candidate;
 }
 
+// Toast text for a chat message body: emoji XML becomes "[表情]", line breaks become spaces.
+static std::string NotificationPreview(const std::string& body) {
+    static const std::string kEmojiOpen = "<msg><emoji ";
+    static const std::string kEmojiClose = "</msg>";
+    std::string text;
+    size_t pos = 0;
+    while (pos < body.size()) {
+        const size_t start = body.find(kEmojiOpen, pos);
+        const size_t end = (start == std::string::npos) ? std::string::npos : body.find(kEmojiClose, start);
+        if (end == std::string::npos) {
+            text.append(body, pos, std::string::npos);
+            break;
+        }
+        text.append(body, pos, start - pos);
+        text += "[表情]";
+        pos = end + kEmojiClose.size();
+    }
+    std::string flat;
+    for (char c : text) {
+        if (c != '\r') flat += (c == '\n') ? ' ' : c;
+    }
+    return flat.find_first_not_of(' ') == std::string::npos ? "新消息" : flat;
+}
+
 namespace ipmsg {
 
 CommandHandler& CommandHandler::Instance() {
@@ -133,6 +157,32 @@ nlohmann::json CommandHandler::HandleWindowSetAlwaysOnTop(const nlohmann::json& 
         r["success"] = false; r["error"] = e.what();
     }
     return r;
+}
+
+nlohmann::json CommandHandler::HandleWindowSetActiveConversation(const nlohmann::json& args) {
+    std::lock_guard<std::mutex> lock(activeConversationMutex_);
+    activeConversation_ = args.value("userId", "");
+    return {{"success", true}};
+}
+
+// Toast + flashing when the window is not in front; the sound is skipped only
+// while the user is reading this sender's conversation.
+void CommandHandler::NotifyIncoming(const UserInfo& sender, const std::string& preview) {
+    const bool inFront = window_ && window_->IsVisible() && !window_->IsMinimized() && window_->IsFocused();
+    if (window_ && !inFront) {
+        const std::string& name = sender.nickName.empty() ? sender.userName : sender.nickName;
+        window_->ShowTrayNotification(EnsureUtf8(name), preview);
+    }
+    bool reading = false;
+    if (inFront) {
+        std::lock_guard<std::mutex> lock(activeConversationMutex_);
+        reading = activeConversation_ == sender.Key();
+    }
+    if (notificationSound_ && !reading) {
+        PlayNotificationSound();
+    }
+    LogMessage("BRIDGE", "DEBUG", "[NOTIFY] from=" + sender.Key() + " inFront=" + std::to_string(inFront) +
+               " reading=" + std::to_string(reading) + " sound=" + std::to_string(notificationSound_ && !reading));
 }
 
 void CommandHandler::RegisterAllCommands() {
@@ -211,6 +261,8 @@ void CommandHandler::RegisterAllCommands() {
         [this](const nlohmann::json& args) { return HandleWindowRestore(args); });
     bridge_->RegisterCommand("window.set_always_on_top",
         [this](const nlohmann::json& args) { return HandleWindowSetAlwaysOnTop(args); });
+    bridge_->RegisterCommand("window.set_active_conversation",
+        [this](const nlohmann::json& args) { return HandleWindowSetActiveConversation(args); });
     bridge_->RegisterCommand("dialog.save",
         [this](const nlohmann::json& args) { return HandleDialogSave(args); });
     bridge_->RegisterCommand("file.save_data",
@@ -540,14 +592,9 @@ void CommandHandler::SetupEventForwarding() {
             // Emit message received event
             bridge_->Emit("message.received", j);
 
-            // Flash tray icon for new text messages (when window is hidden/minimized)
-            if (window_ && !window_->IsVisible()) {
-                window_->ShowTrayNotification("新消息", "");
-            }
-
-            // Play notification sound for new text messages
-            if (notificationSound_) {
-                PlayNotificationSound();
+            // File attachments notify below, once their receive request is out.
+            if (!isFileAttach) {
+                NotifyIncoming(msg.sender, NotificationPreview(msg.body));
             }
 
             // Do NOT auto-reply RECVMSG for file attachment notifications
@@ -579,15 +626,7 @@ void CommandHandler::SetupEventForwarding() {
                     {"transferId", std::to_string(msg.packetNo)}
                 });
 
-                // Flash tray icon for file receive request (when window is hidden/minimized)
-                if (window_ && !window_->IsVisible()) {
-                    window_->ShowTrayNotification("文件接收", "");
-                }
-
-                // Play notification sound for file receive request
-                if (notificationSound_) {
-                    PlayNotificationSound();
-                }
+                NotifyIncoming(msg.sender, dbType == 1 ? std::string("[图片]") : "[文件] " + EnsureUtf8(fileName));
             }
         } catch (const std::exception& e) {
             LogMessage("BRIDGE", "DEBUG", std::string("[GUI-MSG] Exception in message callback: ") + e.what());
@@ -1699,6 +1738,7 @@ void CommandHandler::EmitFeiQScreenshot(const FeiQScreenshotResult& shot) {
         {"savePath", shot.savePath},
         {"fileSize", static_cast<int64_t>(shot.bytes.size())}
     });
+    NotifyIncoming(shot.sender, "[图片]");
 }
 
 } // namespace ipmsg

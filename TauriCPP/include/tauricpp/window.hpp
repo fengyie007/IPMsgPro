@@ -5,6 +5,9 @@
 #include <atomic>
 #include <queue>
 #include <mutex>
+#include <optional>
+#include <utility>
+#include <vector>
 #include <Windows.h>
 #include <shellapi.h>  // NOTIFYICONDATAW, Shell_NotifyIconW, ShellExecuteW
 
@@ -105,7 +108,7 @@ public:
     void RemoveTrayIcon();
     /// Update tray icon tooltip
     void SetTrayTooltip(const std::string& tooltip);
-    /// Show balloon notification from tray
+    /// Thread-safe. Tray balloon (toast) plus tray icon and taskbar button flashing until the window is activated.
     void ShowTrayNotification(const std::string& title, const std::string& message);
     /// Set tray context menu items (label -> callback pairs). Show on right-click.
     void SetTrayMenu(const std::vector<std::pair<std::string, std::function<void()>>>& items);
@@ -208,6 +211,12 @@ private:
     HICON trayBlankIcon_ = nullptr;      ///< 全透明空图标
     void StartTrayFlash();
     void StopTrayFlash();
+
+    // 新消息通知：任意线程写入，UI 线程处理（SetTimer 只能在窗口所属线程调用）
+    static constexpr UINT WM_TAURICPP_NOTIFY = WM_APP + 101;
+    std::mutex notifyMutex_;
+    std::optional<std::pair<std::string, std::string>> pendingNotify_;  ///< title, message；连发时只保留最新一条
+    void ProcessPendingNotification();
 };
 
 } // namespace tauricpp

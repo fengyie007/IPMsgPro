@@ -66,6 +66,7 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
     case 'network.scan_cancel':
     case 'window.restore':
     case 'window.set_always_on_top':
+    case 'window.set_active_conversation':
     case 'shell_open':
     case 'file.open_folder':
       return { success: true } as T;

@@ -95,6 +95,7 @@ private:
     nlohmann::json HandleWindowMaximize(const nlohmann::json& args);
     nlohmann::json HandleWindowRestore(const nlohmann::json& args);
     nlohmann::json HandleWindowSetAlwaysOnTop(const nlohmann::json& args);
+    nlohmann::json HandleWindowSetActiveConversation(const nlohmann::json& args);
 
     // --- File Commands (extra) ---
     nlohmann::json HandleFileSaveData(const nlohmann::json& args);
@@ -122,6 +123,12 @@ private:
     std::string dataDir_;   // Custom data directory (empty = use default)
     std::string minimizeBehavior_ = "taskbar";  // "taskbar" or "tray"
     bool notificationSound_ = true;  // play notification sound on new messages
+
+    // Key of the conversation on screen ("" when none), pushed by the frontend
+    // and read on the UDP receive thread by NotifyIncoming.
+    std::string activeConversation_;
+    std::mutex activeConversationMutex_;
+    void NotifyIncoming(const UserInfo& sender, const std::string& preview);
 
     // Text messages sent with IPMSG_SENDCHECKOPT that have not been acknowledged
     // yet: SENDMSG packetNo -> database message id. Filled on the UI thread by

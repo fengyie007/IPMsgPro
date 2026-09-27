@@ -72,6 +72,12 @@ function App() {
   // progress (causing the whole chat to flicker and progress to reset to 0%).
   const chatKey = currentUser ? currentUser.id : 'empty';
 
+  // The backend skips the notification sound for the conversation on screen.
+  const activeConversation = viewMode === 'settings' ? '' : currentUser?.id ?? '';
+  useEffect(() => {
+    invoke('window.set_active_conversation', { userId: activeConversation });
+  }, [activeConversation]);
+
   return (
     <div className="flex h-screen w-screen bg-gray-100">
       <LeftSidebar viewMode={viewMode} onViewChange={setViewMode} />

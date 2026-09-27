@@ -389,8 +389,9 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_ACTIVATE:
-        if (self && self->on_focus_ && LOWORD(wParam) != WA_INACTIVE) {
-            self->on_focus_();
+        if (self && LOWORD(wParam) != WA_INACTIVE) {
+            self->StopTrayFlash();
+            if (self->on_focus_) self->on_focus_();
         }
         return 0;
 
@@ -409,6 +410,12 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_TAURICPP_TRAY:
         if (self) {
             self->ProcessTrayMessage(wParam, lParam);
+        }
+        return 0;
+
+    case WM_TAURICPP_NOTIFY:
+        if (self) {
+            self->ProcessPendingNotification();
         }
         return 0;
 
@@ -1230,9 +1237,61 @@ void Window::SetTrayTooltip(const std::string& tooltip) {
     trayIconData_.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
 }
 
+// Copy into a fixed WCHAR field, cutting with an ellipsis (never inside a surrogate pair) when too long.
+template <size_t N>
+static void CopyTruncated(WCHAR (&dst)[N], const std::wstring& src) {
+    std::wstring s = src;
+    if (s.size() >= N) {
+        size_t n = N - 2;  // room for the ellipsis and the terminator
+        if (IS_HIGH_SURROGATE(s[n - 1])) --n;
+        s = s.substr(0, n) + static_cast<wchar_t>(0x2026);  // horizontal ellipsis
+    }
+    wcsncpy_s(dst, N, s.c_str(), _TRUNCATE);
+}
+
 void Window::ShowTrayNotification(const std::string& title, const std::string& message) {
-    // Start tray icon flashing (like WeChat: icon alternates between visible and invisible)
+    if (!hwnd_ || shutting_down_) return;
+    {
+        std::lock_guard<std::mutex> lock(notifyMutex_);
+        pendingNotify_ = std::make_pair(title, message);
+    }
+    PostMessageW(hwnd_, WM_TAURICPP_NOTIFY, 0, 0);
+}
+
+void Window::ProcessPendingNotification() {
+    std::pair<std::string, std::string> note;
+    {
+        std::lock_guard<std::mutex> lock(notifyMutex_);
+        if (!pendingNotify_) return;  // already shown by an earlier post of the same burst
+        note = std::move(*pendingNotify_);
+        pendingNotify_.reset();
+    }
+    // The user may have switched back while the message was queued.
+    if (GetForegroundWindow() == hwnd_ && !IsIconic(hwnd_)) return;
+
+    // Hidden-to-tray windows have no taskbar button; FLASHW_TIMERNOFG stops by itself on activation.
+    if (IsWindowVisible(hwnd_)) {
+        FLASHWINFO fi = {};
+        fi.cbSize = sizeof(fi);
+        fi.hwnd = hwnd_;
+        fi.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;
+        FlashWindowEx(&fi);
+    }
+
+    if (!trayIconCreated_) return;
     StartTrayFlash();
+
+    // An empty szInfo removes the balloon instead of showing one.
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd = hwnd_;
+    nid.uID = trayIconData_.uID;
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON | NIIF_NOSOUND;  // the app plays its own sound
+    nid.hBalloonIcon = trayOriginalIcon_;
+    CopyTruncated(nid.szInfoTitle, Utf8ToWide(note.first));
+    CopyTruncated(nid.szInfo, Utf8ToWide(note.second.empty() ? " " : note.second));
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 void Window::StartTrayFlash() {
@@ -1285,6 +1344,7 @@ void Window::ProcessTrayMessage(WPARAM wParam, LPARAM lParam) {
 
     switch (event) {
     case WM_LBUTTONUP:
+    case NIN_BALLOONUSERCLICK:
         StopTrayFlash();
         if (on_tray_click_) {
             on_tray_click_();
