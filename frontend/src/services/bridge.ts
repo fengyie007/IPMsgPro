@@ -51,8 +51,10 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
         users: [
           { id: 'test1@localhost', nickname: '测试用户1', username: 'test1', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '' },
           { id: 'test2@localhost', nickname: '测试用户2', username: 'test2', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'away', version: '' },
+          { id: 'dev1@devhost', nickname: '研发用户', username: 'dev1', hostname: 'devhost', group: '研发部', ip: '192.168.1.20', port: 2425, status: 'online', version: '' },
+          { id: 'guest@guesthost', nickname: '访客', username: 'guest', hostname: 'guesthost', group: '', ip: '192.168.1.30', port: 2425, status: 'online', version: '' },
         ],
-        count: 2,
+        count: 4,
       } as T;
 
     case 'user.discover':

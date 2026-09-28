@@ -288,6 +288,9 @@ void MsgMng::ProcessRecvBuffer(const sockaddr_in& fromAddr, const char* data, in
     }
 
     case IPMSG_BR_ABSENCE: {
+        // A status change means the user is present. Without active, the
+        // stored copy is reported as offline by the next user.list.
+        msg.sender.active = true;
         msg.sender.hostStatus = GET_OPT(msg.command);
         msg.sender.updateTime = std::time(nullptr);
         AddOrUpdateUser(msg.sender);

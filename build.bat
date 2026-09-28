@@ -1,0 +1,1 @@
+powershell.exe -ExecutionPolicy Bypass -File "D:/sources/ipmsg-pro/build.ps1" -Arch x64

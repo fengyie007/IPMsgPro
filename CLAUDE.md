@@ -1,0 +1,1 @@
+D:/sources/ipmsg-pro/AGENTS.md
