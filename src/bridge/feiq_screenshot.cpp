@@ -76,14 +76,14 @@ void FeiQScreenshotAssembler::Dump(const std::string& fileName, const std::strin
 //     chunk LSB-first). Bits are taken from the byte stream MSB-first (bit 7 of byte 0 first).
 //   * Code width starts at 9 and grows with early change: when the code counter reaches
 //     2^width it steps 9->10->11->12, capped at 12.
-//   * New dictionary entry for code k is prev + entry[0]; the dictionary grows from 256 and
-//     is frozen at 4096 entries (codes stay 12-bit afterwards).
+//   * New dictionary entry for code k is prev + entry[0]; after entry 4095,
+//     overwrite entries cyclically from 256 (codes stay 12-bit, no clear code).
 //   * The decoded bytes are a BMP DIB (BITMAPINFOHEADER + pixel data), i.e. WITHOUT the
 //     14-byte BITMAPFILEHEADER; the caller prepends it.
 static bool LzwDecompress(const std::string& in, size_t inOff, size_t inLen,
-                          int /*minCodeSize*/, size_t /*expectedOut*/, std::string& out) {
+                          int /*minCodeSize*/, size_t expectedOut, std::string& out) {
     out.clear();
-    if (inOff + inLen > in.size()) return false;
+    if (inOff > in.size() || inLen > in.size() - inOff || expectedOut == 0) return false;
 
     size_t bitPos = 0;
     auto readCode = [&](int codeSize) -> int {
@@ -117,28 +117,29 @@ static bool LzwDecompress(const std::string& in, size_t inOff, size_t inLen,
         int k = readCode(codeSize);
         if (k < 0) break;                 // stream exhausted
         std::string entry;
-        if (k < (int)dict.size()) {
+        if (k == ds) {
+            // KwKwK also applies after wraparound: dict[ds] is then stale.
+            entry = prev + prev[0];
+        } else if (k < (int)dict.size()) {
             entry = dict[k];
-        } else if (k == ds) {
-            entry = prev + prev[0];       // KwKwK
         } else {
             return false;                 // corrupt stream / algorithm mismatch
         }
+        if (entry.size() > expectedOut - out.size()) return false;
         out += entry;
-        if (ds < 4096) {
-            if ((int)dict.size() <= ds) dict.resize(ds + 1);
-            dict[ds] = prev + entry[0];
-            ++ds;
-        }
+        if ((int)dict.size() <= ds) dict.resize(ds + 1);
+        dict[ds] = prev + entry[0];
+        if (++ds == 4096) ds = 256;
         prev = entry;
-        ++index;
+        // Width stops growing at 12; keep the counter bounded for large images.
+        if (codeSize < 12) ++index;
         // FeiQ uses the "early change" convention: the code field widens one
         // step earlier than the raw dictionary size implies, so the bump lines
         // up with the encoder. Growing at ds == 2^codeSize (standard LZW) would
         // desync and corrupt screenshots, so we match the original counter.
         if ((1 << codeSize) == index && codeSize < 12) ++codeSize;
     }
-    return !out.empty();
+    return out.size() == expectedOut;
 }
 
 void FeiQScreenshotAssembler::HandleReference(const MsgBuf& msg) {
@@ -312,7 +313,10 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
         Dump("FeiQ_RawLZW_" + id + ".bin", buf);
         std::string dib;
         bool ok = LzwDecompress(buf, 12, buf.size() - 12, 8, expectedOut, dib);
-        bool validDib = ok && dib.size() >= 40;
+        bool validDib = ok && dib.size() >= 40 && Crc32(dib) == storedCrc;
+        if (ok && !validDib) {
+            LogMessage("FEIQ", "WARN", "[FEIQ-SHOT] Decoded DIB failed integrity check id=" + id);
+        }
         if (validDib) {
             uint32_t biSize = le32(dib, 0);
             int32_t biWidth = (int32_t)le32(dib, 4);
@@ -325,32 +329,8 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
                 (biBitCount != 24 && biBitCount != 32)) {
                 validDib = false;
             } else {
-                int bytesPerRow = ((biWidth * biBitCount + 31) / 32) * 4;
-                if (dib.size() > expectedOut && expectedOut >= (size_t)biSize) {
-                    // FeiQ's LZW stream decodes to a coherent DIB followed by trailing
-                    // bits that expand into extra (ignored) pixel data. Trim to the
-                    // exact size declared in the packet header so we emit a clean BMP.
-                    dib.resize(expectedOut);
-                    LogMessage("FEIQ", "", "[FEIQ-SHOT] Trimmed decoded DIB " +
-                        std::to_string(dib.size()) + " -> declared " +
-                        std::to_string(expectedOut) + " bytes");
-                } else if (dib.size() < expectedOut) {
-                    // Decoded DIB is shorter than the header claims (e.g. a dropped
-                    // fragment): clamp biHeight to the rows we actually have so the
-                    // BMP is still valid and renders the available portion.
-                    int64_t avail = (int64_t)dib.size() - (int64_t)biSize;
-                    if (avail < 0) avail = 0;
-                    int32_t availRows = (int32_t)(avail / bytesPerRow);
-                    if (availRows > 0 && availRows < biHeight) {
-                        biHeight = availRows;
-                        dib[8]  = (char)(biHeight & 0xFF);
-                        dib[9]  = (char)((biHeight >> 8) & 0xFF);
-                        dib[10] = (char)((biHeight >> 16) & 0xFF);
-                        dib[11] = (char)((biHeight >> 24) & 0xFF);
-                        LogMessage("FEIQ", "", "[FEIQ-SHOT] Decoded DIB truncated; clamped biHeight to " +
-                            std::to_string(availRows) + " of declared rows");
-                    }
-                }
+                // Length and CRC were checked before interpreting the DIB. Never
+                // crop or pad a corrupt decode to make it appear to be a valid image.
                 // Build full BMP with BITMAPFILEHEADER.
                 std::string bmp;
                 bmp.reserve(dib.size() + 14);
@@ -448,6 +428,9 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
 
     LogMessage("FEIQ", "", "[FEIQ-SHOT] Saved " + savePathStr + " (" +
         std::to_string(buf.size()) + " bytes)");
+
+    // Keep undecodable payloads for diagnostics, but never emit them as images.
+    if (ext == "bin") return std::nullopt;
 
     FeiQScreenshotResult out;
     out.sender = shot.sender;
