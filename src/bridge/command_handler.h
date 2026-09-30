@@ -121,7 +121,7 @@ private:
     tauricpp::Window* window_ = nullptr;  // Window reference for show/hide/close
     void* hwnd_ = nullptr;  // Main window handle for dialogs (cast to HWND in cpp)
     std::string dataDir_;   // Custom data directory (empty = use default)
-    std::string minimizeBehavior_ = "taskbar";  // "taskbar" or "tray"
+    std::string minimizeBehavior_ = "tray";  // Match frontend DEFAULT_CONFIG before config sync
     bool notificationSound_ = true;  // play notification sound on new messages
 
     // Key of the conversation on screen ("" when none), pushed by the frontend

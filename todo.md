@@ -662,3 +662,17 @@
 - 状态：✅ 已完成
 
 ---
+
+## 修复：关闭到托盘设置不生效，保存设置报重复加锁错误
+
+**根因**：设置保存携带 `dataDir`，后端先调用 `ReinitLogger`；它持有 `g_logMutex` 时调用同样需要该锁的 `LogMessage`，导致 `resource deadlock would occur`，后续 `minimizeBehavior` 未应用。前端原先吞掉异常，仍关闭设置页；后端默认 taskbar 又与前端默认 tray 不一致。
+
+### 修改 72：日志与配置同步
+- `src/logger.cpp`：日志路径未变化且已打开时不重复初始化；重新初始化后先释放锁，再调用 `LogMessage`，避免同一线程重复锁定非递归互斥量。
+- `src/bridge/command_handler.h`：关闭行为默认值与前端统一为 tray。
+- `src/bridge/command_handler.cpp`：预先验证关闭行为的类型与取值，非法值不修改配置。
+- `frontend/src/stores/configStore.ts`：检查后端返回结果并传播保存失败；持久化和后端应用均成功后才更新配置状态；启动加载失败提示错误，恢复默认复用完整保存同步链路。
+- `frontend/src/components/Settings.tsx`：保存失败提示具体错误并保留设置页，不再伪装成功。
+- 验证：用户已确认前一版可隐藏到托盘，并反馈保存时报重复加锁异常；本次据此修复日志锁。完成静态代码检查；按用户要求不执行构建，最终构建及运行回归由用户完成。
+
+---

@@ -700,6 +700,11 @@ nlohmann::json CommandHandler::HandleUserLocal(const nlohmann::json& args) {
 }
 
 nlohmann::json CommandHandler::HandleConfigSet(const nlohmann::json& args) {
+    if (args.contains("minimizeBehavior") &&
+        (!args["minimizeBehavior"].is_string() ||
+         (args["minimizeBehavior"] != "tray" && args["minimizeBehavior"] != "taskbar"))) {
+        return {{"success", false}, {"error", "Invalid minimizeBehavior"}};
+    }
     std::string dataDir = args.value("dataDir", "");
 
     // The frontend sends nickname and group in separate config.set calls, so

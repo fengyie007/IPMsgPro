@@ -117,7 +117,9 @@ void InitLogger(const std::string& dataDir) {
 }
 
 void ReinitLogger(const std::string& newDataDir) {
-    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::unique_lock<std::mutex> lock(g_logMutex);
+    const std::string newLogPath = newDataDir + "\\ipmsg_gui_debug.log";
+    if (g_log.is_open() && g_logPath == newLogPath) return;
 
     // Close current log
     if (g_log.is_open()) {
@@ -154,7 +156,9 @@ void ReinitLogger(const std::string& newDataDir) {
     g_oldCoutBuf = std::cout.rdbuf(g_logBuf);
     g_oldCerrBuf = std::cerr.rdbuf(g_logBuf);
 
-    LogMessage("LOGGER", "", "[Logger] Reinitialized at new location: " + g_logPath);
+    // LogMessage acquires g_logMutex itself; never call it while holding the lock.
+    lock.unlock();
+    LogMessage("LOGGER", "", "[Logger] Reinitialized at new location: " + newLogPath);
 }
 
 void LogMessage(const std::string& tag, const std::string& level,

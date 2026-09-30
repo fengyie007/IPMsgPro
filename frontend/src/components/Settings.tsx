@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FiX, FiPlus, FiTrash2, FiFolder, FiRotateCcw, FiMonitor, FiMinimize2, FiVolume2, FiVolumeX, FiUserPlus } from 'react-icons/fi';
 import { useConfigStore } from '../stores/configStore';
+import { toast } from '../stores/toastStore';
 import { Config, APP_VERSION } from '../types';
 import { invoke, listen } from '../services/bridge';
 import { normalizeSegment, normalizeDirectUser, normalizeScanRange } from '../utils/netValidation';
@@ -68,8 +69,12 @@ export default function Settings({ onClose }: SettingsProps) {
   }, []);
 
   const handleSave = async () => {
-    await saveConfig(localConfig);
-    onClose();
+    try {
+      await saveConfig(localConfig);
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const handleAddSegment = () => {
