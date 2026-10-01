@@ -27,6 +27,8 @@
 #include <cctype>
 #include <cstring>
 #include <cstdint>
+#include <charconv>
+#include <string_view>
 #include <vector>
 #include <tauricpp/dialog.hpp>
 #include <shlobj.h>
@@ -92,6 +94,47 @@ static std::string UniqueSavePath(const std::string& dir, const std::string& nam
         if (!fs::exists(fs::path(Utf8ToWide(candidate)), ec)) return candidate;
     }
     return candidate;
+}
+
+// FeiQ appends LOGFONT fields, a font face and COLORREF to plain text. Only
+// strip a complete, well-formed suffix; ordinary braces and partial tags are text.
+static std::string StripFeiQFontSuffix(const std::string& body) {
+    constexpr std::string_view marker = "{/font;";
+    const size_t start = body.rfind(marker);
+    if (start == std::string::npos || body.size() - start > 512 ||
+        body.size() - start < marker.size() + 2 || body.compare(body.size() - 2, 2, ";}") != 0) {
+        return body;
+    }
+    std::string_view fields(body.data() + start + marker.size(),
+                            body.size() - start - marker.size() - 2);
+    if (fields.find_first_of("{};\r\n") != std::string_view::npos) return body;
+    auto trimSpaces = [](std::string_view text) {
+        const size_t first = text.find_first_not_of(" \t");
+        if (first == std::string_view::npos) return std::string_view{};
+        const size_t last = text.find_last_not_of(" \t");
+        return text.substr(first, last - first + 1);
+    };
+    // Five LONG fields followed by eight BYTE fields (LOGFONT without lfFaceName).
+    for (int i = 0; i < 13; ++i) {
+        fields = trimSpaces(fields);
+        const size_t end = fields.find_first_of(" \t");
+        if (end == std::string_view::npos) return body;
+        int32_t value = 0;
+        const auto parsed = std::from_chars(fields.data(), fields.data() + end, value);
+        if (parsed.ec != std::errc{} || parsed.ptr != fields.data() + end ||
+            (i >= 5 && (value < 0 || value > 255))) return body;
+        fields.remove_prefix(end + 1);
+    }
+    fields = trimSpaces(fields);
+    // The final token is the color; the font face may itself contain spaces.
+    const size_t colorStart = fields.find_last_of(" \t");
+    if (colorStart == std::string_view::npos ||
+        trimSpaces(fields.substr(0, colorStart)).empty()) return body;
+    const std::string_view color = fields.substr(colorStart + 1);
+    uint32_t value = 0;
+    const auto parsed = std::from_chars(color.data(), color.data() + color.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != color.data() + color.size()) return body;
+    return body.substr(0, start);
 }
 
 // Toast text for a chat message body: emoji XML becomes "[表情]", line breaks become spaces.
@@ -447,6 +490,7 @@ void CommandHandler::SetupEventForwarding() {
 
             // Determine message type based on command flags
             bool isFileAttach = (msg.command & IPMSG_FILEATTACHOPT) != 0;
+            const std::string content = isFileAttach ? msg.body : StripFeiQFontSuffix(msg.body);
 
             std::string msgType = "text";
             int dbType = 0;  // 0:text, 1:image, 2:file
@@ -568,7 +612,7 @@ void CommandHandler::SetupEventForwarding() {
                 {"id", messageId},
                 {"from", msg.sender.Key()},
                 {"fromUser", UserToJson(msg.sender)},
-                {"content", msg.body},
+                {"content", content},
                 {"type", msgType},
                 {"timestamp", static_cast<int64_t>(msg.timestamp)},
                 {"command", msg.command},
@@ -582,7 +626,7 @@ void CommandHandler::SetupEventForwarding() {
                 record.id = messageId;
                 record.fromId = msg.sender.Key();
                 record.toId = msgMng_->GetLocalUser().Key();
-                record.content = msg.body;
+                record.content = content;
                 record.type = dbType;
                 record.timestamp = static_cast<int64_t>(msg.timestamp);
                 record.status = kMsgStatusDelivered;
@@ -594,7 +638,7 @@ void CommandHandler::SetupEventForwarding() {
 
             // File attachments notify below, once their receive request is out.
             if (!isFileAttach) {
-                NotifyIncoming(msg.sender, NotificationPreview(msg.body));
+                NotifyIncoming(msg.sender, NotificationPreview(content));
             }
 
             // Do NOT auto-reply RECVMSG for file attachment notifications
