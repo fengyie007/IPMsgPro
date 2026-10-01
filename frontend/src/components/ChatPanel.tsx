@@ -248,23 +248,37 @@ export default function ChatPanel() {
   };
 
   const finishScreenshot = async (confirm: boolean, dataUrl?: string) => {
-    if (confirm && dataUrl && currentUser) {
-      const base64 = dataUrl.split(',')[1];
-      const now = new Date();
-      const ts = now.getFullYear().toString() +
-        String(now.getMonth() + 1).padStart(2, '0') +
-        String(now.getDate()).padStart(2, '0') +
-        String(now.getHours()).padStart(2, '0') +
-        String(now.getMinutes()).padStart(2, '0') +
-        String(now.getSeconds()).padStart(2, '0');
-      await sendImage(currentUser.id, base64, `Beixin_${ts}_screenshot.png`);
-    }
-    // Restore the window to its normal state and keep it on top.
     try {
-      await invoke('window.restore');
-      await invoke('window.set_always_on_top', { on_top: true });
-    } catch { /* ignore */ }
-    setScreenshot(null);
+      if (confirm && dataUrl && currentUser) {
+        const base64 = dataUrl.split(',')[1];
+        const now = new Date();
+        const ts = now.getFullYear().toString() +
+          String(now.getMonth() + 1).padStart(2, '0') +
+          String(now.getDate()).padStart(2, '0') +
+          String(now.getHours()).padStart(2, '0') +
+          String(now.getMinutes()).padStart(2, '0') +
+          String(now.getSeconds()).padStart(2, '0');
+        await sendImage(currentUser.id, base64, `Beixin_${ts}_screenshot.png`);
+      }
+    } catch (err) {
+      toast.error('截图发送失败：' + String(err));
+    } finally {
+      // Always release the editor's temporary topmost state, even if sending fails.
+      // Restore and unpin independently so a restore error cannot skip unpinning.
+      try {
+        await invoke('window.restore');
+      } catch (err) {
+        console.error('[ChatPanel] Failed to restore screenshot window', err);
+      }
+      try {
+        const res = await invoke<{ success: boolean; error?: string }>(
+          'window.set_always_on_top', { on_top: false });
+        if (!res?.success) throw new Error(res?.error || '取消置顶失败');
+      } catch (err) {
+        toast.error('取消截图窗口置顶失败：' + String(err));
+      }
+      setScreenshot(null);
+    }
   };
 
   // ---- File select & preview ----
