@@ -45,6 +45,8 @@ public:
     static bool IsFragment(uint32_t command, const std::string& body);
 
     void SetDebugDump(DebugDump dump);
+    using FragmentAck = std::function<void(const UserInfo&, const std::string&, int)>;
+    void SetFragmentAck(FragmentAck ack) { ack_ = std::move(ack); }
 
     /// Log the reference message. Nothing is surfaced to the UI yet: the
     /// finished image arrives through HandleFragment.
@@ -63,6 +65,7 @@ private:
         std::string senderKey;
         int totalSize = 0;
         int fragCount = 0;
+        time_t updated = 0;
         UserInfo sender;                    // captured from the first fragment
         std::map<int, std::string> frags;   // fragIndex -> chunk bytes (leading 0x00 stripped)
     };
@@ -76,8 +79,10 @@ private:
     // up; anything in this set is dropped so an image is never delivered
     // twice. Kept for the session (ids are random 8-hex; volume is tiny).
     std::set<std::string> emittedIds_;
+    std::set<std::string> rejectedIds_; // never ACK a retry of a failed assembly
     std::mutex mutex_;
     DebugDump dump_;
+    FragmentAck ack_;
 };
 
 }  // namespace ipmsg

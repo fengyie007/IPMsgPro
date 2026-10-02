@@ -25,6 +25,17 @@ export async function invoke<T = any>(command: string, args?: Record<string, any
   return getMockResponse<T>(command, args);
 }
 
+const mockListeners = new Map<string, Set<(data: any) => void>>();
+const mockImages = new Map<string, { dataUrl: string; fileSize: number }>();
+let mockImageSequence = 0;
+function emitMock(event: string, data: unknown) {
+  mockListeners.get(event)?.forEach((callback) => callback(data));
+}
+function rememberMockImage(filePath: string, image: { dataUrl: string; fileSize: number }) {
+  if (mockImages.size >= 64) mockImages.delete(mockImages.keys().next().value!);
+  mockImages.set(filePath, image);
+}
+
 /**
  * Listen to a C++ backend event.
  * Returns an unsubscribe function.
@@ -34,9 +45,14 @@ export function listen(event: string, callback: (data: any) => void): () => void
     return window.__tauricpp__.listen(event, callback);
   }
 
-  // Dev mode: no-op
   console.log(`[Bridge Dev] listen("${event}")`);
-  return () => {};
+  const callbacks = mockListeners.get(event) || new Set<(data: any) => void>();
+  callbacks.add(callback);
+  mockListeners.set(event, callbacks);
+  return () => {
+    callbacks.delete(callback);
+    if (callbacks.size === 0) mockListeners.delete(event);
+  };
 }
 
 // ---------- Mock responses for development ----------
@@ -82,14 +98,35 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
     case 'file.send':
       return { success: true, transferId: `mock_${Date.now()}`, fileName: args?.filePath?.split(/[\\/]/).pop() ?? 'file' } as T;
 
-    case 'file.save_temp':
-      return { success: true, filePath: `C:\\Temp\\${args?.filename ?? 'temp'}` } as T;
+    case 'image.send': {
+      const source = mockImages.get(args?.filePath);
+      if (!source) return { success: false, error: '开发模式下请选择模拟图片' } as T;
+      const imageId = (++mockImageSequence).toString(16).padStart(8, '0');
+      const messageId = `mock_image_${Date.now()}_${imageId}`;
+      const fileName = args?.filePath?.split(/[\\/]/).pop() || 'image.png';
+      const filePath = `C:\\Mock\\Sent\\${imageId}_${fileName}`;
+      rememberMockImage(filePath, source);
+      const data = { messageId, target: args?.target, filePath, fileName, fileSize: source.fileSize, progress: 0 };
+      // Exercise the real race: the initial event arrives before invoke resolves.
+      emitMock('image.send_progress', data);
+      setTimeout(() => emitMock('image.send_progress', { ...data, progress: 50 }), 200);
+      setTimeout(() => emitMock('image.send_completed', { ...data, progress: 100 }), 500);
+      return { success: true, messageId, imageId, filePath, fileName, fileSize: source.fileSize } as T;
+    }
+
+    case 'file.save_temp': {
+      const filePath = `C:\\Temp\\${args?.filename ?? 'temp'}`;
+      rememberMockImage(filePath, { dataUrl: `data:image/png;base64,${args?.data || ''}`, fileSize: Math.floor((args?.data?.length || 0) * 3 / 4) });
+      return { success: true, filePath } as T;
+    }
 
     case 'file.info':
-      return { success: true, fileSize: 0, fileName: args?.filePath?.split(/[\\/]/).pop() ?? '' } as T;
+      return { success: true, fileSize: mockImages.get(args?.filePath)?.fileSize || 0, fileName: args?.filePath?.split(/[\\/]/).pop() ?? '' } as T;
 
-    case 'file.read_image':
-      return { success: false, error: 'not available in dev mode' } as T;
+    case 'file.read_image': {
+      const image = mockImages.get(args?.filePath);
+      return (image ? { success: true, ...image } : { success: false, error: 'not available in dev mode' }) as T;
+    }
 
     case 'history.get':
     case 'history.get_recent':
@@ -99,8 +136,15 @@ function getMockResponse<T>(command: string, args?: Record<string, any>): T {
     case 'dialog.pick_folder':
       return { success: true, folder: '' } as T;
 
-    case 'dialog.open':
+    case 'dialog.open': {
+      if (args?.filters?.some((filter: { pattern?: string }) => filter.pattern?.includes('*.png'))) {
+        const filePath = 'C:\\Mock\\示例图片.png';
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="24" fill="#166534">Image preview</text></svg>';
+        rememberMockImage(filePath, { dataUrl: `data:image/svg+xml,${encodeURIComponent(svg)}`, fileSize: svg.length });
+        return { success: true, files: [filePath] } as T;
+      }
       return { success: true, files: [] } as T;
+    }
 
     case 'dialog.save':
       return { success: false, cancelled: true } as T;

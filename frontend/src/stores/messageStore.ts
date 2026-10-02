@@ -3,15 +3,36 @@
 // ============================================================================
 
 import { create } from 'zustand';
-import { Message, FileInfoAttachment, FileReceiveRequestEvent, User } from '../types';
+import { Message, FileInfoAttachment, FileReceiveRequestEvent, User, ImageSendResult, ImageSendEvent } from '../types';
 import { invoke, listen } from '../services/bridge';
 import { useUserStore } from './userStore';
+import { toast } from './toastStore';
 
 // Module-level dedupe for FeiQ screenshots. Lives outside the store closure so it
 // stays effective even if initMessageListeners is (accidentally) registered twice
 // (e.g. React StrictMode in dev). Keyed by sender+size+dataUrl length, 2s window.
 let lastFeiqSig = '';
 let lastFeiqAt = 0;
+
+type ImageSendPhase = 'progress' | 'completed' | 'failed';
+// Worker events can arrive before image.send returns its message id. Keep only
+// the latest update per id, with terminal events taking precedence over progress.
+const earlyImageEvents = new Map<string, { data: ImageSendEvent; phase: ImageSendPhase; at: number }>();
+const imageEventKey = (data: Pick<ImageSendEvent, 'target' | 'messageId'>) => `${data.target}\0${data.messageId}`;
+function bufferImageEvent(data: ImageSendEvent, phase: ImageSendPhase) {
+  const now = Date.now();
+  for (const [key, event] of earlyImageEvents) {
+    if (now - event.at > 60_000) earlyImageEvents.delete(key);
+  }
+  const key = imageEventKey(data);
+  const previous = earlyImageEvents.get(key);
+  if (previous && previous.phase !== 'progress') return;
+  if (previous && phase === 'progress' && previous.data.progress > data.progress) return;
+  if (!previous && earlyImageEvents.size >= 128) {
+    earlyImageEvents.delete(earlyImageEvents.keys().next().value!);
+  }
+  earlyImageEvents.set(key, { data, phase, at: now });
+}
 
 /** Pending file receive request */
 export interface PendingFileReceive {
@@ -53,6 +74,7 @@ function locateTransferMessage(
         (m) =>
           m.from === 'self' &&
           (m.type === 'file' || m.type === 'image') &&
+          !m.fileInfo?.imageId &&
           m.status === 'sending' &&
           (m.transferProgress === undefined || m.transferProgress < 100)
       );
@@ -101,8 +123,10 @@ interface MessageStore {
   /** Send a text message to a user */
   sendMessage: (target: string, content: string) => Promise<boolean>;
 
-  /** Send an image to a user */
+  /** Send an image through FeiQ's inline image channel */
   sendImage: (target: string, base64Data: string, filename: string) => Promise<boolean>;
+  sendImageByPath: (target: string, filePath: string) => Promise<boolean>;
+  updateImageSend: (data: ImageSendEvent, phase: ImageSendPhase) => void;
 
   /** Send a file to a user using a real file path (no base64/temp copy, fast for large files) */
   sendFileByPath: (target: string, filePath: string) => Promise<boolean>;
@@ -197,47 +221,110 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
   sendImage: async (target, base64Data, filename) => {
     console.log(`[IMG_SEND] target=${target}, filename=${filename}, dataSize=${base64Data.length}`);
     try {
-      // 截图/图片统一走标准文件传输通道（TCP），对方以“接收/确认”方式接收，
-      // 不再使用飞秋内联富文本（引用消息 + 分片）协议。
       const saveResult = await invoke<{ success: boolean; filePath?: string; error?: string }>(
         'file.save_temp',
         { data: base64Data, filename }
       );
       if (!saveResult.success || !saveResult.filePath) {
-        console.error('[IMG_SEND] Failed to save temp file:', saveResult.error);
-        return false;
+        throw new Error(saveResult.error || '无法保存截图');
       }
-      const result = await invoke<{ success: boolean; transferId?: string; fileName?: string; error?: string }>(
-        'file.send',
-        { target, filePath: saveResult.filePath }
-      );
-      if (result.success) {
-        const displayName = result.fileName || filename;
-        const msg: Message = {
-          id: result.transferId || Date.now().toString(),
-          from: 'self',
-          to: target,
-          content: displayName,
-          type: 'image',
-          timestamp: Date.now(),
-          status: 'sending',
-          fileInfo: {
-            fileName: displayName,
-            fileSize: 0,
-            filePath: saveResult.filePath,
-            transferId: result.transferId,
-          },
-          transferProgress: 0,
-        };
-        get().recvMessage(msg);
-        return true;
-      }
-      console.error('[IMG_SEND] file.send failed:', result.error);
-      return false;
+      return await get().sendImageByPath(target, saveResult.filePath);
     } catch (err) {
       console.error('sendImage error:', err);
+      set({ error: err instanceof Error ? err.message : String(err) });
       return false;
     }
+  },
+
+  sendImageByPath: async (target, filePath) => {
+    set({ error: null });
+    try {
+      const result = await invoke<ImageSendResult>('image.send', { target, filePath });
+      if (!result.success || !result.messageId || !result.imageId || !result.filePath) {
+        throw new Error(result.error || '图片发送任务未能创建');
+      }
+      const displayName = result.fileName || filePath.split(/[\\/]/).pop() || filePath;
+      const msg: Message = {
+        id: result.messageId,
+        from: 'self',
+        to: target,
+        content: displayName,
+        type: 'image',
+        timestamp: Date.now(),
+        status: 'sending',
+        fileInfo: {
+          fileName: displayName,
+          fileSize: result.fileSize || 0,
+          // The worker may still be copying into result.filePath. Preview the
+          // existing source until its first event supplies the durable copy.
+          filePath,
+          imageId: result.imageId,
+        },
+        transferProgress: 0,
+      };
+      // A history request can also insert this id while image.send is pending.
+      // Upsert metadata without duplicating it or downgrading a terminal event.
+      set((state) => {
+        const messages = [...(state.messages.get(target) || [])];
+        const idx = messages.findIndex((m) => m.id === msg.id);
+        if (idx < 0) messages.push(msg);
+        else {
+          const previous = messages[idx];
+          const terminal = previous.status === 'delivered' || previous.status === 'failed';
+          messages[idx] = {
+            ...msg,
+            ...(terminal ? { status: previous.status, transferProgress: previous.transferProgress } : {}),
+            fileInfo: { ...msg.fileInfo!, ...(previous.transferProgress !== undefined || terminal ? previous.fileInfo : {}) },
+          };
+        }
+        const all = new Map(state.messages);
+        all.set(target, messages);
+        return { messages: all };
+      });
+      const key = imageEventKey({ target, messageId: msg.id });
+      const early = earlyImageEvents.get(key);
+      earlyImageEvents.delete(key);
+      if (early) get().updateImageSend(early.data, early.phase);
+      return true;
+    } catch (err) {
+      console.error('[IMG_SEND] image.send failed:', err);
+      set({ error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  },
+
+  updateImageSend: (data, phase) => {
+    if (!data?.messageId || !data.target) return;
+    let found = false;
+    let notifyFailure = false;
+    set((state) => {
+      const messages = state.messages.get(data.target);
+      const idx = messages?.findIndex((m) => m.id === data.messageId && m.from === 'self' && m.type === 'image') ?? -1;
+      if (!messages || idx < 0) return {};
+      found = true;
+      const msg = messages[idx];
+      // A delayed progress tick (or duplicate terminal event) cannot undo completion.
+      if (msg.status === 'delivered' || msg.status === 'failed') return {};
+      const progress = Number.isFinite(data.progress) ? Math.max(0, Math.min(100, data.progress)) : 0;
+      const updated = [...messages];
+      updated[idx] = {
+        ...msg,
+        status: phase === 'completed' ? 'delivered' : phase === 'failed' ? 'failed' : 'sending',
+        transferProgress: phase === 'completed' ? 100 : phase === 'failed' ? undefined : Math.max(msg.transferProgress || 0, progress),
+        fileInfo: {
+          ...msg.fileInfo,
+          fileName: data.fileName || msg.fileInfo?.fileName || '',
+          fileSize: data.fileSize ?? msg.fileInfo?.fileSize ?? 0,
+          filePath: data.filePath || msg.fileInfo?.filePath,
+        },
+      };
+      const newMessages = new Map(state.messages);
+      newMessages.set(data.target, updated);
+      notifyFailure = phase === 'failed';
+      return { messages: newMessages };
+    });
+    if (!found) bufferImageEvent(data, phase);
+    else if (notifyFailure) toast.error('图片发送失败：' + (data.error || '对方可能不支持内嵌图片或已离线，可尝试通过文件按钮发送'));
   },
 
   sendFileByPath: async (target, filePath) => {
@@ -550,11 +637,13 @@ updateTransferProgress: (transferId, progress, isSending) => {
             const inFlight = (m.type === 'file' || m.type === 'image') &&
               m.status === 'sending' &&
               (m.transferProgress === undefined || m.transferProgress < 100);
-            return inFlight;
+            return inFlight || !!m.fileInfo?.imageId;
           });
 
-          // Combine: history + realtime-only, sorted by timestamp
-          const combined = [...msgs, ...realtimeOnly].sort((a, b) => a.timestamp - b.timestamp);
+          // Live state replaces the same historical id rather than duplicating it.
+          const liveIds = new Set(realtimeOnly.map((m) => m.id));
+          const combined = [...msgs.filter((m) => !liveIds.has(m.id)), ...realtimeOnly]
+            .sort((a, b) => a.timestamp - b.timestamp);
           newMessages.set(userId, combined);
 
           // Paging bookkeeping: the backend returns the newest `limit` after
@@ -706,6 +795,11 @@ updateTransferProgress: (transferId, progress, isSending) => {
     const hasTauricpp = typeof (window as any).__tauricpp__ !== 'undefined';
     const hasEmit = hasTauricpp && typeof (window as any).__tauricpp_internal_emit === 'function';
     console.log('[MessageStore] window.__tauricpp__:', hasTauricpp, 'window.__tauricpp_internal_emit:', hasEmit);
+
+    // Inline images have their own lifecycle, independent from TCP file events.
+    unsubs.push(listen('image.send_progress', (data: ImageSendEvent) => get().updateImageSend(data, 'progress')));
+    unsubs.push(listen('image.send_completed', (data: ImageSendEvent) => get().updateImageSend(data, 'completed')));
+    unsubs.push(listen('image.send_failed', (data: ImageSendEvent) => get().updateImageSend(data, 'failed')));
 
     // Listen for incoming messages
     unsubs.push(listen('message.received', (data: any) => {
@@ -929,16 +1023,19 @@ updateTransferProgress: (transferId, progress, isSending) => {
     unsubs.push(listen('feiq.screenshot_received', (data: any) => {
       console.log(`[FEIQ_SHOT] from=${data.fromUser?.id}, fileName=${data.fileName}, size=${data.fileSize}`);
 
-      // Dedupe: the same screenshot delivered twice (retransmit or double listener)
-      // would otherwise create two preview records. Key by sender+size+dataUrl length.
-      const sig = `${data.fromUser?.id}|${data.fileSize}|${(data.dataUrl || '').length}`;
-      const now = Date.now();
-      if (sig === lastFeiqSig && now - lastFeiqAt < 2000) {
-        console.log('[FEIQ_SHOT] Duplicate delivery ignored (same sig within 2s)');
-        return;
+      const messageId = typeof data.messageId === 'string' && data.messageId ? data.messageId : undefined;
+      // New backends provide a stable id (also used in history). Same-sized
+      // images are distinct messages; only legacy events need the old heuristic.
+      if (!messageId) {
+        const sig = `${data.fromUser?.id}|${data.fileSize}|${(data.dataUrl || '').length}`;
+        const now = Date.now();
+        if (sig === lastFeiqSig && now - lastFeiqAt < 2000) {
+          console.log('[FEIQ_SHOT] Duplicate delivery ignored (same sig within 2s)');
+          return;
+        }
+        lastFeiqSig = sig;
+        lastFeiqAt = now;
       }
-      lastFeiqSig = sig;
-      lastFeiqAt = now;
 
       // Auto-add the sender to the contact list if missing. Like normal
       // messages, the conversation is not auto-selected (unread badge instead).
@@ -961,15 +1058,15 @@ updateTransferProgress: (transferId, progress, isSending) => {
       }
 
       const msg: Message = {
-        id: `feiq_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        id: messageId || `feiq_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         from: data.fromUser?.id || 'unknown',
         to: 'self',
         content: data.dataUrl,
         type: 'image',
-        timestamp: Date.now(),
+        timestamp: typeof data.timestamp === 'number' && Number.isFinite(data.timestamp) ? data.timestamp * 1000 : Date.now(),
         status: 'delivered',
         fromUser: data.fromUser,
-        fileInfo: { fileName: data.fileName, fileSize: data.fileSize || 0, filePath: data.savePath },
+        fileInfo: { fileName: data.fileName, fileSize: data.fileSize || 0, filePath: data.savePath, imageId: data.imageId },
         transferProgress: 100,
       };
       get().recvMessage(msg);

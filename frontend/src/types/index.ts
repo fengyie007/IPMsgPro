@@ -40,6 +40,28 @@ export interface FileInfoAttachment {
   filePath?: string;
   /** Transfer ID for tracking progress */
   transferId?: string;
+  /** FeiQ inline image ID; these messages are not TCP file transfers. */
+  imageId?: string;
+}
+
+export interface ImageSendResult {
+  success: boolean;
+  messageId?: string;
+  imageId?: string;
+  filePath?: string;
+  fileName?: string;
+  fileSize?: number;
+  error?: string;
+}
+
+export interface ImageSendEvent {
+  messageId: string;
+  target: string;
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  progress: number;
+  error?: string;
 }
 
 /** Config type. Persisted in IndexedDB; the backend receives the keys listed

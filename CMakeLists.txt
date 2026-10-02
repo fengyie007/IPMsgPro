@@ -183,12 +183,14 @@ set(IPMSGPRO_SOURCES
     src/util/encoding.cpp
     src/util/app_paths.cpp
     src/util/base64.cpp
+    src/util/feiq_lzw.cpp
     src/ipmsg/msgmng.cpp
     src/ipmsg/network.cpp
     src/bridge/command_handler.cpp
     src/bridge/notification_sound.cpp
     src/bridge/screen_capture.cpp
     src/bridge/feiq_screenshot.cpp
+    src/bridge/feiq_image_sender.cpp
     src/database/message_db.cpp
     src/file/file_transfer.cpp
 )

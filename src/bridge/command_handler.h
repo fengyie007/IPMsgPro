@@ -10,6 +10,7 @@
 #include "database/message_db.h"
 #include "file/file_transfer.h"
 #include "bridge/feiq_screenshot.h"
+#include "bridge/feiq_image_sender.h"
 #include <map>
 #include <chrono>
 #include <memory>
@@ -46,6 +47,7 @@ public:
 
     /// Setup event forwarding (IPMsg events -> Bridge events)
     void SetupEventForwarding();
+    void Shutdown() { imageSender_.Shutdown(); }
 
 private:
     CommandHandler() = default;
@@ -58,6 +60,7 @@ private:
 
     // --- Message Commands ---
     nlohmann::json HandleMessageSend(const nlohmann::json& args);
+    nlohmann::json HandleImageSend(const nlohmann::json& args);
 
     // --- File Commands ---
     nlohmann::json HandleFileSend(const nlohmann::json& args);
@@ -148,6 +151,7 @@ private:
     // Reassembly lives in FeiQScreenshotAssembler; this class only forwards
     // the finished image to the frontend.
     FeiQScreenshotAssembler feiqAssembler_;
+    FeiQImageSender imageSender_;
     void EmitFeiQScreenshot(const FeiQScreenshotResult& shot);
 };
 

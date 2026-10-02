@@ -166,6 +166,11 @@ public:
                              const std::string& fileAttachInfo,
                              uint32_t options = IPMSG_FILEATTACHOPT);
 
+    /// Send an inline-image reference, binary fragment or fragment ACK. Passing
+    /// packetNo reuses a reference's number on retry; binary payloads stay raw.
+    uint64_t SendImagePacket(const UserInfo& target, uint32_t command,
+                             const std::string& payload, uint64_t packetNo = 0);
+
     /// Send RECVMSG acknowledgment
     bool SendRecvMsg(const UserInfo& target, uint64_t packetNo);
 

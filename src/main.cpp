@@ -483,7 +483,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
     LOG_INFO("App event loop ended, cleaning up...");
 
-    // Cleanup
+    // Stop image workers while their network/database dependencies still exist.
+    cmdHandler.Shutdown();
     g_msgMng->Shutdown();
     ipmsg::WSACleanup();
 

@@ -28,7 +28,8 @@ Requires: Visual Studio 2022+ with the C++ desktop workload, CMake 3.15+, Python
 
 - `src/ipmsg/` — IPMsg v3.0 protocol over UDP 2425 (`protocol.h` constants, `msgmng.cpp` discovery/messaging/IP-range scan, `network.cpp` sockets + directed-broadcast helpers using the real subnet prefix)
 - `src/bridge/command_handler.cpp` — command registration, event forwarding, config handling, all `Handle*` commands
-- `src/bridge/feiq_screenshot.*` — `FeiQScreenshotAssembler`: FeiQ inline-screenshot fragment reassembly + LZW decode (receive only; the send channel was removed)
+- `src/bridge/feiq_screenshot.*` — FeiQ inline-image reassembly and fragment ACKs; `src/bridge/feiq_image_sender.*` — bounded background send queue, GDI+ image conversion, ACK/retry handling
+- `src/util/feiq_lzw.*` — shared FeiQ LZW encode/decode + CRC32 (cyclic dictionary slots 256–4095, 12-bit width after saturation)
 - `src/bridge/screen_capture.*`, `src/bridge/notification_sound.*` — GDI+ screen capture, MCI notification sound
 - `src/util/encoding.*` — the only place that calls `MultiByteToWideChar`/`WideCharToMultiByte`; `src/util/app_paths.*` — data dir, registry, Downloads, temp; `src/util/base64.*`
 - `src/database/` — SQLite message storage (single `messages` table, `MessageStatus` enum, thread-safe)
@@ -45,6 +46,14 @@ Requires: Visual Studio 2022+ with the C++ desktop workload, CMake 3.15+, Python
 - Backend → frontend events go through `bridge_->Emit("x.y", json)` (`message.received`, `message.ack`, `file.*`, `user.*`, `network.scan_*`, `feiq.screenshot_received`); the frontend subscribes with `listen()` from `services/bridge.ts` (mostly inside each store's `initListeners`).
 - `services/bridge.ts` falls back to `getMockResponse()` when `window.__tauricpp__` is absent — add a mock case for every new command, or dev mode returns "Unknown command".
 - Handlers run on the WebView2 UI thread; `MsgMng` callbacks run on the UDP receive thread; file-transfer callbacks on TCP worker threads. `Bridge::Emit` is thread-safe (posts to the UI thread).
+
+## Inline image sending
+
+- `image.send {target, filePath}` queues PNG/JPEG/BMP as a FeiQ inline image; screenshots save PNG first and use the same command. Normal files stay on TCP.
+- For direct FeiQ preview, send/ACK all binary fragments first, then send the single text reference (0x120, two trailing NULs). Reference-first produced a generic object icon in verified tests; data-first fixed it without encryption.
+- `image.send_progress/completed/failed` use `messageId` (not a TCP transferId). `success` from `image.send` only means queued; completion requires fragment ACKs and the reference receipt, not proof of rendering/read status.
+- Sent image copies live in `<dataDir>/images/<messageId>/`. Call `CommandHandler::Shutdown` before destroying network/database objects.
+- Limits: 4 queued/active sends, 20 MiB input, 16M pixels, 16 MiB compressed payload. The sender paces 512-byte fragments with bounded retries; unsupported peers fail explicitly rather than silently falling back to files.
 
 ## Config flow
 
@@ -74,7 +83,7 @@ After the startup sync the frontend calls `config.loaded`; the backend then send
 
 ## Testing & debugging
 
-- No unit tests, no CI. Verify by building and running; check `ipmsg_gui_debug.log` (add `--verbose` for protocol traces).
+- No CI. `tools/test_feiq_lzw.cpp` is a standalone portable codec regression test (build instructions at its top; optional real LZW/BMP fixtures stay outside git). Verify the full app by building/running and checking `ipmsg_gui_debug.log` (`--verbose` for protocol traces).
 - Two-instance test: `SpeedIpMsg.exe --port=2426` next to the default instance (separate data dir + DB).
 - Headless protocol harness: `SpeedIpMsg.exe --mode=cli --cmd=server|test --port=N [--config=<json>] [--target=ip[:port]]`; `tools/e2e_smoke.py <exe> <gui_port> <cli_port>` drives a CLI runner against a GUI instance and prints the resulting log lines and DB rows.
 - GUI flags: `--port=N` (also isolates the data dir), `--adduser=ip:port[,ip:port...]` (skips broadcast, sends BR_ENTRY directly), `--verbose`.

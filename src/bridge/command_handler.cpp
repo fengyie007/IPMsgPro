@@ -178,6 +178,17 @@ void CommandHandler::Init(tauricpp::Bridge& bridge, MsgMng& msgMng,
     feiqAssembler_.SetDebugDump([this](const std::string& name, const std::string& data) {
         DumpDebugFile(name, data);
     });
+    feiqAssembler_.SetFragmentAck([this](const UserInfo& peer, const std::string& id, int index) {
+        msgMng_->SendImagePacket(peer, IPMSG_REPORT_RECVIMAGE, id + "|" + std::to_string(index) + "#");
+    });
+    imageSender_.Init(msgMng, msgDb, [this](const FeiQImageSender::Task& task,
+                                          const std::string& state, int progress, const std::string& error) {
+        bridge_->Emit("image.send_" + state, {
+            {"messageId", task.messageId}, {"imageId", task.imageId}, {"target", task.target.Key()},
+            {"filePath", task.copied ? task.filePath : task.sourcePath},
+            {"fileName", task.fileName}, {"fileSize", task.fileSize}, {"progress", progress}, {"error", error}
+        });
+    });
 }
 
 void CommandHandler::SetNativeWindowHandle(void* hwnd) {
@@ -244,6 +255,8 @@ void CommandHandler::RegisterAllCommands() {
     // Message
     bridge_->RegisterCommand("message.send",
         [this](const nlohmann::json& args) { return HandleMessageSend(args); });
+    bridge_->RegisterCommand("image.send",
+        [this](const nlohmann::json& args) { return HandleImageSend(args); });
 
     // File
     bridge_->RegisterCommand("file.send",
@@ -430,6 +443,8 @@ void CommandHandler::SetupEventForwarding() {
             // receipt's own number). Resolve it to the database id handed to the
             // frontend by message.send, persist "delivered", then forward.
             uint32_t mode = GET_MODE(msg.command);
+            if (mode == IPMSG_REPORT_RECVIMAGE || mode == IPMSG_RECVMSG) imageSender_.HandleAck(msg);
+            if (mode == IPMSG_REPORT_RECVIMAGE) return;
             if (mode == IPMSG_RECVMSG) {
                 uint64_t ackedPacketNo = 0;
                 try { ackedPacketNo = std::stoull(msg.body); } catch (...) {}
@@ -969,6 +984,19 @@ nlohmann::json CommandHandler::HandleMessageSend(const nlohmann::json& args) {
     }
 
     return {{"success", ok}, {"messageId", record.id}};
+}
+
+nlohmann::json CommandHandler::HandleImageSend(const nlohmann::json& args) {
+    auto target = FindUserFromArgs(args);
+    if (!target) return {{"success", false}, {"error", "未找到目标用户"}};
+    const std::string source = args.value("filePath", "");
+    if (source.empty()) return {{"success", false}, {"error", "请选择图片文件"}};
+    FeiQImageSender::Task task;
+    std::string error;
+    if (!imageSender_.Enqueue(*target, source, GetDataDir(), task, error))
+        return {{"success", false}, {"error", error}};
+    return {{"success", true}, {"messageId", task.messageId}, {"imageId", task.imageId},
+            {"filePath", task.filePath}, {"fileName", task.fileName}, {"fileSize", task.fileSize}};
 }
 
 // ---------- File Commands ----------
@@ -1743,6 +1771,14 @@ nlohmann::json CommandHandler::HandleDialogOpen(const nlohmann::json& args) {
     tauricpp::Dialog::OpenOptions opts;
     opts.title = title;
     opts.multi_select = multi;
+    if (args.contains("filters") && args["filters"].is_array()) {
+        for (const auto& filter : args["filters"]) {
+            if (filter.is_object() && filter.contains("name") && filter["name"].is_string() &&
+                filter.contains("pattern") && filter["pattern"].is_string()) {
+                opts.filters.push_back({filter["name"].get<std::string>(), filter["pattern"].get<std::string>()});
+            }
+        }
+    }
     if (args.contains("default_path") && args["default_path"].is_string()) {
         opts.default_path = args["default_path"].get<std::string>();
     }
@@ -1778,9 +1814,21 @@ void CommandHandler::DumpDebugFile(const std::string& fileName, const std::strin
 // Surface a reassembled FeiQ screenshot to the frontend as a finished image
 // message (inline base64 data URL), bypassing the "accept file" UI entirely.
 void CommandHandler::EmitFeiQScreenshot(const FeiQScreenshotResult& shot) {
-    std::string mime = (shot.ext == "png") ? "png" : (shot.ext == "jpg" ? "jpeg" : "octet-stream");
+    const std::string messageId = "feiq_" + shot.sender.Key() + ":" + shot.sender.ipAddress + ":" +
+        std::to_string(shot.sender.portNo) + ":" + shot.id;
+    MessageRecord record;
+    record.id = messageId;
+    record.fromId = shot.sender.Key();
+    record.toId = msgMng_->GetLocalUser().Key();
+    record.content = shot.savePath;
+    record.type = 1;
+    record.timestamp = std::time(nullptr);
+    record.status = kMsgStatusDelivered;
+    if (!msgDb_->SaveMessage(record)) LogMessage("IMAGE", "ERROR", "Could not save received image history");
+    std::string mime = (shot.ext == "png") ? "png" : (shot.ext == "jpg" ? "jpeg" : "bmp");
     std::string dataUrl = "data:image/" + mime + ";base64," + Base64Encode(shot.bytes);
     bridge_->Emit("feiq.screenshot_received", {
+        {"messageId", messageId}, {"imageId", shot.id}, {"timestamp", record.timestamp},
         {"fromUser", UserToJson(shot.sender)},
         {"dataUrl", dataUrl},
         {"fileName", "\xe9\xa3\x9e\xe7\xa7\x8b\xe6\x88\xaa\xe5\x9b\xbe_" + shot.id + "." + shot.ext},

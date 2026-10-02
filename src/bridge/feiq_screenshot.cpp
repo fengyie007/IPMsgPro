@@ -9,6 +9,7 @@
 #include "logger.h"
 #include "util/app_paths.h"
 #include "util/encoding.h"
+#include "util/feiq_lzw.h"
 
 #include <algorithm>
 #include <cctype>
@@ -19,21 +20,6 @@
 #include <vector>
 
 namespace ipmsg {
-
-namespace {
-
-// CRC32 (IEEE 802.3) for diagnostics / DIB integrity checks.
-uint32_t Crc32(const std::string& data) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (unsigned char c : data) {
-        crc ^= c;
-        for (int i = 0; i < 8; ++i)
-            crc = (crc & 1) ? (0xEDB88320 ^ (crc >> 1)) : (crc >> 1);
-    }
-    return crc ^ 0xFFFFFFFF;
-}
-
-}  // namespace
 
 bool FeiQScreenshotAssembler::IsReference(const std::string& body) {
     return body.size() >= 4 && body.compare(0, 4, "/~#>") == 0;
@@ -66,82 +52,6 @@ void FeiQScreenshotAssembler::Dump(const std::string& fileName, const std::strin
 // We collect the fragments, reassemble the JPEG, save it, and surface it to the
 // frontend exactly like a normal received image (file.receive_request -> file.transfer_completed).
 
-// FeiQ inline screenshot LZW decoder.
-//
-// Wire format: "LZW!"(4) + uint32 LE decoded DIB size(4) + uint32 LE CRC32(4) + LZW stream.
-// The LZW stream uses FeiQ's own variant (NOT the GIF variant):
-//   * No clear/end code. The dictionary is seeded with the 256 single-byte entries (0..255).
-//   * Codes are bit-packed LSB-first WITHIN each code word (the sender stores each code
-//     MSB-first in the byte stream then bit-reverses it, which is equivalent to reading the
-//     chunk LSB-first). Bits are taken from the byte stream MSB-first (bit 7 of byte 0 first).
-//   * Code width starts at 9 and grows with early change: when the code counter reaches
-//     2^width it steps 9->10->11->12, capped at 12.
-//   * New dictionary entry for code k is prev + entry[0]; after entry 4095,
-//     overwrite entries cyclically from 256 (codes stay 12-bit, no clear code).
-//   * The decoded bytes are a BMP DIB (BITMAPINFOHEADER + pixel data), i.e. WITHOUT the
-//     14-byte BITMAPFILEHEADER; the caller prepends it.
-static bool LzwDecompress(const std::string& in, size_t inOff, size_t inLen,
-                          int /*minCodeSize*/, size_t expectedOut, std::string& out) {
-    out.clear();
-    if (inOff > in.size() || inLen > in.size() - inOff || expectedOut == 0) return false;
-
-    size_t bitPos = 0;
-    auto readCode = [&](int codeSize) -> int {
-        int code = 0;
-        for (int i = 0; i < codeSize; ++i) {
-            size_t byteIdx = inOff + (bitPos >> 3);
-            if (byteIdx >= inOff + inLen) return -1;
-            // MSB-first within the byte; assemble LSB-first into the code value.
-            int bit = ((unsigned char)in[byteIdx] >> (7 - (bitPos & 7))) & 1;
-            code |= bit << i;
-            bitPos += 1;
-        }
-        return code;
-    };
-
-    int code = readCode(9);
-    if (code < 0 || code > 255) return false;
-
-    std::vector<std::string> dict;
-    dict.reserve(4096);
-    for (int i = 0; i < 256; ++i) dict.push_back(std::string(1, (char)i));
-
-    int ds = 256;
-    std::string prev(1, (char)code);
-    out = prev;
-    int codeSize = 9;
-    // Counter matching FeiQ's encoder width-bump cadence (see growth below).
-    int index = 257;
-
-    while (true) {
-        int k = readCode(codeSize);
-        if (k < 0) break;                 // stream exhausted
-        std::string entry;
-        if (k == ds) {
-            // KwKwK also applies after wraparound: dict[ds] is then stale.
-            entry = prev + prev[0];
-        } else if (k < (int)dict.size()) {
-            entry = dict[k];
-        } else {
-            return false;                 // corrupt stream / algorithm mismatch
-        }
-        if (entry.size() > expectedOut - out.size()) return false;
-        out += entry;
-        if ((int)dict.size() <= ds) dict.resize(ds + 1);
-        dict[ds] = prev + entry[0];
-        if (++ds == 4096) ds = 256;
-        prev = entry;
-        // Width stops growing at 12; keep the counter bounded for large images.
-        if (codeSize < 12) ++index;
-        // FeiQ uses the "early change" convention: the code field widens one
-        // step earlier than the raw dictionary size implies, so the bump lines
-        // up with the encoder. Growing at ds == 2^codeSize (standard LZW) would
-        // desync and corrupt screenshots, so we match the original counter.
-        if ((1 << codeSize) == index && codeSize < 12) ++codeSize;
-    }
-    return out.size() == expectedOut;
-}
-
 void FeiQScreenshotAssembler::HandleReference(const MsgBuf& msg) {
     const std::string& body = msg.body;
     // body: "/~#><id><...>"
@@ -163,9 +73,10 @@ void FeiQScreenshotAssembler::HandleReference(const MsgBuf& msg) {
 }
 
 bool FeiQScreenshotAssembler::HandleFragment(const MsgBuf& msg, std::optional<FeiQScreenshotResult>& result) {
+    result.reset();
     const std::string& body = msg.body;
     size_t hash = body.find('#');
-    if (hash == std::string::npos || hash == 0) return false;
+    if (hash == std::string::npos || hash == 0 || hash > 256) return false;
 
     // header must look like "<hexid>|<digits>|<digits>|<digits>|<digits>|<digits>|..."
     std::string header = body.substr(0, hash);
@@ -179,9 +90,10 @@ bool FeiQScreenshotAssembler::HandleFragment(const MsgBuf& msg, std::optional<Fe
         f.push_back(header.substr(p, q - p));
         p = q + 1;
     }
-    if (f.size() < 6) return false;
+    if (f.size() != 10 || f[0].size() != 8) return true;
+    for (unsigned char c : f[0]) if (!std::isxdigit(c)) return true;
     for (int i = 1; i <= 5; ++i) {
-        if (f[i].empty()) return false;
+        if (f[i].empty() || f[i].size() > 9) return false;
         for (char c : f[i]) if (!std::isdigit((unsigned char)c)) return false;
     }
 
@@ -193,70 +105,78 @@ bool FeiQScreenshotAssembler::HandleFragment(const MsgBuf& msg, std::optional<Fe
     int fragCount = ToInt(f[3]);
     int fragIndex = ToInt(f[4]);
     int fragSize  = ToInt(f[5]);
-    (void)fragSize;
-    std::string mtime = (f.size() >= 10) ? f[9] : "";  // observed always "00000000"
+    int offset = ToInt(f[2]);
+    if (totalSize <= 0 || totalSize > static_cast<int>(feiq::kMaxPayloadBytes) ||
+        fragCount != (totalSize + 511) / 512 || fragIndex < 1 || fragIndex > fragCount ||
+        offset != (fragIndex - 1) * 512 || fragSize != (std::min)(512, totalSize - offset) ||
+        body.size() != hash + 2 + static_cast<size_t>(fragSize) || body[hash + 1] != '\0') {
+        LogMessage("FEIQ", "WARN", "[FEIQ-SHOT] Invalid fragment geometry id=" + id);
+        return true;
+    }
     // DIAG: log the real FeiQ fragment header (once per screenshot) so we can
     // compare its field layout against what we SEND ([FEIQ-SHOT-TX]).
     if (fragIndex == 1)
         LogMessage("FEIQ", "", "[FEIQ-SHOT-RX] Fragment header (real FeiQ)=" + header);
 
-    std::string data = body.substr(hash + 1);
-    // Each fragment carries a single leading 0x00 before the image chunk.
-    if (!data.empty() && (unsigned char)data[0] == 0x00) data.erase(0, 1);
-
+    const std::string data = body.substr(hash + 2);
+    const std::string key = msg.sender.Key() + ":" + msg.sender.ipAddress + ":" +
+        std::to_string(msg.sender.portNo) + ":" + id;
     bool complete = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        // FeiQ has no reliable ack for inline screenshots and periodically
-        // re-sends the whole fragment set (observed ~every 30s). If we've already
-        // emitted this id, drop the fragment outright so we never reassemble /
-        // re-emit the same image again.
-        if (emittedIds_.count(id)) {
-            LogMessage("FEIQ", "", "[FEIQ-SHOT] Duplicate fragment ignored id=" + id +
-                " (already emitted)");
-            return true;
+        const time_t now = std::time(nullptr);
+        for (auto it = shots_.begin(); it != shots_.end();) {
+            if (now - it->second.updated > 120) it = shots_.erase(it);
+            else ++it;
         }
-
-        auto& shot = shots_[id];
-        if (shot.id.empty()) {
-            shot.id = id;
-            shot.sender = msg.sender;
-            shot.senderKey = msg.sender.Key();
+        if (rejectedIds_.count(key)) return true;
+        if (!emittedIds_.count(key)) {
+            if (!shots_.count(key) && shots_.size() >= 8) return true;
+            auto& shot = shots_[key];
+            if (shot.id.empty()) {
+                shot.id = id;
+                shot.sender = msg.sender;
+                shot.senderKey = msg.sender.Key();
+                shot.totalSize = totalSize;
+                shot.fragCount = fragCount;
+            }
+            if (shot.totalSize != totalSize || shot.fragCount != fragCount) return true;
+            auto it = shot.frags.find(fragIndex);
+            if (it != shot.frags.end() && it->second != data) return true;
+            shot.frags.emplace(fragIndex, data);
+            shot.updated = now;
+            complete = shot.frags.size() == static_cast<size_t>(fragCount);
         }
-        shot.totalSize = totalSize;
-        shot.fragCount = fragCount;
-        if (shot.frags.find(fragIndex) == shot.frags.end()) {
-            shot.frags[fragIndex] = std::move(data);
-        }
-        int have = (int)shot.frags.size();
-        // IMPORTANT: do NOT log every fragment. FeiQ bursts the entire fragment
-        // set within tens of milliseconds (thousands of UDP packets); per-packet
-        // synchronous disk logging blocks the receive thread and overflows the UDP
-        // receive buffer, dropping fragments so the set can never be reassembled.
-        // Only log at coarse progress steps.
-        if (have % 100 == 0 || have == fragCount) {
-            LogMessage("FEIQ", "", "[FEIQ-SHOT] Progress id=" + id +
-                " have=" + std::to_string(have) + "/" + std::to_string(fragCount));
-        }
-        if (fragCount > 0 && have >= fragCount) complete = true;
     }
-
-    if (complete) result = Finalize(id);
+    if (complete) {
+        // Mark as rejected first so exceptions or failed validation cannot turn
+        // a later retry of the final fragment into a false successful ACK.
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            rejectedIds_.insert(key);
+        }
+        result = Finalize(key);
+        if (result) {
+            std::lock_guard<std::mutex> lk(mutex_);
+            rejectedIds_.erase(key);
+        }
+    }
+    // ACK valid duplicates as well; the sender may have lost our previous ACK.
+    // Withhold the final ACK if the assembled image is corrupt.
+    if (ack_ && (!complete || result)) ack_(msg.sender, id, fragIndex);
     return true;
 }
 
-std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std::string& id) {
+std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std::string& key) {
     Shot shot;
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        auto it = shots_.find(id);
+        auto it = shots_.find(key);
         if (it == shots_.end()) return std::nullopt;
         shot = std::move(it->second);
         shots_.erase(it);
-        // Permanently mark this id as emitted so any later re-send (FeiQ retries
-        // the whole fragment set) is dropped by HandleFeiQScreenshotFragment.
-        emittedIds_.insert(id);
     }
+    const std::string& id = shot.id;
 
     // Reassemble fragments in fragIndex order (1-based)
     std::string buf;
@@ -312,8 +232,8 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
         // DEBUG only: keep the raw LZW payload for offline analysis.
         Dump("FeiQ_RawLZW_" + id + ".bin", buf);
         std::string dib;
-        bool ok = LzwDecompress(buf, 12, buf.size() - 12, 8, expectedOut, dib);
-        bool validDib = ok && dib.size() >= 40 && Crc32(dib) == storedCrc;
+        bool ok = feiq::LzwDecompress(buf, 12, buf.size() - 12, expectedOut, dib);
+        bool validDib = ok && dib.size() >= 40 && feiq::Crc32(dib) == storedCrc;
         if (ok && !validDib) {
             LogMessage("FEIQ", "WARN", "[FEIQ-SHOT] Decoded DIB failed integrity check id=" + id);
         }
@@ -350,7 +270,7 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
                 bmp += dib;
                 buf = std::move(bmp);
                 ext = "bmp";
-                uint32_t actualCrc = Crc32(dib);
+                uint32_t actualCrc = feiq::Crc32(dib);
                 // DIAG (DEBUG only): dump the DIB header fields that affect the
                 // pixel start offset, plus the first pixel bytes. For a solid-color
                 // image the first row should be the solid color (not garbage);
@@ -415,6 +335,10 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
     std::error_code ec;
     std::filesystem::create_directories(dirPath, ec);
     std::filesystem::path savePath = dirPath / ("FeiQ_Screenshot_" + id + "." + ext);
+    for (unsigned suffix = 1; std::filesystem::exists(savePath); ++suffix) {
+        if (suffix > 10000) return std::nullopt;
+        savePath = dirPath / ("FeiQ_Screenshot_" + id + "_" + std::to_string(suffix) + "." + ext);
+    }
     std::string savePathStr = enc::WideToUtf8(savePath.wstring());
 
     {
@@ -424,6 +348,11 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
             return std::nullopt;
         }
         out.write(buf.data(), (std::streamsize)buf.size());
+        out.close();
+        if (!out) {
+            LogMessage("FEIQ", "ERROR", "[FEIQ-SHOT] Failed to write output: " + savePathStr);
+            return std::nullopt;
+        }
     }
 
     LogMessage("FEIQ", "", "[FEIQ-SHOT] Saved " + savePathStr + " (" +
@@ -431,6 +360,10 @@ std::optional<FeiQScreenshotResult> FeiQScreenshotAssembler::Finalize(const std:
 
     // Keep undecodable payloads for diagnostics, but never emit them as images.
     if (ext == "bin") return std::nullopt;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        emittedIds_.insert(key);
+    }
 
     FeiQScreenshotResult out;
     out.sender = shot.sender;

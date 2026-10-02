@@ -323,6 +323,12 @@ void MsgMng::ProcessRecvBuffer(const sockaddr_in& fromAddr, const char* data, in
         break;
     }
 
+    case IPMSG_SENDIMAGE:
+    case IPMSG_REPORT_RECVIMAGE: {
+        if (onMessageReceived_) onMessageReceived_(msg);
+        break;
+    }
+
     case IPMSG_RECVMSG: {
         // Acknowledgment received - forward to callback
         if (onMessageReceived_) {
@@ -365,12 +371,11 @@ void MsgMng::ProcessRecvBuffer(const sockaddr_in& fromAddr, const char* data, in
 // The leading "1" is what the standard IPMsg parser reads as the version,
 // so existing peers still interoperate.
 static std::string BuildFeiQVersion() {
-    static std::string cached;
-    if (!cached.empty()) return cached;
-
-    std::string mac = ipmsg::GetLocalMacAddress();
-    if (mac.empty()) mac = "000000000000";
-    cached = "1_lbt6_0#128#" + mac + "#0#0#0#4001#9";
+    static const std::string cached = [] {
+        std::string mac = ipmsg::GetLocalMacAddress();
+        if (mac.empty()) mac = "000000000000";
+        return "1_lbt6_0#128#" + mac + "#0#0#0#4001#9";
+    }();
     return cached;
 }
 
@@ -792,6 +797,30 @@ uint64_t MsgMng::SendMessageWithFile(const UserInfo& target, const std::string& 
     
     bool ok = UdpSend(target.ipAddress, target.portNo, msg);
     return ok ? pktNo : 0;
+}
+
+uint64_t MsgMng::SendImagePacket(const UserInfo& target, uint32_t command,
+                                  const std::string& payload, uint64_t packetNo) {
+    if (command != (IPMSG_SENDMSG | IPMSG_SENDCHECKOPT) &&
+        command != (IPMSG_SENDIMAGE | IPMSG_FILEATTACHOPT) &&
+        command != IPMSG_REPORT_RECVIMAGE) return 0;
+    if (!packetNo) packetNo = MakePacketNo();
+    // MakeMsg always transcodes its body. Build just the header for binary
+    // fragments, then append byte-for-byte, including the framing NUL.
+    std::string wire = command == (IPMSG_SENDMSG | IPMSG_SENDCHECKOPT)
+        ? MakeMsg(packetNo, command, payload)
+        : MakeMsg(packetNo, command, "") + payload;
+    if (command == (IPMSG_SENDMSG | IPMSG_SENDCHECKOPT)) {
+        // Native FeiQ terminates the reference body AND its empty extra field.
+        wire.append(2, '\0');
+        if (IsDebugEnabled()) {
+            LogMessage("IMAGE", "DEBUG", "Reference packet=" + std::to_string(packetNo) +
+                " trailingNuls=2 body=" + payload);
+        }
+    } else if (command == IPMSG_REPORT_RECVIMAGE) {
+        wire.push_back('\0');
+    }
+    return UdpSend(target.ipAddress, target.portNo, wire) ? packetNo : 0;
 }
 
 bool MsgMng::SendRecvMsg(const UserInfo& target, uint64_t pktNo) {

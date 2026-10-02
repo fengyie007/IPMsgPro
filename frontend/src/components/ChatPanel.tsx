@@ -1,11 +1,11 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import { FiCamera, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp } from 'react-icons/fi';
+import { FiCamera, FiImage, FiX, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore, PendingFileReceive } from '../stores/messageStore';
 import { toast } from '../stores/toastStore';
 import { invoke, listen } from '../services/bridge';
 import { buildEmojiMessage, emojiStyle } from '../emojiData';
-import { isSameDay, formatDateSeparator } from '../utils/format';
+import { isSameDay, formatDateSeparator, formatFileSize } from '../utils/format';
 import ScreenshotEditor from './ScreenshotEditor';
 import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
@@ -53,6 +53,7 @@ export default function ChatPanel() {
   const currentUser = useUserStore((s) => s.currentUser);
   const sendMessage = useMessageStore((s) => s.sendMessage);
   const sendImage = useMessageStore((s) => s.sendImage);
+  const sendImageByPath = useMessageStore((s) => s.sendImageByPath);
   const sendFileByPath = useMessageStore((s) => s.sendFileByPath);
   const loadHistory = useMessageStore((s) => s.loadHistory);
   const loadMoreHistory = useMessageStore((s) => s.loadMoreHistory);
@@ -77,6 +78,11 @@ export default function ChatPanel() {
   const [pendingFileName, setPendingFileName] = useState<string>('');
   // Real file size (bytes) for the send-confirm modal, queried from backend
   const [pendingFileSize, setPendingFileSize] = useState<number | null>(null);
+  const [pendingImage, setPendingImage] = useState<{
+    target: string; filePath: string; fileName: string; fileSize: number; dataUrl: string;
+  } | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const imageBusyRef = useRef(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -258,7 +264,8 @@ export default function ChatPanel() {
           String(now.getHours()).padStart(2, '0') +
           String(now.getMinutes()).padStart(2, '0') +
           String(now.getSeconds()).padStart(2, '0');
-        await sendImage(currentUser.id, base64, `Beixin_${ts}_screenshot.png`);
+        const sent = await sendImage(currentUser.id, base64, `Beixin_${ts}_screenshot.png`);
+        if (!sent) toast.error('截图发送失败：' + (useMessageStore.getState().error || '无法创建发送任务'));
       }
     } catch (err) {
       toast.error('截图发送失败：' + String(err));
@@ -280,6 +287,69 @@ export default function ChatPanel() {
       setScreenshot(null);
     }
   };
+
+  // ---- Inline image selection & preview ----
+  const handleImageClick = async () => {
+    if (!currentUser || imageBusyRef.current || pendingImage) return;
+    const target = currentUser.id;
+    imageBusyRef.current = true;
+    setImageBusy(true);
+    try {
+      const result = await invoke<{ success: boolean; files?: string[]; error?: string }>('dialog.open', {
+        title: '选择要发送的图片',
+        multi_select: false,
+        filters: [{ name: '图片 (PNG/JPEG/BMP)', pattern: '*.png;*.jpg;*.jpeg;*.bmp' }],
+      });
+      if (!result.success) throw new Error(result.error || '无法打开图片选择器');
+      const filePath = result.files?.[0];
+      if (!filePath) return;
+      if (!/\.(png|jpe?g|bmp)$/i.test(filePath)) throw new Error('请选择 PNG、JPEG 或 BMP 图片');
+      const preview = await invoke<{ success: boolean; dataUrl?: string; error?: string }>(
+        'file.read_image', { filePath });
+      if (!preview.success || !preview.dataUrl) throw new Error(preview.error || '无法读取图片预览');
+      const info = await invoke<{ success: boolean; fileSize?: number }>('file.info', { filePath });
+      setPendingImage({
+        target, filePath,
+        fileName: filePath.split(/[\\/]/).pop() || filePath,
+        fileSize: info.success ? info.fileSize || 0 : 0,
+        dataUrl: preview.dataUrl,
+      });
+    } catch (err) {
+      toast.error('选择图片失败：' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      imageBusyRef.current = false;
+      setImageBusy(false);
+    }
+  };
+
+  const cancelPendingImage = () => {
+    if (!imageBusyRef.current) setPendingImage(null);
+  };
+  const handleImageSend = async () => {
+    if (!pendingImage || imageBusyRef.current) return;
+    imageBusyRef.current = true;
+    setImageBusy(true);
+    try {
+      const sent = await sendImageByPath(pendingImage.target, pendingImage.filePath);
+      if (sent) setPendingImage(null);
+      else toast.error('图片发送失败：' + (useMessageStore.getState().error || '无法创建发送任务'));
+    } finally {
+      imageBusyRef.current = false;
+      setImageBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (!pendingImage) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' && event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') cancelPendingImage();
+      else void handleImageSend();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [pendingImage, sendImageByPath]);
 
   // ---- File select & preview ----
   // 使用原生文件对话框直接拿到真实路径，避免前端 base64 编码 + 复制到临时文件夹（大文件极慢）
@@ -479,6 +549,14 @@ export default function ChatPanel() {
             <FiCamera size={18} />
           </button>
           <button
+            className="p-1.5 text-gray-400 hover:text-gray-600 rounded transition-colors disabled:opacity-50"
+            title="发送图片"
+            disabled={imageBusy || pendingImage !== null}
+            onClick={handleImageClick}
+          >
+            <FiImage size={18} />
+          </button>
+          <button
             className="p-1.5 text-gray-400 hover:text-gray-600 rounded transition-colors"
             title="文件"
             onClick={handleFileClick}
@@ -525,6 +603,37 @@ export default function ChatPanel() {
           onConfirm={handleFileSend}
           onCancel={resetPendingFile}
         />
+      )}
+
+      {/* Inline image confirmation; normal files keep their existing modal. */}
+      {pendingImage && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center" onClick={cancelPendingImage}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="发送图片"
+            className="bg-white rounded-lg shadow-xl w-[400px] max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <h3 className="text-sm font-medium text-gray-800">发送图片</h3>
+              <button className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50" title="取消" disabled={imageBusy} onClick={cancelPendingImage}>
+                <FiX size={16} />
+              </button>
+            </div>
+            <div className="px-4 py-3 flex-1 overflow-auto">
+              <img src={pendingImage.dataUrl} alt={pendingImage.fileName} className="mx-auto max-w-full max-h-[300px] rounded object-contain" />
+              <p className="text-sm text-gray-700 truncate mt-2" title={pendingImage.fileName}>{pendingImage.fileName}</p>
+              <p className="text-xs text-gray-400 mt-1">{formatFileSize(pendingImage.fileSize)} · 以飞秋内嵌图片发送，对方无需确认文件下载</p>
+            </div>
+            <div className="flex justify-end gap-2 px-4 py-3 border-t">
+              <button className="px-4 py-1.5 text-sm text-gray-600 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50" disabled={imageBusy} onClick={cancelPendingImage}>取消</button>
+              <button autoFocus className="px-4 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 disabled:opacity-50" disabled={imageBusy} onClick={handleImageSend}>
+                {imageBusy ? '准备发送…' : '发送'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Full-screen screenshot editor */}

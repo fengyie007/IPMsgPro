@@ -27,28 +27,23 @@ static std::string WideToUtf8(const std::wstring& str) {
     return result;
 }
 
-// 辅助：构建COMDLG_FILTERSPEC数组
-static std::vector<COMDLG_FILTERSPEC> BuildFilters(const std::vector<Dialog::FileFilter>& filters) {
-    std::vector<COMDLG_FILTERSPEC> specs;
-    specs.reserve(filters.size());
-
-    // 需要保持wstring生命周期
+// Keep the strings alive while COM consumes the filter specifications.
+struct FileFilters {
     std::vector<std::wstring> names;
     std::vector<std::wstring> patterns;
-    names.reserve(filters.size());
-    patterns.reserve(filters.size());
-
-    for (const auto& f : filters) {
-        names.push_back(Utf8ToWide(f.name));
-        patterns.push_back(Utf8ToWide(f.pattern));
+    std::vector<COMDLG_FILTERSPEC> specs;
+    explicit FileFilters(const std::vector<Dialog::FileFilter>& filters) {
+        names.reserve(filters.size());
+        patterns.reserve(filters.size());
+        specs.reserve(filters.size());
+        for (const auto& f : filters) {
+            names.push_back(Utf8ToWide(f.name));
+            patterns.push_back(Utf8ToWide(f.pattern));
+        }
+        for (size_t i = 0; i < filters.size(); ++i)
+            specs.push_back({names[i].c_str(), patterns[i].c_str()});
     }
-
-    for (size_t i = 0; i < filters.size(); ++i) {
-        specs.push_back({ names[i].c_str(), patterns[i].c_str() });
-    }
-
-    return specs;
-}
+};
 
 std::vector<std::string> Dialog::OpenFile(HWND parent, const OpenOptions& options) {
     std::vector<std::string> result;
@@ -90,7 +85,8 @@ std::vector<std::string> Dialog::OpenFile(HWND parent, const OpenOptions& option
     }
 
     // 设置过滤器
-    auto specs = BuildFilters(options.filters);
+    FileFilters filters(options.filters);
+    const auto& specs = filters.specs;
     if (!specs.empty()) {
         pfd->SetFileTypes(static_cast<UINT>(specs.size()), specs.data());
     }
@@ -168,7 +164,8 @@ std::optional<std::string> Dialog::SaveFile(HWND parent, const SaveOptions& opti
     }
 
     // 设置过滤器
-    auto specs = BuildFilters(options.filters);
+    FileFilters filters(options.filters);
+    const auto& specs = filters.specs;
     if (!specs.empty()) {
         pfd->SetFileTypes(static_cast<UINT>(specs.size()), specs.data());
     }

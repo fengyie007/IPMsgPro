@@ -61,6 +61,10 @@ constexpr uint32_t IPMSG_DIRFILES_AUTHRET = 0x00000064UL;
 constexpr uint32_t IPMSG_GETPUBKEY      = 0x00000072UL;
 constexpr uint32_t IPMSG_ANSPUBKEY      = 0x00000073UL;
 
+// FeiQ inline images (separate from TCP file transfer)
+constexpr uint32_t IPMSG_SENDIMAGE      = 0x000000c0UL;
+constexpr uint32_t IPMSG_REPORT_RECVIMAGE = 0x000000c1UL;
+
 // ---------- Option Flags (High 24 bits) ----------
 // General options
 constexpr uint32_t IPMSG_ABSENCEOPT     = 0x00000100UL;
