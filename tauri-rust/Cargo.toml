@@ -1,0 +1,5 @@
+[workspace]
+members = ["crates/ipmsg-core"]
+exclude = ["src-tauri"]
+default-members = ["crates/ipmsg-core"]
+resolver = "2"
