@@ -40,6 +40,15 @@ async fn dispatch(state: Arc<Runtime>, command: &str, args: Value) -> Result<Val
     }
     match command {
         "app.info" => Ok(state.info()),
+        "image.read" => {
+            let id = string(&args, "assetId")?;
+            let thumbnail = match args.get("thumbnail") {
+                None => true,
+                Some(value) => value.as_bool().ok_or("thumbnail必须是布尔值")?,
+            };
+            state.network.image_asset(&id).await?;
+            Ok(json!({"success":true,"url":crate::image::asset_url(&id,thumbnail)}))
+        }
         "config.get" => Ok(json!({"success":true,"config":state.config.get()})),
         "config.set" => {
             let config = state.config.save(args).await?;

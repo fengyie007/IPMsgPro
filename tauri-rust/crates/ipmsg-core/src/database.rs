@@ -1,9 +1,15 @@
-use rusqlite::{params, Connection, Row};
+use crate::image::{
+    assets::{valid_asset_id, PendingAsset},
+    fragments::{Assembler, TransferKey},
+    ImageMetadata,
+};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
+    time::Instant,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -18,12 +24,21 @@ pub struct Record {
     pub kind: i64,
     pub timestamp: i64,
     pub status: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageMetadata>,
 }
+#[derive(Debug)]
+pub struct ImageCommit {
+    pub inserted: bool,
+    pub ack_index: Option<u32>,
+}
+
 type Work = Box<dyn FnOnce(&mut Connection) + Send>;
 #[derive(Clone)]
 pub struct Database {
     sender: mpsc::Sender<Option<Work>>,
     worker: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    images_dir: Arc<PathBuf>,
 }
 fn row(record: &Row<'_>) -> rusqlite::Result<Record> {
     Ok(Record {
@@ -34,23 +49,103 @@ fn row(record: &Row<'_>) -> rusqlite::Result<Record> {
         kind: record.get(4)?,
         timestamp: record.get(5)?,
         status: record.get(6)?,
+        image: None,
     })
 }
+fn image_row(row: &Row<'_>) -> rusqlite::Result<ImageMetadata> {
+    Ok(ImageMetadata {
+        asset_id: row.get(0)?,
+        file_name: row.get(1)?,
+        file_size: row.get(2)?,
+        mime: row.get(3)?,
+        width: row.get(4)?,
+        height: row.get(5)?,
+    })
+}
+fn hydrate_images(db: &Connection, records: &mut [Record]) -> Result<(), String> {
+    let mut query = db
+        .prepare(
+            "SELECT a.asset_id,a.file_name,a.file_size,a.mime,a.width,a.height
+        FROM message_images m JOIN image_assets a ON a.asset_id=m.asset_id WHERE m.message_id=?",
+        )
+        .map_err(|e| e.to_string())?;
+    for record in records.iter_mut().filter(|r| r.kind == 1) {
+        record.image = query
+            .query_row([&record.id], image_row)
+            .optional()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+fn validate_image_record(record: &Record) -> Result<&ImageMetadata, String> {
+    let metadata = record.image.as_ref().ok_or("图片消息缺少元数据")?;
+    if record.kind != 1 || !valid_asset_id(&metadata.asset_id) {
+        return Err("无效图片消息".into());
+    }
+    Ok(metadata)
+}
+
+// The returned instant is the final validation point before SQLite commits.
+// The caller can use it to advance the transfer under the same state lock even
+// if the filesystem flush inside commit crosses the wall-clock deadline.
+fn insert_image_transaction(
+    db: &mut Connection,
+    record: &Record,
+    metadata: &ImageMetadata,
+    deadline: Instant,
+    before_commit: impl FnOnce(Instant) -> Result<(), String>,
+) -> Result<(bool, Instant), String> {
+    if Instant::now() >= deadline {
+        return Err("图片处理超时".into());
+    }
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    let fresh = tx.execute(
+        "INSERT OR IGNORE INTO seen_messages (id,seen_at) VALUES (?,CAST(strftime('%s','now') AS INTEGER))",
+        [&record.id],
+    ).map_err(|e| e.to_string())?;
+    if fresh > 0 {
+        tx.execute(
+            "INSERT INTO image_assets (asset_id,file_name,file_size,mime,width,height) VALUES (?,?,?,?,?,?)",
+            params![metadata.asset_id, metadata.file_name, metadata.file_size, metadata.mime, metadata.width, metadata.height],
+        ).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO messages (id,from_id,to_id,content,type,timestamp,status) VALUES (?,?,?,?,?,?,?)",
+            params![record.id, record.from_id, record.to_id, record.content, 1, record.timestamp, record.status],
+        ).map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO message_images (message_id,asset_id) VALUES (?,?)",
+            params![record.id, metadata.asset_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let checked_at = Instant::now();
+    if checked_at >= deadline {
+        return Err("图片处理超时".into());
+    }
+    before_commit(checked_at)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((fresh > 0, checked_at))
+}
+
 const COLUMNS: &str = "id,from_id,to_id,content,type,timestamp,status";
 impl Database {
     pub fn open(path: &Path) -> Result<Self, String> {
         let path = path.to_owned();
+        let images_dir = Arc::new(path.parent().unwrap_or(Path::new(".")).join("images"));
         let (sender, mut receiver) = mpsc::channel::<Option<Work>>(128);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("rust-message-db".into())
             .spawn(move || {
                 let init = (|| -> rusqlite::Result<Connection> {
-                    let db = Connection::open(path)?;
+                    let mut db = Connection::open(path)?;
                     db.busy_timeout(std::time::Duration::from_secs(1))?;
-                    db.execute_batch(
-                        "PRAGMA journal_mode=WAL;
-                    CREATE TABLE IF NOT EXISTS messages (
+                    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+                    let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                    if version > 2 { return Err(rusqlite::Error::InvalidQuery); }
+                    let transaction = db.transaction()?;
+                    transaction.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS messages (
                       id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL,
                       content TEXT NOT NULL, type INTEGER NOT NULL, timestamp INTEGER NOT NULL,
                       status INTEGER NOT NULL);
@@ -58,8 +153,16 @@ impl Database {
                     CREATE TABLE IF NOT EXISTS seen_messages (id TEXT PRIMARY KEY, seen_at INTEGER NOT NULL);
                     CREATE INDEX IF NOT EXISTS seen_messages_time ON seen_messages(seen_at);
                     INSERT OR IGNORE INTO seen_messages SELECT id, CAST(strftime('%s','now') AS INTEGER) FROM messages;
-                    UPDATE messages SET status=3 WHERE status=0;",
+                    UPDATE messages SET status=3 WHERE status=0;
+                    CREATE TABLE IF NOT EXISTS image_assets (
+                      asset_id TEXT PRIMARY KEY, file_name TEXT NOT NULL, file_size INTEGER NOT NULL,
+                      mime TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS message_images (
+                      message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                      asset_id TEXT NOT NULL REFERENCES image_assets(asset_id));",
                     )?;
+                    transaction.pragma_update(None, "user_version", 2)?;
+                    transaction.commit()?;
                     Ok(db)
                 })();
                 match init {
@@ -80,6 +183,7 @@ impl Database {
             Ok(()) => Ok(Self {
                 sender,
                 worker: Arc::new(Mutex::new(Some(worker))),
+                images_dir,
             }),
             Err(error) => {
                 let _ = worker.join();
@@ -100,7 +204,77 @@ impl Database {
             .map_err(|_| "数据库已关闭")?;
         rx.await.map_err(|_| "数据库线程已退出".to_string())?
     }
+    pub fn images_dir(&self) -> &Path {
+        self.images_dir.as_path()
+    }
+
+    pub async fn image_asset(&self, asset_id: String) -> Result<Option<ImageMetadata>, String> {
+        self.call(move |db| db.query_row("SELECT asset_id,file_name,file_size,mime,width,height FROM image_assets WHERE asset_id=?",
+            [asset_id], image_row).optional().map_err(|e| e.to_string())).await
+    }
+
+    /// Metadata-only insertion retained for tests/importers. If the caller owns
+    /// a PendingAsset, it must keep it only when this returns true.
+    pub async fn insert_image(&self, record: Record, deadline: Instant) -> Result<bool, String> {
+        let metadata = validate_image_record(&record)?.clone();
+        self.call(move |db| {
+            insert_image_transaction(db, &record, &metadata, deadline, |_| Ok(()))
+                .map(|(inserted, _)| inserted)
+        })
+        .await
+    }
+
+    /// Own the pending files inside the queued database operation. Canceling the
+    /// caller after enqueue cannot unlink an asset that this transaction commits.
+    pub async fn commit_received_image(
+        &self,
+        record: Record,
+        deadline: Instant,
+        pending: PendingAsset,
+        images: Arc<Mutex<Assembler>>,
+        key: TransferKey,
+    ) -> Result<ImageCommit, String> {
+        let metadata = validate_image_record(&record)?.clone();
+        if !pending.metadata_matches_directory()
+            || metadata != pending.metadata
+            || record.from_id != key.peer_id
+            || record.id != format!("image-rx:{}:{}", key.peer_id, key.image_id)
+        {
+            return Err("图片提交与接收任务不匹配".into());
+        }
+        self.call(move |db| {
+            // Declare the asset before the lock so all error paths release the
+            // state lock before PendingAsset's filesystem cleanup runs.
+            let mut pending = pending;
+            let mut images = images.lock().map_err(|_| "图片接收状态不可用")?;
+            let now = Instant::now();
+            if now >= deadline || !images.is_finalizing(&key, now) {
+                return Err("图片接收已拒绝或超时".into());
+            }
+            let (inserted, checked_at) =
+                insert_image_transaction(db, &record, &metadata, deadline, |at| {
+                    if images.is_finalizing(&key, at) {
+                        Ok(())
+                    } else {
+                        Err("图片接收已拒绝或超时".into())
+                    }
+                })?;
+            if inserted {
+                pending.keep();
+            }
+            let ack_index = images.finish(&key, true, checked_at);
+            Ok(ImageCommit {
+                inserted,
+                ack_index,
+            })
+        })
+        .await
+    }
+
     pub async fn insert(&self, record: Record) -> Result<bool, String> {
+        if record.image.is_some() {
+            return Err("图片必须通过完整图片事务保存".into());
+        }
         self.call(move |db| {
             let transaction = db.transaction().map_err(|e| e.to_string())?;
             // Keep only IDs (not content) for seven days so retries cannot resurrect
@@ -142,6 +316,7 @@ impl Database {
             let mut records = statement.query_map(params![local, user, user, local, limit.min(200), offset], row)
                 .map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
             records.reverse();
+            hydrate_images(db, &mut records)?;
             Ok(records)
         }).await
     }
@@ -151,8 +326,9 @@ impl Database {
                 (SELECT MAX(rowid) FROM messages WHERE from_id=? OR to_id=? GROUP BY CASE WHEN from_id=? THEN to_id ELSE from_id END)
                 ORDER BY timestamp DESC,rowid DESC LIMIT ?");
             let mut statement = db.prepare(&sql).map_err(|e| e.to_string())?;
-            let rows = statement.query_map(params![local, local, local, limit.min(200)], row)
+            let mut rows = statement.query_map(params![local, local, local, limit.min(200)], row)
                 .map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+            hydrate_images(db, &mut rows)?;
             Ok(rows)
         }).await
     }
@@ -177,11 +353,12 @@ impl Database {
                 ORDER BY timestamp DESC,rowid DESC LIMIT 200"
                 ))
                 .map_err(|e| e.to_string())?;
-            let rows = statement
+            let mut rows = statement
                 .query_map(params![pattern, user, local], row)
                 .map_err(|e| e.to_string())?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| e.to_string())?;
+            hydrate_images(db, &mut rows)?;
             Ok(rows)
         })
         .await
@@ -248,6 +425,7 @@ mod tests {
                 kind: 0,
                 timestamp: n,
                 status: 0,
+                image: None,
             };
             assert!(db.insert(record.clone()).await.unwrap());
             assert!(!db.insert(record).await.unwrap());
@@ -301,6 +479,7 @@ mod tests {
             kind: 0,
             timestamp: 1,
             status: 1,
+            image: None,
         };
         db.insert(wanted.clone()).await.unwrap();
         for n in 0..205 {
@@ -349,5 +528,239 @@ mod tests {
         assert!(!db.insert(wanted).await.unwrap());
         db.shutdown().await;
         std::fs::remove_file(path).unwrap();
+    }
+
+    fn image_fixture() -> (
+        PathBuf,
+        Database,
+        crate::image::assets::AssetStore,
+        TransferKey,
+    ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rust-image-commit-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Database::open(&root.join("messages.db")).unwrap();
+        let store = crate::image::assets::AssetStore::new(db.images_dir()).unwrap();
+        let key = TransferKey {
+            peer_id: "peer@fixture#127.0.0.1:2425".into(),
+            image_id: "abcdef12".into(),
+        };
+        (root, db, store, key)
+    }
+
+    fn pending_record(
+        store: &crate::image::assets::AssetStore,
+        key: &TransferKey,
+    ) -> (PendingAsset, Record) {
+        let pending = store
+            .persist(
+                crate::image::dib::DecodedImage {
+                    png: b"\x89PNG\r\n\x1a\nfull".to_vec(),
+                    thumbnail_png: b"\x89PNG\r\n\x1a\nthumb".to_vec(),
+                    width: 1,
+                    height: 1,
+                },
+                &key.image_id,
+            )
+            .unwrap();
+        let record = Record {
+            id: format!("image-rx:{}:{}", key.peer_id, key.image_id),
+            from_id: key.peer_id.clone(),
+            to_id: "local@fixture".into(),
+            content: "[图片]".into(),
+            kind: 1,
+            timestamp: 1,
+            status: 1,
+            image: Some(pending.metadata.clone()),
+        };
+        (pending, record)
+    }
+
+    fn finalizing(key: &TransferKey) -> Arc<Mutex<Assembler>> {
+        use crate::image::fragments::{Action, Fragment};
+        let mut images = Assembler::new();
+        assert!(matches!(
+            images
+                .accept(
+                    &key.peer_id,
+                    Fragment {
+                        image_id: key.image_id.clone(),
+                        total: 1,
+                        count: 1,
+                        index: 1,
+                        data: vec![1],
+                    },
+                    Instant::now()
+                )
+                .unwrap(),
+            Action::Finalize { .. }
+        ));
+        Arc::new(Mutex::new(images))
+    }
+
+    async fn block_database(
+        db: &Database,
+    ) -> (
+        std::sync::mpsc::Sender<()>,
+        tokio::task::JoinHandle<Result<(), String>>,
+    ) {
+        let (entered, ready) = oneshot::channel();
+        let (resume, waiting) = std::sync::mpsc::channel();
+        let database = db.clone();
+        let task = tokio::spawn(async move {
+            database
+                .call(move |_| {
+                    let _ = entered.send(());
+                    waiting
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .map_err(|e| e.to_string())?;
+                    Ok(())
+                })
+                .await
+        });
+        ready.await.unwrap();
+        (resume, task)
+    }
+
+    async fn wait_until_commit_is_queued(db: &Database) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while db.sender.capacity() == 128 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn clean_image_fixture(root: PathBuf, db: Database) {
+        db.shutdown().await;
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&root) {
+                Ok(()) => return,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied && attempt < 9 =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("image fixture cleanup failed: {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_image_keeps_asset_and_duplicate_discards_only_new_files() {
+        let (root, db, store, key) = image_fixture();
+        let (pending, record) = pending_record(&store, &key);
+        let original_id = pending.metadata.asset_id.clone();
+        let result = db
+            .commit_received_image(
+                record,
+                Instant::now() + std::time::Duration::from_secs(20),
+                pending,
+                finalizing(&key),
+                key.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(result.inserted);
+        assert_eq!(result.ack_index, Some(1));
+        assert!(store.read(&original_id, false).is_ok());
+        let (duplicate, record) = pending_record(&store, &key);
+        let duplicate_id = duplicate.metadata.asset_id.clone();
+        let result = db
+            .commit_received_image(
+                record,
+                Instant::now() + std::time::Duration::from_secs(20),
+                duplicate,
+                finalizing(&key),
+                key,
+            )
+            .await
+            .unwrap();
+        assert!(!result.inserted);
+        assert_eq!(result.ack_index, Some(1));
+        assert!(!db.images_dir().join(duplicate_id).exists());
+        assert!(store.read(&original_id, false).is_ok());
+        clean_image_fixture(root, db).await;
+    }
+
+    #[tokio::test]
+    async fn queued_image_rejected_before_execution_never_enters_database() {
+        let (root, db, store, key) = image_fixture();
+        let (pending, record) = pending_record(&store, &key);
+        let id = pending.metadata.asset_id.clone();
+        let images = finalizing(&key);
+        let (resume, blocked) = block_database(&db).await;
+        let database = db.clone();
+        let states = images.clone();
+        let transfer = key.clone();
+        let commit = tokio::spawn(async move {
+            database
+                .commit_received_image(
+                    record,
+                    Instant::now() + std::time::Duration::from_secs(20),
+                    pending,
+                    states,
+                    transfer,
+                )
+                .await
+        });
+        wait_until_commit_is_queued(&db).await;
+        let _ = images.lock().unwrap().finish(&key, false, Instant::now());
+        resume.send(()).unwrap();
+        blocked.await.unwrap().unwrap();
+        assert!(commit.await.unwrap().is_err());
+        assert!(db.image_asset(id.clone()).await.unwrap().is_none());
+        assert!(db
+            .history(key.peer_id, "local@fixture".into(), 50, 0)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(!db.images_dir().join(id).exists());
+        clean_image_fixture(root, db).await;
+    }
+
+    #[tokio::test]
+    async fn canceling_commit_waiter_does_not_unlink_committed_asset() {
+        let (root, db, store, key) = image_fixture();
+        let (pending, record) = pending_record(&store, &key);
+        let id = pending.metadata.asset_id.clone();
+        let images = finalizing(&key);
+        let (resume, blocked) = block_database(&db).await;
+        let database = db.clone();
+        let states = images.clone();
+        let transfer = key.clone();
+        let commit = tokio::spawn(async move {
+            database
+                .commit_received_image(
+                    record,
+                    Instant::now() + std::time::Duration::from_secs(20),
+                    pending,
+                    states,
+                    transfer,
+                )
+                .await
+        });
+        wait_until_commit_is_queued(&db).await;
+        commit.abort();
+        assert!(commit.await.unwrap_err().is_cancelled());
+        resume.send(()).unwrap();
+        blocked.await.unwrap().unwrap();
+        // A barrier queued after the image proves its transaction has finished,
+        // even though the original caller no longer receives its result.
+        db.call(|_| Ok(())).await.unwrap();
+        assert!(db.image_asset(id.clone()).await.unwrap().is_some());
+        assert!(store.read(&id, false).is_ok());
+        assert!(!images.lock().unwrap().is_finalizing(&key, Instant::now()));
+        clean_image_fixture(root, db).await;
     }
 }

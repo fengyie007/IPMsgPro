@@ -13,7 +13,7 @@ export const isMockMode = !isTauri() && import.meta.env.VITE_MOCK_BRIDGE === '1'
 const supported = new Set([
   'app.info', 'config.get', 'config.set', 'config.loaded',
   'user.local', 'user.list', 'user.discover', 'message.send',
-  'history.get', 'history.get_recent', 'history.search', 'history.clear',
+  'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'window.set_active_conversation', 'frontend.error',
 ]);
 
@@ -88,7 +88,13 @@ const mockUsers: User[] = [
   { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '' },
 ];
 let mockConfig: Config = { ...DEFAULT_CONFIG };
-let mockRows: HistoryRecord[] = [];
+const mockImageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="22" fill="#166534">Rust Image Preview</text></svg>';
+const mockImageUrl = 'data:image/svg+xml,' + encodeURIComponent(mockImageSvg);
+let mockRows: HistoryRecord[] = [{
+  id: 'mock-received-image', fromId: mockUsers[0].id, toId: mockLocalId,
+  content: '[图片]', type: 1, timestamp: Math.floor(Date.now() / 1000), status: 1,
+  image: { assetId: 'mock-image', fileName: '演示图片.svg', fileSize: mockImageSvg.length, mime: 'image/svg+xml', width: 320, height: 180 },
+}];
 let mockSequence = 0;
 
 function mockResponse(command: string, args: Record<string, unknown>): unknown {
@@ -99,6 +105,10 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
   switch (command) {
     case 'app.info': return { success: true, version: APP_VERSION, dataDir: '浏览器演示：不写入磁盘', port: 2427, capabilities: MVP_CAPABILITIES };
     case 'config.get': return { success: true, config: mockConfig };
+    case 'image.read':
+      return args.assetId === 'mock-image'
+        ? { success: true, url: mockImageUrl }
+        : { success: false, error: '浏览器演示中没有该图片' };
     case 'config.set':
       mockConfig = { ...mockConfig, ...args } as Config;
       return { success: true, config: mockConfig };

@@ -1,4 +1,5 @@
 mod commands;
+mod image;
 mod platform;
 mod runtime;
 
@@ -81,6 +82,7 @@ pub fn run() {
         }
     };
     let app = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("ipmsg-image", image::serve)
         .invoke_handler(tauri::generate_handler![commands::ipmsg_command])
         .setup(move |app| {
             let state =

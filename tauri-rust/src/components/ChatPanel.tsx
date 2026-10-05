@@ -192,7 +192,7 @@ export default function ChatPanel() {
           <button disabled title="截图：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiCamera size={18} /></button>
           <button disabled title="图片发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiImage size={18} /></button>
           <button disabled title="文件发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiFile size={18} /></button>
-          <span className="text-[11px] text-gray-400 ml-1">核心版暂不支持图片、截图及文件</span>
+          <span className="text-[11px] text-gray-400 ml-1">支持收图；图片发送、截图及文件暂未迁移</span>
         </div>
         <div className="px-4 pb-3 pt-1">
           <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}

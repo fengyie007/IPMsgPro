@@ -194,6 +194,25 @@ pub fn parse_packet(data: &[u8]) -> Result<Packet, String> {
     })
 }
 
+/// FeiQ uses its extended version field to distinguish image-capable peers
+/// from ordinary IPMsg. The wire dialect marker is not our application version.
+/// Use a stable locally-administered virtual MAC-shaped ID, not a copied peer
+/// MAC; separate Rust ports must not merge with one another or the real FeiQ app.
+/// This identifier is for compatibility only, never authentication.
+pub fn feiq_compat_version(instance_id: &str, port: u16) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in instance_id
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain([0xff])
+        .chain(port.to_be_bytes())
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    format!("1_lbt6_0#128#02{:010X}#0#0#0#4001#9", hash & 0xff_ffff_ffff)
+}
+
 /// Encode a textual IPMsg packet. `Some(extra)` emits body-NUL-extra-NUL;
 /// `None` emits body-NUL. Binary images need their own future transport API.
 pub fn encode_packet(
@@ -204,6 +223,23 @@ pub fn encode_packet(
     body: &str,
     extra: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    encode_packet_with_version("1", packet_no, username, hostname, command, body, extra)
+}
+
+/// Encode using an explicit, validated wire version; payload encoding is unchanged.
+pub fn encode_packet_with_version(
+    wire_version: &str,
+    packet_no: u32,
+    username: &str,
+    hostname: &str,
+    command: u32,
+    body: &str,
+    extra: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    version(wire_version.as_bytes())?;
+    if wire_version.contains(':') {
+        return Err("版本字段不能包含冒号".into());
+    }
     if mode(command) == IPMSG_SENDIMAGE {
         return Err("核心版尚不支持编码二进制图片报文".into());
     }
@@ -219,7 +255,7 @@ pub fn encode_packet(
         return Err("文本消息超过 32 KiB".into());
     }
     let extra = extra.map(|value| encode_text(value, command)).transpose()?;
-    let mut data = format!("1:{packet_no}:").into_bytes();
+    let mut data = format!("{wire_version}:{packet_no}:").into_bytes();
     data.extend_from_slice(&username);
     data.push(b':');
     data.extend_from_slice(&hostname);
@@ -253,6 +289,43 @@ pub fn subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feiq_compatibility_id_is_stable_local_and_instance_specific() {
+        let one = feiq_compat_version("user-rust-2427@host", 2427);
+        assert_eq!(one, feiq_compat_version("user-rust-2427@host", 2427));
+        assert_ne!(one, feiq_compat_version("user-rust-2427@host", 2428));
+        assert_ne!(one, feiq_compat_version("user-rust-2427@other", 2427));
+        let fields: Vec<_> = one.split('#').collect();
+        assert_eq!(fields[0], "1_lbt6_0");
+        assert_eq!(fields[2].len(), 12);
+        assert!(fields[2].starts_with("02"));
+        assert!(fields[2].bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn explicit_wire_version_changes_only_the_header() {
+        let version = feiq_compat_version("rust@host", 2427);
+        let command = IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT;
+        let plain = encode_packet(42, "rust", "host", command, "昵称", Some("组名")).unwrap();
+        let extended =
+            encode_packet_with_version(&version, 42, "rust", "host", command, "昵称", Some("组名"))
+                .unwrap();
+        assert_eq!(
+            extended.splitn(2, |b| *b == b':').nth(1),
+            plain.splitn(2, |b| *b == b':').nth(1)
+        );
+        let packet = parse_packet(&extended).unwrap();
+        assert_eq!(packet.version, version);
+        assert_eq!(packet.command, command);
+        assert_eq!(decode_text(&packet.body, command).unwrap(), "昵称");
+        assert_eq!(decode_text(&packet.extra, command).unwrap(), "组名");
+        for bad in ["1_lbt6_0:inject", "1_lbt6_0\n", "2_lbt6_0"] {
+            assert!(
+                encode_packet_with_version(bad, 1, "u", "h", IPMSG_BR_ENTRY, "", None).is_err()
+            );
+        }
+    }
 
     #[test]
     fn gbk_round_trip_preserves_chinese_colons_newlines_and_emoji_xml() {

@@ -34,6 +34,7 @@ function fromHistory(row: HistoryRecord, localId: string): Message {
     type: row.type === 0 ? 'text' : row.type === 1 ? 'image' : 'file',
     timestamp: row.timestamp * 1000,
     status: row.status === 0 ? 'sending' : row.status === 1 || row.status === 2 ? 'delivered' : 'failed',
+    image: row.image,
   };
 }
 
@@ -45,6 +46,7 @@ function mergeHistory(existing: Message[], incoming: Message[]): Message[] {
     byId.set(message.id, current ? {
       ...message, ...current,
       status: current.status === 'sending' ? message.status : current.status,
+      image: current.image ?? message.image,
     } : message);
   }
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
@@ -132,7 +134,19 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     recvMessage: (message) => set((state) => {
       const partner = message.from === 'self' ? message.to : message.from;
       const existing = state.messages.get(partner) || [];
-      if (clearedIds.has(message.id) || existing.some((m) => m.id === message.id)) return {};
+      if (clearedIds.has(message.id)) return {};
+      const index = existing.findIndex((m) => m.id === message.id);
+      if (index >= 0) {
+        // A late complete image event may fill metadata omitted by a stale
+        // history snapshot. It is still the same message, not another unread.
+        if (!existing[index].image && message.image) {
+          const updated = [...existing];
+          updated[index] = { ...updated[index], image: message.image };
+          const messages = new Map(state.messages); messages.set(partner, updated);
+          return { messages };
+        }
+        return {};
+      }
       const messages = new Map(state.messages);
       messages.set(partner, [...existing, message].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)));
       const unread = new Map(state.unread);
@@ -252,11 +266,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           get().recvMessage({
             id: data.id, from: data.from, to: 'self',
             content: data.content, type: data.type === 'text' ? 'text' : data.type === 'image' ? 'image' : 'file',
-            timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser,
+            timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser, image: data.image,
           });
         }),
         listen('message.ack', (data: { messageId: string }) => get().updateDelivery(data.messageId, 'delivered')),
         listen('message.failed', (data: { messageId: string; error?: string }) => get().updateDelivery(data.messageId, 'failed', data.error)),
+        listen('image.receive_failed', (data: { error?: string }) => toast.error('图片接收失败：' + (data.error || '图片未能完成校验或保存'))),
       ];
       return () => unsubs.forEach((unsub) => unsub());
     },

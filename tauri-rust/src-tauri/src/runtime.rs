@@ -120,7 +120,7 @@ impl Runtime {
     }
     pub fn info(&self) -> Value {
         json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
-            "capabilities":{"images":false,"files":false,"screenshot":false,"scan":false,"notificationSound":false}})
+            "capabilities":{"images":false,"imageReceive":true,"imageSend":false,"files":false,"screenshot":false,"scan":false,"notificationSound":false}})
     }
     pub fn log(&self, level: &str, message: &str) {
         if level == "DEBUG" && !self.verbose {

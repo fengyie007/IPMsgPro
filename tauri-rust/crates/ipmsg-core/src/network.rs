@@ -1,6 +1,7 @@
 use crate::{
     config::{parse_address, AppConfig, ConfigStore},
     database::{Database, Record},
+    image::{assets::AssetStore, fragments::Assembler},
     protocol::*,
     text::strip_feiq_font_suffix,
     User,
@@ -21,6 +22,9 @@ use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
 };
+
+mod image_receive;
+use image_receive::ImageJob;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
@@ -46,9 +50,14 @@ struct Pending {
 pub struct Network {
     socket: Arc<UdpSocket>,
     local: RwLock<User>,
+    wire_version: String,
     peers: Mutex<HashMap<String, Peer>>,
     pending: Mutex<HashMap<u32, Pending>>,
-    unsupported_images: Mutex<BTreeSet<String>>,
+    images: Arc<Mutex<Assembler>>,
+    image_jobs: mpsc::Sender<ImageJob>,
+    image_receiver: Mutex<Option<mpsc::Receiver<ImageJob>>>,
+    assets: AssetStore,
+    asset_reads: tokio::sync::Semaphore,
     config: Arc<ConfigStore>,
     db: Database,
     events: mpsc::Sender<Event>,
@@ -126,12 +135,20 @@ impl Network {
         socket.set_nonblocking(true).map_err(|e| e.to_string())?;
         let socket = UdpSocket::from_std(socket).map_err(|e| e.to_string())?;
         let (cancel, _) = watch::channel(false);
+        let (image_jobs, image_receiver) = mpsc::channel(4);
+        let assets = AssetStore::new(db.images_dir())?;
+        let wire_version = feiq_compat_version(&local.id, local.port);
         Ok(Arc::new(Self {
             socket: Arc::new(socket),
             local: RwLock::new(local),
+            wire_version,
             peers: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
-            unsupported_images: Mutex::new(BTreeSet::new()),
+            images: Arc::new(Mutex::new(Assembler::new())),
+            image_jobs,
+            image_receiver: Mutex::new(Some(image_receiver)),
+            assets,
+            asset_reads: tokio::sync::Semaphore::new(1),
             config,
             db,
             events,
@@ -175,7 +192,8 @@ impl Network {
     }
     fn wire(&self, command: u32, body: &str, extra: Option<&str>) -> Result<Vec<u8>, String> {
         let local = self.local();
-        encode_packet(
+        encode_packet_with_version(
+            &self.wire_version,
             self.next_packet(),
             &local.username,
             &local.hostname,
@@ -215,6 +233,8 @@ impl Network {
         tasks.push(tokio::spawn(async move { me.receive_loop().await }));
         let me = self.clone();
         tasks.push(tokio::spawn(async move { me.maintenance().await }));
+        let me = self.clone();
+        tasks.push(tokio::spawn(async move { me.receive_images().await }));
     }
     pub async fn ui_ready(&self) -> Result<(), String> {
         if !self.ready.swap(true, Ordering::AcqRel) {
@@ -230,6 +250,10 @@ impl Network {
             return Err("程序正在退出".into());
         }
         let local = self.local();
+        self.diagnostic(
+            "DEBUG",
+            format!("Discovery wire version={}", self.wire_version),
+        );
         let wire = self.wire(
             IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
             &local.nickname,
@@ -301,7 +325,8 @@ impl Network {
         if flags & (IPMSG_CAPUTF8OPT | IPMSG_UTF8OPT) != 0 {
             command |= IPMSG_UTF8OPT;
         }
-        let wire = encode_packet(
+        let wire = encode_packet_with_version(
+            &self.wire_version,
             packet,
             &local.username,
             &local.hostname,
@@ -323,6 +348,7 @@ impl Network {
                 kind: 0,
                 timestamp: unix_seconds(),
                 status: 0,
+                image: None,
             })
             .await?;
         // Persist and register before touching the socket: an ACK can arrive immediately.
@@ -477,6 +503,7 @@ impl Network {
                 kind: 0,
                 timestamp,
                 status: 1,
+                image: None,
             })
             .await?;
         if is_new {
@@ -541,6 +568,19 @@ impl Network {
                 let sender = self.seen(&packet, address, true).await?;
                 let unsupported_file = packet.command & IPMSG_FILEATTACHOPT != 0;
                 let text = decode_text(&packet.body, packet.command)?;
+                if !unsupported_file {
+                    if let Some(image_id) = crate::image::fragments::parse_reference(&text) {
+                        self.register_image_reference(&sender.id, &image_id).await?;
+                        if packet.command & IPMSG_SENDCHECKOPT != 0 {
+                            self.send_to(
+                                Self::address(&sender)?,
+                                &self.wire(IPMSG_RECVMSG, &packet.packet_no.to_string(), None)?,
+                            )
+                            .await?;
+                        }
+                        return Ok(());
+                    }
+                }
                 let content = if unsupported_file {
                     "[收到文件：Rust核心版暂不支持，请使用原版接收]".into()
                 } else if text.starts_with("/~#>") {
@@ -605,35 +645,7 @@ impl Network {
                 }
             }
             IPMSG_SENDIMAGE => {
-                // One clear placeholder per unsupported image; no binary decode or image ACK.
-                if let Some(id) = packet
-                    .body
-                    .get(..8)
-                    .filter(|id| id.iter().all(u8::is_ascii_hexdigit))
-                {
-                    let key = format!("image:{peer_id}:{}", String::from_utf8_lossy(id));
-                    let first = {
-                        let mut images = self
-                            .unsupported_images
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        if images.len() >= 256 {
-                            false
-                        } else {
-                            images.insert(key.clone())
-                        }
-                    };
-                    if first {
-                        let sender = self.seen(&packet, address, true).await?;
-                        self.incoming(
-                            sender,
-                            key,
-                            "[收到图片：Rust核心版暂不支持，请使用原版查看]".into(),
-                            0,
-                        )
-                        .await?;
-                    }
-                }
+                self.handle_image_fragment(&packet, address).await?;
             }
             IPMSG_GETINFO => {
                 self.send_to(
@@ -697,6 +709,16 @@ impl Network {
             }
             tokio::select! { _ = cancel.changed() => break, _ = timer.tick() => {} }
             let now = Instant::now();
+            // A short database image commit can own this gate. Never block the
+            // UDP/timer task on it; retry expiration on the next tick instead.
+            let expired_images = self
+                .images
+                .try_lock()
+                .map(|mut images| images.expire(now))
+                .unwrap_or_default();
+            for (key, error) in expired_images {
+                self.image_failure(&key, error).await;
+            }
             let (retry, expired) = {
                 let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                 let mut retry = vec![];

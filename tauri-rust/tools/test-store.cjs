@@ -10,6 +10,14 @@ const deps = createRequire(path.resolve(process.argv[2] || path.join(__dirname, 
 const ts = deps('typescript');
 const zustand = deps('zustand');
 let invoke = async () => { throw new Error('Unexpected IPC call'); };
+const listeners = new Map();
+const toastErrors = [];
+function listen(event, callback) {
+  const callbacks = listeners.get(event) || new Set();
+  callbacks.add(callback); listeners.set(event, callbacks);
+  return () => { callbacks.delete(callback); if (!callbacks.size) listeners.delete(event); };
+}
+function emit(event, payload) { for (const callback of listeners.get(event) || []) callback(payload); }
 const sourcePath = path.join(__dirname, '../src/stores/messageStore.ts');
 const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
   fileName: sourcePath,
@@ -22,9 +30,9 @@ const context = {
   document: { visibilityState: 'hidden', hasFocus: () => false },
   require(name) {
     if (name === 'zustand') return zustand;
-    if (name === '../services/bridge') return { invoke: (...args) => invoke(...args), listen: () => () => {} };
+    if (name === '../services/bridge') return { invoke: (...args) => invoke(...args), listen };
     if (name === './userStore') return { useUserStore: { getState: () => ({ users: [], addUser() {} }) } };
-    if (name === './toastStore') return { toast: { error() {} } };
+    if (name === './toastStore') return { toast: { error(message) { toastErrors.push(message); } } };
     throw new Error(`Unexpected import ${name}`);
   },
 };
@@ -72,4 +80,55 @@ const incoming = (id, from = 'peer') => ({ id, from, to: 'self', content: id, ty
   await assert.rejects(store.getState().clearHistory('peer'));
   assert.equal(store.getState().messages.get('peer')[0].id, 'keep-C');
   console.log('PASS failed clear preserves messages');
+
+  const stopListeners = store.getState().initListeners();
+  const image = { assetId: 'received-asset-a', fileName: '截图.png', fileSize: 1234, mime: 'image/png', width: 394, height: 198 };
+  const receivedImage = { id: 'image-message-a', from: 'image-peer', content: '[图片]', type: 'image', timestamp: 1700000000, image };
+  emit('message.received', receivedImage);
+  emit('message.received', receivedImage);
+  assert.equal(store.getState().messages.get('image-peer').length, 1);
+  assert.equal(store.getState().messages.get('image-peer')[0].image.assetId, image.assetId);
+  assert.equal(store.getState().unread.get('image-peer'), 1);
+  emit('message.received', { ...receivedImage, id: 'image-message-b', image: { ...image, assetId: 'received-asset-b' } });
+  assert.equal(store.getState().messages.get('image-peer').length, 2);
+  assert.equal(store.getState().unread.get('image-peer'), 2);
+  console.log('PASS image metadata and stable-ID dedupe, equal-size images remain distinct');
+  emit('message.received', { ...receivedImage, id: 'late-metadata', from: 'late-image-peer', image: undefined });
+  emit('message.received', { ...receivedImage, id: 'late-metadata', from: 'late-image-peer' });
+  assert.equal(store.getState().messages.get('late-image-peer')[0].image.assetId, image.assetId);
+  assert.equal(store.getState().messages.get('late-image-peer').length, 1);
+  assert.equal(store.getState().unread.get('late-image-peer'), 1);
+  console.log('PASS late image metadata fills the same message without another unread');
+
+  const historyImage = { id: 'history-image', fromId: 'history-peer', toId: 'me', content: '[图片]', type: 1, timestamp: 1700000001, status: 1, image };
+  // A message from an older/stale source may omit metadata; history must fill it.
+  store.getState().recvMessage({ ...incoming('history-image', 'history-peer'), type: 'image', image: undefined });
+  invoke = async (command) => {
+    assert.ok(['history.get', 'history.get_recent', 'history.search'].includes(command));
+    return { success: true, messages: [historyImage], localUserId: 'me' };
+  };
+  await store.getState().loadHistory('history-peer');
+  assert.equal(store.getState().messages.get('history-peer')[0].image.assetId, image.assetId);
+  await store.getState().loadRecentConversations();
+  assert.equal(store.getState().messages.get('history-peer').length, 1);
+  assert.equal((await store.getState().searchMessages('图片', 'history-peer'))[0].image.fileName, image.fileName);
+  console.log('PASS image metadata survives history, recent conversations and search');
+
+  invoke = async (command) => {
+    assert.equal(command, 'history.clear');
+    return { success: true, deletedIds: ['image-message-a', 'image-message-b'] };
+  };
+  await store.getState().clearHistory('image-peer');
+  emit('message.received', receivedImage);
+  assert.equal(store.getState().messages.has('image-peer'), false);
+  assert.equal(store.getState().unread.has('image-peer'), false);
+  console.log('PASS cleared images cannot return through a delayed image event');
+
+  const beforeMessages = store.getState().messages.size;
+  emit('image.receive_failed', { imageId: 'bad-image', error: 'CRC校验失败' });
+  assert.equal(store.getState().messages.size, beforeMessages);
+  assert.ok(toastErrors.at(-1).includes('CRC校验失败'));
+  stopListeners();
+  assert.equal(listeners.size, 0);
+  console.log('PASS receive failure is reported without a phantom chat message; listeners cleaned');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

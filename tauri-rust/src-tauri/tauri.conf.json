@@ -12,8 +12,8 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost 'self'; font-src 'self' data:; object-src 'none'; frame-src 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost 'self' ws://127.0.0.1:1420; font-src 'self' data:; object-src 'none'; frame-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ipmsg-image: http://ipmsg-image.localhost; connect-src ipc: http://ipc.localhost 'self'; font-src 'self' data:; object-src 'none'; frame-src 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ipmsg-image: http://ipmsg-image.localhost; connect-src ipc: http://ipc.localhost 'self' ws://127.0.0.1:1420; font-src 'self' data:; object-src 'none'; frame-src 'none'"
     }
   },
   "bundle": {

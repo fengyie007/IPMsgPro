@@ -181,7 +181,9 @@ async fn real_udp_discovery_ack_validation_and_receive_deduplication() {
         Some("研发组"),
     )
     .await;
-    assert_eq!(mode(packet(&peer).await.command), IPMSG_ANSENTRY);
+    let discovery = packet(&peer).await;
+    assert_eq!(mode(discovery.command), IPMSG_ANSENTRY);
+    assert!(discovery.version.starts_with("1_lbt6_0#128#02"));
     let user = test.next("user.discovered").await;
     assert_eq!(user.payload["group"], "研发组");
     assert_eq!(test.network.users().len(), 1);
@@ -192,6 +194,7 @@ async fn real_udp_discovery_ack_validation_and_receive_deduplication() {
         .await
         .unwrap();
     let text = packet(&peer).await;
+    assert_eq!(text.version, discovery.version);
     assert_eq!(
         decode_text(&text.body, text.command).unwrap(),
         "第一行\n第二行"
@@ -262,7 +265,7 @@ async fn real_udp_discovery_ack_validation_and_receive_deduplication() {
 }
 
 #[tokio::test]
-async fn unsupported_image_is_reported_once_and_never_acknowledged() {
+async fn malformed_image_is_reported_once_and_never_acknowledged() {
     let mut test = Fixture::start().await;
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let bytes = b"1:10:peer:fixture:2097344:abcdef01|3|0|1|1|3|0|1|0|00000000#\0xyz";
@@ -271,11 +274,8 @@ async fn unsupported_image_is_reported_once_and_never_acknowledged() {
             .await
             .unwrap();
     }
-    let hint = test.next("message.received").await;
-    assert!(hint.payload["content"]
-        .as_str()
-        .unwrap()
-        .contains("暂不支持"));
+    let hint = test.next("image.receive_failed").await;
+    assert!(hint.payload["error"].as_str().is_some());
     let mut data = [0; 1024];
     assert!(
         timeout(Duration::from_millis(100), peer.recv_from(&mut data))

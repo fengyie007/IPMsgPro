@@ -13,6 +13,20 @@ export interface User {
   version: string;
 }
 
+export interface ImageMetadata {
+  assetId: string;
+  fileName: string;
+  fileSize: number;
+  mime: string;
+  width: number;
+  height: number;
+}
+
+export interface ImageReadResult {
+  success: boolean;
+  url: string;
+}
+
 export interface Message {
   id: string;
   from: string;
@@ -22,6 +36,7 @@ export interface Message {
   timestamp: number; // UI uses milliseconds; the backend returns seconds.
   status: 'sending' | 'delivered' | 'failed';
   fromUser?: User;
+  image?: ImageMetadata;
   fileInfo?: { fileName: string };
 }
 
@@ -33,6 +48,7 @@ export interface HistoryRecord {
   type: number;
   timestamp: number;
   status: number;
+  image?: ImageMetadata;
 }
 
 export interface HistoryResult {
@@ -60,7 +76,9 @@ export const DEFAULT_CONFIG: Config = {
 };
 
 export interface Capabilities {
-  images: boolean;
+  images: boolean; // aggregate: both receiving and sending are available
+  imageReceive: boolean;
+  imageSend: boolean;
   files: boolean;
   screenshot: boolean;
   scan: boolean;
@@ -68,7 +86,7 @@ export interface Capabilities {
 }
 
 export const MVP_CAPABILITIES: Capabilities = {
-  images: false, files: false, screenshot: false, scan: false, notificationSound: false,
+  images: false, imageReceive: true, imageSend: false, files: false, screenshot: false, scan: false, notificationSound: false,
 };
 
 export interface AppInfo {
@@ -87,4 +105,5 @@ export interface MessageReceivedEvent {
   type: string;
   timestamp: number;
   command?: number;
+  image?: ImageMetadata;
 }
