@@ -272,6 +272,38 @@ pub fn encode_packet_with_version(
     Ok(data)
 }
 
+/// Exact binary image framing; unlike text packets, data is never transcoded
+/// or terminated. The caller supplies the validated fragment header plus #NUL.
+pub fn encode_image_packet(
+    wire_version: &str,
+    packet_no: u32,
+    username: &str,
+    hostname: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    version(wire_version.as_bytes())?;
+    if wire_version.contains(':') || body.len() > MAX_PACKET_BYTES {
+        return Err("无效二进制图片报文".into());
+    }
+    validate_identity(username, "用户名")?;
+    validate_identity(hostname, "主机名")?;
+    let username = encode_text(username, 0)?;
+    let hostname = encode_text(hostname, 0)?;
+    if username.len() > MAX_IDENTITY_BYTES || hostname.len() > MAX_IDENTITY_BYTES {
+        return Err("图片报文身份过长".into());
+    }
+    let mut bytes = format!("{wire_version}:{packet_no}:").into_bytes();
+    bytes.extend(username);
+    bytes.push(b':');
+    bytes.extend(hostname);
+    bytes.extend(format!(":{}:", IPMSG_SENDIMAGE | IPMSG_FILEATTACHOPT).as_bytes());
+    bytes.extend_from_slice(body);
+    if bytes.len() > MAX_PACKET_BYTES {
+        return Err("图片报文超过UDP上限".into());
+    }
+    Ok(bytes)
+}
+
 /// Compute an IPv4 subnet's directed-broadcast address. Interface discovery and
 /// filtering out loopback/point-to-point adapters are the caller's responsibility.
 pub fn subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
@@ -289,6 +321,18 @@ pub fn subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_image_packet_preserves_every_binary_byte() {
+        let body = b"abcdef01|4|0|1|1|4|0|1|0|00000000#\0\xff\x81\0:";
+        let version = feiq_compat_version("local@host", 2427);
+        let wire = encode_image_packet(&version, 7, "本机", "主机", body).unwrap();
+        let parsed = parse_packet(&wire).unwrap();
+        assert_eq!(parsed.command, IPMSG_SENDIMAGE | IPMSG_FILEATTACHOPT);
+        assert_eq!(parsed.body, body);
+        assert_eq!(parsed.username, "本机");
+        assert_eq!(parsed.version, version);
+    }
 
     #[test]
     fn feiq_compatibility_id_is_stable_local_and_instance_specific() {

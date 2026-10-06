@@ -182,7 +182,17 @@ impl Network {
             // A single blocking decode at a time. A timed-out decode is allowed
             // to finish before the next job, retaining the concurrency limit.
             let payload = std::mem::take(&mut job.payload);
-            let mut decode = tokio::task::spawn_blocking(move || decode_image(&payload));
+            let permit = tokio::select! {
+                permit = self.image_codec.clone().acquire_owned() => match permit { Ok(permit) => permit, Err(_) => break },
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(job.deadline)) => {
+                    self.reject_image_job(&job, "图片解码排队超时".into()).await; continue;
+                }
+                _ = cancel.changed() => break,
+            };
+            let mut decode = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                decode_image(&payload)
+            });
             let decoded = tokio::select! {
                 result = &mut decode => result.map_err(|e| e.to_string()).and_then(|r| r),
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(job.deadline)) => {

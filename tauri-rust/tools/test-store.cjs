@@ -128,6 +128,51 @@ const incoming = (id, from = 'peer') => ({ id, from, to: 'self', content: id, ty
   emit('image.receive_failed', { imageId: 'bad-image', error: 'CRC校验失败' });
   assert.equal(store.getState().messages.size, beforeMessages);
   assert.ok(toastErrors.at(-1).includes('CRC校验失败'));
+  invoke = async (command) => {
+    assert.equal(command, 'image.send');
+    emit('image.send_completed', { messageId: 'tx-early', target: 'tx-peer', progress: 100 });
+    emit('image.send_progress', { messageId: 'tx-early', target: 'tx-peer', progress: 20, stage: 'transferring' });
+    return { success: true, messageId: 'tx-early', imageId: '12345678', image };
+  };
+  assert.equal(await store.getState().sendImage('tx-peer', image.assetId), true);
+  assert.equal(store.getState().messages.get('tx-peer')[0].status, 'delivered');
+  assert.equal(store.getState().messages.get('tx-peer')[0].imageProgress, 100);
+  emit('image.send_failed', { messageId: 'tx-early', target: 'tx-peer', error: 'late failure' });
+  assert.equal(store.getState().messages.get('tx-peer')[0].status, 'delivered');
+  assert.equal(store.getState().messages.get('tx-peer').length, 1);
+  console.log('PASS early image completion wins over late progress/terminal events');
+
+  invoke = async () => {
+    emit('image.send_failed', { messageId: 'tx-failed', target: 'tx-peer', error: 'early failure' });
+    return { success: true, messageId: 'tx-failed', imageId: '12345679', image };
+  };
+  await store.getState().sendImage('tx-peer', image.assetId);
+  assert.equal(store.getState().messages.get('tx-peer').find((m) => m.id === 'tx-failed').status, 'failed');
+  assert.ok(toastErrors.at(-1).includes('early failure'));
+  console.log('PASS early image failure is replayed after message insertion');
+
+  invoke = async (command) => command === 'image.send'
+    ? { success: true, messageId: 'tx-cancel', imageId: '12345680', image }
+    : { success: true, cancelled: true };
+  await store.getState().sendImage('tx-peer', image.assetId);
+  emit('message.ack', { messageId: 'tx-cancel' });
+  assert.equal(store.getState().messages.get('tx-peer').find((m) => m.id === 'tx-cancel').status, 'sending');
+  await store.getState().cancelImage('tx-cancel');
+  emit('image.send_progress', { messageId: 'tx-cancel', target: 'tx-peer', progress: 90, stage: 'transferring' });
+  assert.equal(store.getState().messages.get('tx-peer').find((m) => m.id === 'tx-cancel').imageStage, 'cancelling');
+  const errorsBeforeCancel = toastErrors.length;
+  emit('image.send_failed', { messageId: 'tx-cancel', target: 'tx-peer', cancelled: true, error: '图片发送已取消' });
+  assert.equal(store.getState().messages.get('tx-peer').find((m) => m.id === 'tx-cancel').imageStage, 'cancelled');
+  assert.equal(toastErrors.length, errorsBeforeCancel);
+  console.log('PASS image cancellation does not become delivery or revert on late progress');
+
+  invoke = async () => ({ success: true, deletedIds: ['tx-early', 'tx-failed', 'tx-cancel'] });
+  await store.getState().clearHistory('tx-peer');
+  emit('image.send_progress', { messageId: 'tx-cancel', target: 'tx-peer', progress: 99 });
+  emit('image.send_completed', { messageId: 'tx-cancel', target: 'tx-peer', progress: 100 });
+  assert.equal(store.getState().messages.has('tx-peer'), false);
+  console.log('PASS late outbound image events do not resurrect cleared history');
+
   stopListeners();
   assert.equal(listeners.size, 0);
   console.log('PASS receive failure is reported without a phantom chat message; listeners cleaned');

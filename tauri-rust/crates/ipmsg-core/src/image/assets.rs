@@ -140,6 +140,24 @@ impl AssetStore {
         }
         Ok(bytes)
     }
+    /// Caller first marks an unreferenced import as discarded in the database.
+    /// Report deletion failures so that tombstones can be retried instead of lost.
+    pub fn remove_unreferenced(&self, id: &str) -> Result<(), String> {
+        if !valid_asset_id(id) {
+            return Err("无效资产标识".into());
+        }
+        let path = self.root.join(id);
+        let canonical = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        if canonical != path {
+            return Err("拒绝删除重定向的资产目录".into());
+        }
+        fs::remove_dir_all(path).map_err(|e| e.to_string())
+    }
+
     // Only for a newly-written, uncommitted asset; never used for history GC.
     pub fn discard_uncommitted(&self, id: &str) {
         if valid_asset_id(id) {

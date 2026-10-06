@@ -116,9 +116,100 @@ pub fn decompress(input: &[u8], expected_len: usize) -> Result<Vec<u8>, String> 
     Ok(output)
 }
 
+/// Encode the same cyclic dictionary variant as `decompress`.
+pub fn compress(input: &[u8]) -> Result<Vec<u8>, String> {
+    use std::collections::HashMap;
+    if input.is_empty() || input.len() > MAX_DIB_BYTES {
+        return Err("DIB为空或超过64 MiB".into());
+    }
+    let mut slots = vec![Vec::new(); 4096];
+    let mut dictionary = HashMap::<Vec<u8>, usize>::new();
+    for code in 0..256 {
+        slots[code] = vec![code as u8];
+        dictionary.insert(slots[code].clone(), code);
+    }
+    let (mut next, mut width, mut counter) = (256usize, 9u32, 256usize);
+    let (mut byte, mut used) = (0u8, 0u32);
+    let mut output = Vec::new();
+    let mut emit = |code: usize| -> Result<(), String> {
+        for bit in 0..width {
+            byte = (byte << 1) | (((code >> bit) & 1) as u8);
+            used += 1;
+            if used == 8 {
+                output.push(byte);
+                byte = 0;
+                used = 0;
+            }
+        }
+        if output.len() > MAX_PAYLOAD_BYTES - 12 {
+            return Err("压缩后的图片超过16 MiB".into());
+        }
+        if width < 12 {
+            counter += 1;
+            if counter == 1 << width {
+                width += 1;
+            }
+        }
+        Ok(())
+    };
+    let mut prefix = vec![input[0]];
+    let mut prefix_code = usize::from(input[0]);
+    for &value in &input[1..] {
+        prefix.push(value);
+        if let Some(&code) = dictionary.get(prefix.as_slice()) {
+            prefix_code = code;
+            continue;
+        }
+        emit(prefix_code)?;
+        if dictionary.get(slots[next].as_slice()) == Some(&next) {
+            dictionary.remove(slots[next].as_slice());
+        }
+        slots[next] = prefix.clone();
+        dictionary.insert(prefix.clone(), next);
+        next += 1;
+        if next == 4096 {
+            next = 256;
+        }
+        prefix.clear();
+        prefix.push(value);
+        prefix_code = usize::from(value);
+    }
+    emit(prefix_code)?;
+    drop(emit);
+    if used > 0 {
+        output.push(byte << (8 - used));
+    }
+    if output.len() > MAX_PAYLOAD_BYTES - 12 {
+        return Err("压缩后的图片超过16 MiB".into());
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn compressor_matches_known_codes_and_cycles_against_validated_decoder() {
+        assert_eq!(compress(b"ABC").unwrap(), pack(&[65, 66, 67]));
+        assert_eq!(compress(b"AAAAAA").unwrap(), pack(&[65, 256, 257]));
+        let mut seed = 123456789u32;
+        for size in [1, 255, 256, 1024, 4096, 100000] {
+            let data: Vec<_> = (0..size)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let encoded = compress(&data).unwrap();
+            assert_eq!(decompress(&encoded, data.len()).unwrap(), data);
+        }
+        for data in [vec![0; 100000], b"ABABABA".repeat(20000)] {
+            let encoded = compress(&data).unwrap();
+            assert_eq!(decompress(&encoded, data.len()).unwrap(), data);
+        }
+        assert!(compress(&[]).is_err());
+    }
 
     // Independent fixture packer uses explicit ordinal boundaries, not the
     // decoder's counter. These streams need not be optimal compressor output.

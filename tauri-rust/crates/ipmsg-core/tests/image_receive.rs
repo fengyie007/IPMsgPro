@@ -403,7 +403,7 @@ async fn legacy_schema_migrates_and_image_clear_does_not_resurrect() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     drop(connection);
     std::fs::remove_dir_all(root).unwrap();
 }

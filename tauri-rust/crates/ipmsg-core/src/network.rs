@@ -24,7 +24,10 @@ use tokio::{
 };
 
 mod image_receive;
+mod image_send;
 use image_receive::ImageJob;
+use image_send::ImageSendJob;
+pub use image_send::ImageSendResult;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
@@ -58,6 +61,12 @@ pub struct Network {
     image_receiver: Mutex<Option<mpsc::Receiver<ImageJob>>>,
     assets: AssetStore,
     asset_reads: tokio::sync::Semaphore,
+    image_codec: Arc<tokio::sync::Semaphore>,
+    image_sends: Mutex<HashMap<String, Arc<ImageSendJob>>>,
+    image_send_queue: mpsc::Sender<Arc<ImageSendJob>>,
+    image_send_receiver: Mutex<Option<mpsc::Receiver<Arc<ImageSendJob>>>>,
+    image_send_gate: tokio::sync::Mutex<()>,
+    image_sequence: AtomicU32,
     config: Arc<ConfigStore>,
     db: Database,
     events: mpsc::Sender<Event>,
@@ -136,6 +145,9 @@ impl Network {
         let socket = UdpSocket::from_std(socket).map_err(|e| e.to_string())?;
         let (cancel, _) = watch::channel(false);
         let (image_jobs, image_receiver) = mpsc::channel(4);
+        let (image_send_queue, image_send_receiver) = mpsc::channel(4);
+        let mut seed = [0u8; 4];
+        getrandom::fill(&mut seed).map_err(|e| e.to_string())?;
         let assets = AssetStore::new(db.images_dir())?;
         let wire_version = feiq_compat_version(&local.id, local.port);
         Ok(Arc::new(Self {
@@ -149,6 +161,12 @@ impl Network {
             image_receiver: Mutex::new(Some(image_receiver)),
             assets,
             asset_reads: tokio::sync::Semaphore::new(1),
+            image_codec: Arc::new(tokio::sync::Semaphore::new(1)),
+            image_sends: Mutex::new(HashMap::new()),
+            image_send_queue,
+            image_send_receiver: Mutex::new(Some(image_send_receiver)),
+            image_send_gate: tokio::sync::Mutex::new(()),
+            image_sequence: AtomicU32::new(u32::from_be_bytes(seed)),
             config,
             db,
             events,
@@ -229,12 +247,15 @@ impl Network {
         if !tasks.is_empty() {
             return;
         }
+        self.clean_image_imports(true).await;
         let me = self.clone();
         tasks.push(tokio::spawn(async move { me.receive_loop().await }));
         let me = self.clone();
         tasks.push(tokio::spawn(async move { me.maintenance().await }));
         let me = self.clone();
         tasks.push(tokio::spawn(async move { me.receive_images().await }));
+        let me = self.clone();
+        tasks.push(tokio::spawn(async move { me.send_images().await }));
     }
     pub async fn ui_ready(&self) -> Result<(), String> {
         if !self.ready.swap(true, Ordering::AcqRel) {
@@ -524,6 +545,14 @@ impl Network {
         {
             return Ok(());
         }
+        if matches!(mode(packet.command), IPMSG_RECVMSG | IPMSG_REPORT_RECVIMAGE) {
+            if self.image_send_ack(&packet, address) {
+                self.seen(&packet, address, true).await?;
+            }
+            if mode(packet.command) == IPMSG_REPORT_RECVIMAGE {
+                return Ok(());
+            }
+        }
         let peer_id = self.resolve_peer_id(&packet, address)?;
         match mode(packet.command) {
             IPMSG_BR_ENTRY | IPMSG_ANSENTRY | IPMSG_BR_ABSENCE => {
@@ -709,6 +738,7 @@ impl Network {
             }
             tokio::select! { _ = cancel.changed() => break, _ = timer.tick() => {} }
             let now = Instant::now();
+            self.expire_image_sends().await;
             // A short database image commit can own this gate. Never block the
             // UDP/timer task on it; retry expiration on the next tick instead.
             let expired_images = self
@@ -748,6 +778,7 @@ impl Network {
                 && now.duration_since(last_probe) >= Duration::from_secs(60)
             {
                 last_probe = now;
+                self.clean_image_imports(false).await;
                 let offline = {
                     let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
                     let mut offline = vec![];
@@ -790,6 +821,8 @@ impl Network {
             return;
         }
         let _send = self.send_gate.lock().await;
+        let _images = self.image_send_gate.lock().await;
+        self.cancel_image_sends();
         let local = self.local();
         if let Ok(wire) = self.wire(IPMSG_BR_EXIT, &local.nickname, None) {
             for address in self.direct_addresses() {
@@ -806,6 +839,7 @@ impl Network {
                 let _ = task.await;
             }
         }
+        self.interrupt_image_sends().await;
         let pending: Vec<_> = self
             .pending
             .lock()

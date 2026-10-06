@@ -22,19 +22,28 @@ fn count(args: &Value, key: &str, default: u32) -> Result<u32, String> {
 #[tauri::command]
 pub async fn ipmsg_command(
     state: State<'_, Arc<Runtime>>,
+    window: tauri::WebviewWindow,
     command: String,
     args: Value,
 ) -> Result<Value, String> {
     // Tauri requires Result for async commands with borrowed State inputs.
     // Keep domain errors in the JSON envelope expected by the frontend bridge.
     Ok(
-        match dispatch(state.inner().clone(), &command, args).await {
+        match dispatch(state.inner().clone(), window, &command, args).await {
             Ok(value) => value,
             Err(error) => json!({"success":false,"error":error}),
         },
     )
 }
-async fn dispatch(state: Arc<Runtime>, command: &str, args: Value) -> Result<Value, String> {
+async fn dispatch(
+    state: Arc<Runtime>,
+    window: tauri::WebviewWindow,
+    command: &str,
+    args: Value,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("此窗口不允许调用该命令".into());
+    }
     if !state.accepting.load(Ordering::Acquire) {
         return Err("程序正在退出".into());
     }
@@ -48,6 +57,26 @@ async fn dispatch(state: Arc<Runtime>, command: &str, args: Value) -> Result<Val
             };
             state.network.image_asset(&id).await?;
             Ok(json!({"success":true,"url":crate::image::asset_url(&id,thumbnail)}))
+        }
+        "image.select" => crate::image::select(&window, state.clone()).await,
+        "image.send" => {
+            let sent = state
+                .network
+                .send_image(&string(&args, "target")?, &string(&args, "assetId")?)
+                .await?;
+            Ok(
+                json!({"success":true,"messageId":sent.message_id,"imageId":sent.image_id,"image":sent.image}),
+            )
+        }
+        "image.cancel" => Ok(
+            json!({"success":true,"cancelled":state.network.cancel_image(&string(&args,"messageId")?)}),
+        ),
+        "image.discard" => {
+            let discarded = state
+                .network
+                .discard_image(&string(&args, "assetId")?)
+                .await?;
+            Ok(json!({"success":true,"discarded":discarded}))
         }
         "config.get" => Ok(json!({"success":true,"config":state.config.get()})),
         "config.set" => {

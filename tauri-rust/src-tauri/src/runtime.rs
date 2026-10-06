@@ -30,6 +30,7 @@ pub struct Runtime {
     pub quitting: AtomicBool,
     pub finished: AtomicBool,
     pub tray_available: AtomicBool,
+    pub image_selecting: AtomicBool,
     pub active_conversation: Mutex<String>,
     pub events: Mutex<Option<tokio::sync::mpsc::Receiver<Event>>>,
     event_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -102,6 +103,7 @@ impl Runtime {
             quitting: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             tray_available: AtomicBool::new(false),
+            image_selecting: AtomicBool::new(false),
             active_conversation: Mutex::new(String::new()),
             events: Mutex::new(Some(rx)),
             event_task: Mutex::new(None),
@@ -120,7 +122,7 @@ impl Runtime {
     }
     pub fn info(&self) -> Value {
         json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
-            "capabilities":{"images":false,"imageReceive":true,"imageSend":false,"files":false,"screenshot":false,"scan":false,"notificationSound":false}})
+            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":false,"screenshot":false,"scan":false,"notificationSound":false}})
     }
     pub fn log(&self, level: &str, message: &str) {
         if level == "DEBUG" && !self.verbose {

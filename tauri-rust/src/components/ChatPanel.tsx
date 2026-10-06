@@ -1,11 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FiCamera, FiImage, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
 import { toast } from '../stores/toastStore';
 import { buildEmojiMessage, emojiStyle } from '../emojiData';
 import { isSameDay, formatDateSeparator } from '../utils/format';
-import type { Message } from '../types';
+import type { ImageMetadata, ImageReadResult, Message } from '../types';
+import { invoke } from '../services/bridge';
+import ImageSendPreview from './ImageSendPreview';
 import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
@@ -53,6 +55,63 @@ export default function ChatPanel() {
   const [searching, setSearching] = useState(false);
   const searchGeneration = useRef(0);
   const visibleMessages = searchResults ?? userMessages;
+  type Preview = { target: string; image: ImageMetadata; url: string; sending: boolean; abandoned: boolean };
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const previewRef = useRef<Preview | null>(null);
+  const imageGeneration = useRef(0);
+  const imageBusyRef = useRef(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const discard = (assetId: string) => invoke('image.discard', { assetId }).catch((error) => console.error('Preview cleanup failed', error));
+  useEffect(() => {
+    setPreview(null); setImageBusy(false);
+    return () => {
+      ++imageGeneration.current;
+      const pending = previewRef.current; previewRef.current = null;
+      if (pending) { pending.abandoned = true; if (!pending.sending) void discard(pending.image.assetId); }
+    };
+  }, [userId]);
+  const selectImage = async () => {
+    if (!userId || imageBusyRef.current || previewRef.current) return;
+    const generation = imageGeneration.current, target = userId;
+    imageBusyRef.current = true; setImageBusy(true);
+    let image: ImageMetadata | undefined, retained = false;
+    try {
+      const result = await invoke<{ success: boolean; cancelled?: boolean; image?: ImageMetadata }>('image.select');
+      if (result.cancelled) return;
+      image = result.image;
+      if (!image?.assetId) throw new Error('图片导入失败');
+      const source = await invoke<ImageReadResult>('image.read', { assetId: image.assetId, thumbnail: true });
+      if (!source.url) throw new Error('图片预览不可用');
+      if (generation !== imageGeneration.current) return;
+      const pending = { target, image, url: source.url, sending: false, abandoned: false };
+      previewRef.current = pending; setPreview(pending); retained = true;
+    } catch (error) { if (generation === imageGeneration.current) toast.error('选择图片失败：' + String(error)); }
+    finally {
+      if (image && !retained) void discard(image.assetId);
+      imageBusyRef.current = false;
+      if (generation === imageGeneration.current) setImageBusy(false);
+    }
+  };
+  const cancelPreview = useCallback(() => {
+    if (imageBusyRef.current) return;
+    const pending = previewRef.current; previewRef.current = null; setPreview(null);
+    if (pending) void invoke('image.discard', { assetId: pending.image.assetId }).catch((error) => toast.error('预览清理失败：' + String(error)));
+  }, []);
+  const sendPreview = useCallback(async () => {
+    const pending = previewRef.current;
+    if (!pending || imageBusyRef.current) return;
+    pending.sending = true; imageBusyRef.current = true; setImageBusy(true);
+    try {
+      const accepted = await useMessageStore.getState().sendImage(pending.target, pending.image.assetId);
+      if (accepted) {
+        if (previewRef.current === pending) { previewRef.current = null; setPreview(null); }
+      } else if (pending.abandoned) { void invoke('image.discard', { assetId: pending.image.assetId }).catch(console.error); }
+      else toast.error('图片发送失败：' + (useMessageStore.getState().error || '未知错误'));
+    } finally {
+      pending.sending = false; imageBusyRef.current = false;
+      if (!pending.abandoned) setImageBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (userId) {
@@ -190,9 +249,9 @@ export default function ChatPanel() {
         <div className="flex items-center gap-2 px-4 pt-2">
           <button disabled={sending} title="表情" onClick={() => setEmojiOpen(!emojiOpen)} className={`p-1.5 rounded ${emojiOpen ? 'text-primary-500 bg-gray-100' : 'text-gray-400 hover:text-gray-600'}`}><FiSmile size={18} /></button>
           <button disabled title="截图：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiCamera size={18} /></button>
-          <button disabled title="图片发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiImage size={18} /></button>
+          <button disabled={imageBusy || !!preview} title="发送图片" onClick={selectImage} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiImage size={18} /></button>
           <button disabled title="文件发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiFile size={18} /></button>
-          <span className="text-[11px] text-gray-400 ml-1">支持收图；图片发送、截图及文件暂未迁移</span>
+          <span className="text-[11px] text-gray-400 ml-1">支持图片收发；截图及文件暂未迁移</span>
         </div>
         <div className="px-4 pb-3 pt-1">
           <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}
@@ -201,6 +260,7 @@ export default function ChatPanel() {
           <div className="flex justify-end mt-1"><button onClick={send} disabled={!hasInput || sending} className="px-4 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed">{sending ? '发送中…' : '发送'}</button></div>
         </div>
       </div>
+      {preview && <ImageSendPreview image={preview.image} url={preview.url} busy={imageBusy} onConfirm={sendPreview} onCancel={cancelPreview} />}
       {clearOpen && <ConfirmDialog title="清空聊天记录" message="仅清空本会话在 Rust 版中的记录，不影响原版。此操作无法撤销。" danger onConfirm={() => void clear()} onCancel={() => { if (!clearing.current) setClearOpen(false); }} />}
     </div>
   );

@@ -2,7 +2,11 @@ import { create } from 'zustand';
 import { invoke, listen } from '../services/bridge';
 import { useUserStore } from './userStore';
 import { toast } from './toastStore';
-import type { HistoryRecord, HistoryResult, Message, MessageReceivedEvent } from '../types';
+import type { HistoryRecord, HistoryResult, ImageMetadata, ImageSendEvent, Message, MessageReceivedEvent } from '../types';
+
+type ImagePhase = 'progress' | 'completed' | 'failed';
+const earlyImages = new Map<string, { data: ImageSendEvent; phase: ImagePhase; at: number }>();
+const imageKey = (target: string, id: string) => `${target}\0${id}`;
 
 type Delivery = { status: 'delivered' | 'failed'; error?: string; at: number };
 const earlyDelivery = new Map<string, Delivery>();
@@ -62,6 +66,9 @@ interface MessageStore {
   error: string | null;
   loadLocalUserId: () => Promise<void>;
   sendMessage: (target: string, content: string) => Promise<boolean>;
+  sendImage: (target: string, assetId: string) => Promise<boolean>;
+  cancelImage: (messageId: string) => Promise<boolean>;
+  updateImage: (data: ImageSendEvent, phase: ImagePhase) => void;
   recvMessage: (message: Message) => void;
   updateDelivery: (id: string, status: Delivery['status'], error?: string) => void;
   clearUnread: (userId: string) => void;
@@ -77,6 +84,12 @@ interface MessageStore {
 export const useMessageStore = create<MessageStore>((set, get) => {
   const replay = (messages: Message[]) => {
     for (const message of messages) {
+      if (message.type === 'image' && message.from === 'self') {
+        const key = imageKey(message.to, message.id), event = earlyImages.get(key);
+        earlyImages.delete(key);
+        if (event && Date.now() - event.at <= EARLY_TTL) get().updateImage(event.data, event.phase);
+        continue;
+      }
       const update = earlyDelivery.get(message.id);
       if (!update) continue;
       earlyDelivery.delete(message.id);
@@ -131,6 +144,55 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         return false;
       }
     },
+    sendImage: async (target, assetId) => {
+      set({ error: null });
+      try {
+        const result = await invoke<{ success: boolean; messageId: string; imageId: string; image: ImageMetadata }>('image.send', { target, assetId });
+        if (!result.messageId || !result.image?.assetId) throw new Error('后端未返回图片任务');
+        const message: Message = { id: result.messageId, from: 'self', to: target, content: '[图片]', type: 'image',
+          image: result.image, timestamp: Date.now(), status: 'sending', imageProgress: 0, imageStage: 'queued' };
+        get().recvMessage(message); replay([message]); return true;
+      } catch (error) { set({ error: error instanceof Error ? error.message : String(error) }); return false; }
+    },
+    cancelImage: async (messageId) => {
+      const result = await invoke<{ success: boolean; cancelled: boolean }>('image.cancel', { messageId });
+      if (result.cancelled) set((state) => {
+        const messages = new Map(state.messages);
+        for (const [peer, list] of messages) messages.set(peer, list.map((message) =>
+          message.id === messageId && message.status === 'sending' ? { ...message, imageStage: 'cancelling' } : message));
+        return { messages };
+      });
+      return result.cancelled;
+    },
+    updateImage: (data, phase) => {
+      if (!data?.messageId || !data.target || clearedIds.has(data.messageId)) return;
+      let found = false, notify = false;
+      set((state) => {
+        const list = state.messages.get(data.target);
+        const index = list?.findIndex((m) => m.id === data.messageId && m.type === 'image' && m.from === 'self') ?? -1;
+        if (!list || index < 0) return {};
+        found = true;
+        const previous = list[index];
+        if (previous.status !== 'sending' || (phase === 'progress' && previous.imageStage === 'cancelling')) return {};
+        const progress = Number.isFinite(data.progress) ? Math.max(0, Math.min(99, data.progress!)) : 0;
+        const updated = [...list];
+        updated[index] = { ...previous,
+          status: phase === 'completed' ? 'delivered' : phase === 'failed' ? 'failed' : 'sending',
+          imageProgress: phase === 'completed' ? 100 : Math.max(previous.imageProgress || 0, progress),
+          imageStage: phase === 'failed' ? (data.cancelled ? 'cancelled' : 'failed') : phase === 'completed' ? 'completed' : data.stage || 'transferring',
+          imageError: phase === 'failed' ? data.error || '图片发送失败' : undefined };
+        const messages = new Map(state.messages); messages.set(data.target, updated);
+        notify = phase === 'failed' && !data.cancelled;
+        return { messages };
+      });
+      if (!found) {
+        for (const [key, event] of earlyImages) if (Date.now() - event.at > EARLY_TTL) earlyImages.delete(key);
+        const key = imageKey(data.target, data.messageId), old = earlyImages.get(key);
+        if (old && old.phase !== 'progress') return;
+        if (!old && earlyImages.size >= EARLY_LIMIT) earlyImages.delete(earlyImages.keys().next().value!);
+        earlyImages.set(key, { data, phase, at: Date.now() });
+      } else if (notify) toast.error('图片发送失败：' + (data.error || '对方未确认图片'));
+    },
     recvMessage: (message) => set((state) => {
       const partner = message.from === 'self' ? message.to : message.from;
       const existing = state.messages.get(partner) || [];
@@ -164,7 +226,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       let found = false, newlyFailed = false;
       set((state) => {
         for (const [partner, list] of state.messages) {
-          const index = list.findIndex((m) => m.id === id && m.from === 'self');
+          const index = list.findIndex((m) => m.id === id && m.from === 'self' && m.type === 'text');
           if (index < 0) continue;
           found = true;
           if (list[index].status !== 'sending') return {};
@@ -231,6 +293,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         const result = await invoke<{ success: boolean; deletedIds: string[] }>('history.clear', userId ? { userId } : {});
         if (!Array.isArray(result.deletedIds) || result.deletedIds.some((id) => typeof id !== 'string')) throw new Error('清空历史返回格式错误');
         deleted = new Set(result.deletedIds);
+        for (const [key, event] of earlyImages) if (deleted.has(event.data.messageId)) earlyImages.delete(key);
         for (const id of result.deletedIds) {
           clearedIds.add(id);
           earlyDelivery.delete(id);
@@ -269,6 +332,9 @@ export const useMessageStore = create<MessageStore>((set, get) => {
             timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser, image: data.image,
           });
         }),
+        listen('image.send_progress', (data: ImageSendEvent) => get().updateImage(data, 'progress')),
+        listen('image.send_completed', (data: ImageSendEvent) => get().updateImage(data, 'completed')),
+        listen('image.send_failed', (data: ImageSendEvent) => get().updateImage(data, 'failed')),
         listen('message.ack', (data: { messageId: string }) => get().updateDelivery(data.messageId, 'delivered')),
         listen('message.failed', (data: { messageId: string; error?: string }) => get().updateDelivery(data.messageId, 'failed', data.error)),
         listen('image.receive_failed', (data: { error?: string }) => toast.error('图片接收失败：' + (data.error || '图片未能完成校验或保存'))),

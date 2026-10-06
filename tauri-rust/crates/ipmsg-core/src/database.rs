@@ -142,7 +142,7 @@ impl Database {
                     db.busy_timeout(std::time::Duration::from_secs(1))?;
                     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
                     let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                    if version > 2 { return Err(rusqlite::Error::InvalidQuery); }
+                    if version > 3 { return Err(rusqlite::Error::InvalidQuery); }
                     let transaction = db.transaction()?;
                     transaction.execute_batch(
                         "CREATE TABLE IF NOT EXISTS messages (
@@ -161,7 +161,11 @@ impl Database {
                       message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                       asset_id TEXT NOT NULL REFERENCES image_assets(asset_id));",
                     )?;
-                    transaction.pragma_update(None, "user_version", 2)?;
+                    if version < 3 {
+                        transaction.execute_batch("ALTER TABLE image_assets ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;
+                            ALTER TABLE image_assets ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;")?;
+                    }
+                    transaction.pragma_update(None, "user_version", 3)?;
                     transaction.commit()?;
                     Ok(db)
                 })();
@@ -209,8 +213,88 @@ impl Database {
     }
 
     pub async fn image_asset(&self, asset_id: String) -> Result<Option<ImageMetadata>, String> {
-        self.call(move |db| db.query_row("SELECT asset_id,file_name,file_size,mime,width,height FROM image_assets WHERE asset_id=?",
+        self.call(move |db| db.query_row("SELECT asset_id,file_name,file_size,mime,width,height FROM image_assets WHERE asset_id=? AND temporary<>2",
             [asset_id], image_row).optional().map_err(|e| e.to_string())).await
+    }
+
+    /// Import only assets created by the native picker. Ownership stays in this
+    /// queued operation even if the command caller disappears during the commit.
+    pub async fn register_import(&self, pending: PendingAsset) -> Result<ImageMetadata, String> {
+        if !pending.metadata_matches_directory() {
+            return Err("无效导入资产".into());
+        }
+        self.call(move |db| {
+            let mut pending = pending;
+            let metadata = pending.metadata.clone();
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            let count: i64 = tx.query_row("SELECT COUNT(*) FROM image_assets WHERE temporary<>0", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+            if count >= 8 { return Err("待发送预览过多，请先取消已有预览".into()); }
+            tx.execute("INSERT INTO image_assets(asset_id,file_name,file_size,mime,width,height,temporary,created_at) VALUES (?,?,?,?,?,?,1,CAST(strftime('%s','now') AS INTEGER))",
+                params![metadata.asset_id,metadata.file_name,metadata.file_size,metadata.mime,metadata.width,metadata.height]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            pending.keep();
+            Ok(metadata)
+        }).await
+    }
+
+    pub async fn insert_sent_image(&self, record: Record) -> Result<(), String> {
+        let metadata = validate_image_record(&record)?.clone();
+        self.call(move |db| {
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            let stored = tx.query_row("SELECT asset_id,file_name,file_size,mime,width,height FROM image_assets WHERE asset_id=? AND temporary<>2", [&metadata.asset_id], image_row)
+                .optional().map_err(|e| e.to_string())?.ok_or("图片预览已过期，请重新选择")?;
+            if stored != metadata { return Err("图片元数据不匹配".into()); }
+            tx.execute("INSERT INTO messages(id,from_id,to_id,content,type,timestamp,status) VALUES (?,?,?,?,1,?,0)",
+                params![record.id,record.from_id,record.to_id,record.content,record.timestamp]).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO seen_messages(id,seen_at) VALUES (?,CAST(strftime('%s','now') AS INTEGER))", [&record.id]).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO message_images(message_id,asset_id) VALUES (?,?)", params![record.id,metadata.asset_id]).map_err(|e| e.to_string())?;
+            tx.execute("UPDATE image_assets SET temporary=0 WHERE asset_id=?", [&metadata.asset_id]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        }).await
+    }
+
+    /// Only preview imports are removable. A sent/received history asset is never
+    /// deleted here, even after its message has been cleared.
+    pub async fn discard_imports(
+        &self,
+        id: Option<String>,
+        before: i64,
+    ) -> Result<Vec<String>, String> {
+        self.call(move |db| {
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            let ids = {
+                let mut statement = tx.prepare("SELECT asset_id FROM image_assets WHERE (temporary=2 OR (temporary=1 AND created_at<=?1)) AND (?2 IS NULL OR asset_id=?2)
+                    AND NOT EXISTS(SELECT 1 FROM message_images WHERE message_images.asset_id=image_assets.asset_id)").map_err(|e| e.to_string())?;
+                let ids = statement.query_map(params![before,id], |row|row.get::<_,String>(0)).map_err(|e|e.to_string())?
+                    .collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;
+                ids
+            };
+            for id in &ids { tx.execute("UPDATE image_assets SET temporary=2 WHERE asset_id=?", [id]).map_err(|e|e.to_string())?; }
+            tx.commit().map_err(|e|e.to_string())?;
+            Ok(ids)
+        }).await
+    }
+
+    pub async fn forget_discarded_asset(&self, id: String) -> Result<(), String> {
+        self.call(move |db| {
+            db.execute(
+                "DELETE FROM image_assets WHERE asset_id=? AND temporary=2",
+                [id],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn interrupt_sending(&self, id: String) -> Result<(), String> {
+        self.call(move |db| {
+            db.execute("UPDATE messages SET status=3 WHERE id=? AND status=0", [id])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
     }
 
     /// Metadata-only insertion retained for tests/importers. If the caller owns

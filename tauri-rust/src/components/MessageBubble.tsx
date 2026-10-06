@@ -6,6 +6,27 @@ import { parseEmojiId, EMOJI_TOKEN_RE } from '../emojiData';
 import { formatTime, formatFileSize } from '../utils/format';
 import { invoke } from '../services/bridge';
 import EmojiSprite from './EmojiSprite';
+import { useMessageStore } from '../stores/messageStore';
+import { toast } from '../stores/toastStore';
+
+function ImageSendState({ message }: { message: Message }) {
+  const [busy, setBusy] = useState(false);
+  if (message.status === 'failed') return <p className="text-xs text-red-600 mt-1">{message.imageError || '图片发送失败或已中断'}</p>;
+  if (message.status !== 'sending') return null;
+  const labels: Record<string, string> = { queued: '排队中', encoding: '正在编码', transferring: '传输中', waiting_reference: '等待引用确认', cancelling: '正在取消' };
+  const cancel = async () => {
+    if (busy) return; setBusy(true);
+    try {
+      if (!await useMessageStore.getState().cancelImage(message.id)) toast.info('图片已结束或正在保存最终状态，不能再取消');
+    } catch (error) { toast.error('取消图片失败：' + String(error)); }
+    finally { setBusy(false); }
+  };
+  return <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+    <span>{labels[message.imageStage || ''] || '发送中'} · {message.imageProgress || 0}%</span>
+    <button disabled={busy || message.imageStage === 'cancelling'} className="text-primary-600 disabled:opacity-50" onClick={cancel}>取消</button>
+  </div>;
+}
+
 
 function renderText(content: string) {
   const emojiId = parseEmojiId(content);
@@ -127,6 +148,7 @@ export default memo(function MessageBubble({ message }: { message: Message }) {
             message.image?.assetId ? <ReceivedImage image={message.image} /> : <span className="text-gray-500">[图片信息缺失，无法预览]</span>
           ) : <span className="text-gray-500">[文件：Rust 核心版暂不支持，请使用原版查看]</span>}
         </div>
+        {self && message.type === 'image' && <ImageSendState message={message} />}
         <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-0.5 ${self ? 'justify-end' : 'justify-start'}`}>
           <span>{formatTime(message.timestamp)}</span>
           {self && (message.status === 'sending'

@@ -27,6 +27,15 @@ export interface ImageReadResult {
   url: string;
 }
 
+export interface ImageSendEvent {
+  messageId: string;
+  target: string;
+  progress?: number;
+  stage?: string;
+  error?: string;
+  cancelled?: boolean;
+}
+
 export interface Message {
   id: string;
   from: string;
@@ -37,6 +46,9 @@ export interface Message {
   status: 'sending' | 'delivered' | 'failed';
   fromUser?: User;
   image?: ImageMetadata;
+  imageProgress?: number;
+  imageStage?: string;
+  imageError?: string;
   fileInfo?: { fileName: string };
 }
 
@@ -86,7 +98,7 @@ export interface Capabilities {
 }
 
 export const MVP_CAPABILITIES: Capabilities = {
-  images: false, imageReceive: true, imageSend: false, files: false, screenshot: false, scan: false, notificationSound: false,
+  images: true, imageReceive: true, imageSend: true, files: false, screenshot: false, scan: false, notificationSound: false,
 };
 
 export interface AppInfo {

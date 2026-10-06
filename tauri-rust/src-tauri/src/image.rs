@@ -6,6 +6,44 @@ use tauri::{
     Manager, UriSchemeContext, UriSchemeResponder,
 };
 
+struct SelectionGuard(Arc<Runtime>);
+impl Drop for SelectionGuard {
+    fn drop(&mut self) {
+        self.0.image_selecting.store(false, Ordering::Release);
+    }
+}
+
+pub async fn select(
+    window: &tauri::WebviewWindow,
+    state: Arc<Runtime>,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if state.image_selecting.swap(true, Ordering::AcqRel) {
+        return Err("已有图片选择正在进行".into());
+    }
+    let _selection = SelectionGuard(state.clone());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .app_handle()
+        .dialog()
+        .file()
+        .set_parent(window)
+        .set_title("选择要发送的图片")
+        .add_filter("图片", &["png", "jpg", "jpeg", "bmp"])
+        .pick_file(move |selected| {
+            let _ = tx.send(selected);
+        });
+    let Some(selected) = rx.await.map_err(|_| "图片选择已中断")? else {
+        return Ok(serde_json::json!({"success":true,"cancelled":true}));
+    };
+    if !state.accepting.load(Ordering::Acquire) {
+        return Err("程序正在退出".into());
+    }
+    let path = selected.into_path().map_err(|_| "仅支持本地图片文件")?;
+    let image = state.network.import_image_path(path).await?;
+    Ok(serde_json::json!({"success":true,"image":image}))
+}
+
 pub fn asset_url(id: &str, thumbnail: bool) -> String {
     let part = if thumbnail { "thumb" } else { "full" };
     if cfg!(windows) {

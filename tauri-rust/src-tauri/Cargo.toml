@@ -17,6 +17,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 ipmsg-core = { path = "../crates/ipmsg-core" }
 tauri = { version = "2.11.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2.7.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }

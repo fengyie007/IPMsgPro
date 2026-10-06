@@ -218,6 +218,10 @@ pub fn decode_image(payload: &[u8]) -> Result<DecodedImage, String> {
     } else {
         return Err("不支持的图片载荷格式".into());
     };
+    normalize(image)
+}
+
+fn normalize(image: DynamicImage) -> Result<DecodedImage, String> {
     let width = image.width();
     let height = image.height();
     dimensions(width, height)?;
@@ -232,9 +236,102 @@ pub fn decode_image(payload: &[u8]) -> Result<DecodedImage, String> {
     })
 }
 
+pub const MAX_IMPORT_BYTES: usize = 20 * 1024 * 1024;
+
+pub fn import_image(bytes: &[u8]) -> Result<DecodedImage, String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
+        return Err("原图片为空或超过20 MiB".into());
+    }
+    let format = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ImageFormat::Png
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        ImageFormat::Jpeg
+    } else if bytes.starts_with(b"BM") {
+        ImageFormat::Bmp
+    } else {
+        return Err("仅支持PNG、JPEG和BMP图片".into());
+    };
+    normalize(decode_file(bytes, format)?)
+}
+
+/// Build a FeiQ LZW! payload from an already registered PNG asset.
+pub fn encode_png_for_wire(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if bytes.len() > MAX_PNG_BYTES || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("发送资产必须是受限PNG".into());
+    }
+    let rgba = decode_file(bytes, ImageFormat::Png)?.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    dimensions(width, height)?;
+    let stride = (u64::from(width) * 3 + 3) & !3;
+    let length = 40 + stride * u64::from(height);
+    if length > MAX_DIB_BYTES as u64 {
+        return Err("发送DIB超过上限".into());
+    }
+    let mut dib = Vec::new();
+    dib.try_reserve_exact(length as usize)
+        .map_err(|_| "无法分配发送DIB")?;
+    for n in [40, width, height] {
+        dib.extend_from_slice(&n.to_le_bytes());
+    }
+    dib.extend_from_slice(&[1, 0, 24, 0]);
+    for n in [0, (stride * u64::from(height)) as u32, 0, 0, 0, 0] {
+        dib.extend_from_slice(&n.to_le_bytes());
+    }
+    dib.resize(length as usize, 0);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = rgba.get_pixel(x, y).0;
+            let alpha = u16::from(pixel[3]);
+            let at = 40 + (height - 1 - y) as usize * stride as usize + x as usize * 3;
+            for (i, channel) in [pixel[2], pixel[1], pixel[0]].into_iter().enumerate() {
+                dib[at + i] =
+                    ((u16::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+            }
+        }
+    }
+    drop(rgba);
+    let compressed = super::lzw::compress(&dib)?;
+    if decompress(&compressed, dib.len())? != dib {
+        return Err("发送图片LZW校验失败".into());
+    }
+    let mut payload = b"LZW!".to_vec();
+    payload.extend_from_slice(&(dib.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&crc32(&dib).to_le_bytes());
+    payload.extend_from_slice(&compressed);
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_png_is_white_composited_and_bottom_up() {
+        let rgba = image::RgbaImage::from_raw(1, 2, vec![255, 0, 0, 0, 0, 0, 255, 128]).unwrap();
+        let bytes = png(&DynamicImage::ImageRgba8(rgba), MAX_PNG_BYTES).unwrap();
+        let wire = encode_png_for_wire(&bytes).unwrap();
+        assert!(wire.starts_with(b"LZW!"));
+        let result = decode_image(&wire).unwrap();
+        let pixels = image::load_from_memory(&result.png).unwrap().to_rgb8();
+        assert_eq!(pixels.as_raw(), &[255, 255, 255, 127, 127, 255]);
+    }
+
+    #[test]
+    fn imports_bmp_and_rejects_non_images() {
+        let original = DynamicImage::ImageRgb8(
+            image::RgbImage::from_raw(2, 1, vec![1, 2, 3, 4, 5, 6]).unwrap(),
+        );
+        let mut bmp = Cursor::new(Vec::new());
+        original.write_to(&mut bmp, ImageFormat::Bmp).unwrap();
+        let imported = import_image(bmp.get_ref()).unwrap();
+        assert_eq!(
+            image::load_from_memory(&imported.png).unwrap().to_rgb8(),
+            original.to_rgb8()
+        );
+        assert!(import_image(b"GIF89a").is_err());
+        assert!(import_image(b"not an image").is_err());
+        assert!(encode_png_for_wire(bmp.get_ref()).is_err());
+    }
     use crate::image::lzw::tests::pack;
 
     fn make_dib(width: i32, height: i32, bits: u16, pixels: &[u8]) -> Vec<u8> {

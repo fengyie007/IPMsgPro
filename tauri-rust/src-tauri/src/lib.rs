@@ -82,6 +82,7 @@ pub fn run() {
         }
     };
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("ipmsg-image", image::serve)
         .invoke_handler(tauri::generate_handler![commands::ipmsg_command])
         .setup(move |app| {
