@@ -88,11 +88,26 @@ export interface Config {
   notificationSound: boolean;
   segments: string[];
   ipScanRanges: string[];
+  scanPort: number;
+  scanDelayMs: number;
+  scanOnStartup: boolean;
 }
 
 export const DEFAULT_CONFIG: Config = {
   nickname: '', group: '', minimizeBehavior: 'tray', directUsers: [],
   dataDir: '', notificationSound: false, segments: [], ipScanRanges: [],
+  scanPort: 2425, scanDelayMs: 20, scanOnStartup: true,
+};
+
+export interface ScanOptions { ranges: string[]; port: number; delayMs: number }
+export type ScanPhase = 'idle' | 'running' | 'waiting' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
+export interface ScanStatus {
+  scanId: number; revision: number; state: ScanPhase; current: number; total: number; found: number;
+  failedSends: number; skipped: number; port: number; delayMs: number; ranges: string[]; error: string | null;
+}
+export const EMPTY_SCAN: ScanStatus = {
+  scanId: 0, revision: 0, state: 'idle', current: 0, total: 0, found: 0, failedSends: 0, skipped: 0,
+  port: 2425, delayMs: 20, ranges: [], error: null,
 };
 
 export interface Capabilities {
@@ -106,7 +121,7 @@ export interface Capabilities {
 }
 
 export const MVP_CAPABILITIES: Capabilities = {
-  images: true, imageReceive: true, imageSend: true, files: false, screenshot: false, scan: false, notificationSound: false,
+  images: true, imageReceive: true, imageSend: true, files: false, screenshot: false, scan: true, notificationSound: false,
 };
 
 export interface AppInfo {

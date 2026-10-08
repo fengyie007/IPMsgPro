@@ -25,6 +25,7 @@ use tokio::{
 
 mod image_receive;
 mod image_send;
+mod scan;
 use image_receive::ImageJob;
 use image_send::ImageSendJob;
 pub use image_send::ImageSendResult;
@@ -72,6 +73,7 @@ pub struct Network {
     events: mpsc::Sender<Event>,
     packet: Arc<AtomicU32>,
     files: OnceLock<Arc<crate::file::FileTransfers>>,
+    scan: scan::Scanner,
     ready: AtomicBool,
     stopping: AtomicBool,
     cancel: watch::Sender<bool>,
@@ -173,6 +175,7 @@ impl Network {
             events,
             packet: Arc::new(AtomicU32::new(unix_seconds() as u32)),
             files: OnceLock::new(),
+            scan: scan::Scanner::default(),
             ready: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             cancel,
@@ -301,11 +304,23 @@ impl Network {
         let me = self.clone();
         tasks.push(tokio::spawn(async move { me.send_images().await }));
     }
-    pub async fn ui_ready(&self) -> Result<(), String> {
+    pub async fn ui_ready(self: &Arc<Self>) -> Result<(), String> {
         if !self.ready.swap(true, Ordering::AcqRel) {
             if let Err(error) = self.discover().await {
                 self.ready.store(false, Ordering::Release);
                 return Err(error);
+            }
+            let config = self.config.get();
+            if config.scan_on_startup && !config.ip_scan_ranges.is_empty() {
+                self.start_scan_inner(
+                    crate::scan::ScanOptions {
+                        ranges: config.ip_scan_ranges,
+                        port: config.scan_port,
+                        delay_ms: config.scan_delay_ms,
+                    },
+                    true,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -608,6 +623,7 @@ impl Network {
         match mode(packet.command) {
             IPMSG_BR_ENTRY | IPMSG_ANSENTRY | IPMSG_BR_ABSENCE => {
                 self.seen(&packet, address, true).await?;
+                self.scan_response(address);
                 if mode(packet.command) == IPMSG_BR_ENTRY {
                     self.send_to(
                         address,
@@ -881,6 +897,7 @@ impl Network {
         if self.stopping.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.shutdown_scan().await;
         let _send = self.send_gate.lock().await;
         let _images = self.image_send_gate.lock().await;
         self.cancel_image_sends();

@@ -134,7 +134,7 @@ impl Runtime {
     }
     pub fn info(&self) -> Value {
         json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
-            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":self.network.file_transfers().is_ok(),"screenshot":cfg!(windows),"scan":false,"notificationSound":false}})
+            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":self.network.file_transfers().is_ok(),"screenshot":cfg!(windows),"scan":true,"notificationSound":false}})
     }
     pub fn log(&self, level: &str, message: &str) {
         if level == "DEBUG" && !self.verbose {

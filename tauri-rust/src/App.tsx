@@ -10,6 +10,7 @@ import type { FileSelection } from './types';
 import { useUserStore } from './stores/userStore';
 import { useMessageStore } from './stores/messageStore';
 import { useConfigStore } from './stores/configStore';
+import { useScanStore } from './stores/scanStore';
 import { toast } from './stores/toastStore';
 import { bridgeReady, invoke, isMockMode, listen } from './services/bridge';
 
@@ -41,6 +42,7 @@ export default function App() {
     setStartupError('');
     const unlistenUsers = useUserStore.getState().initListeners();
     const unlistenMessages = useMessageStore.getState().initListeners();
+    const unlistenScans = useScanStore.getState().initListeners();
     const start = async () => {
       try {
         await bridgeReady();
@@ -53,6 +55,7 @@ export default function App() {
         if (cancelled) return;
         // Rust treats this as idempotent. Discovery cannot run before listeners exist.
         await invoke('config.loaded');
+        void useScanStore.getState().refresh();
         if (cancelled) return;
         await useMessageStore.getState().loadRecentConversations();
         if (!cancelled) setReady(true);
@@ -62,7 +65,7 @@ export default function App() {
       }
     };
     void start();
-    return () => { cancelled = true; unlistenUsers(); unlistenMessages(); };
+    return () => { cancelled = true; unlistenUsers(); unlistenMessages(); unlistenScans(); };
   }, [attempt]);
 
   const activeConversation = ready && viewMode !== 'settings' ? currentUser?.id || '' : '';

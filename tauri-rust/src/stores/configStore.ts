@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '../services/bridge';
 import { DEFAULT_CONFIG, type AppInfo, type Config } from '../types';
+import { validateScanOptions } from '../utils/netValidation';
 
 function parseConfig(value: Partial<Config>): Config {
   if (!value || typeof value.nickname !== 'string' || typeof value.group !== 'string' ||
@@ -8,7 +9,12 @@ function parseConfig(value: Partial<Config>): Config {
       (value.minimizeBehavior !== 'tray' && value.minimizeBehavior !== 'taskbar')) {
     throw new Error('后端返回了无效设置');
   }
-  return { ...DEFAULT_CONFIG, ...value };
+  const config = { ...DEFAULT_CONFIG, ...value };
+  if (!Array.isArray(config.ipScanRanges) || config.ipScanRanges.some((r) => typeof r !== 'string') ||
+      typeof config.scanOnStartup !== 'boolean' || 'error' in validateScanOptions(config.ipScanRanges, config.scanPort, config.scanDelayMs)) {
+    throw new Error('后端返回了无效扫描设置');
+  }
+  return config;
 }
 
 interface ConfigStore {
@@ -34,7 +40,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
   saveConfig: async (partial) => {
     const payload: Record<string, unknown> = {};
-    for (const key of ['nickname', 'group', 'directUsers', 'minimizeBehavior'] as const) {
+    for (const key of ['nickname', 'group', 'directUsers', 'minimizeBehavior', 'ipScanRanges', 'scanPort', 'scanDelayMs', 'scanOnStartup'] as const) {
       if (partial[key] !== undefined) payload[key] = partial[key];
     }
     const result = await invoke<{ success: boolean; config: Config }>('config.set', payload);
@@ -45,6 +51,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
     await get().saveConfig({
       nickname: DEFAULT_CONFIG.nickname, group: DEFAULT_CONFIG.group,
       directUsers: [], minimizeBehavior: DEFAULT_CONFIG.minimizeBehavior,
+      ipScanRanges: [], scanPort: DEFAULT_CONFIG.scanPort, scanDelayMs: DEFAULT_CONFIG.scanDelayMs, scanOnStartup: DEFAULT_CONFIG.scanOnStartup,
     });
   },
 }));

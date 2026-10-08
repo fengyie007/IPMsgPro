@@ -1,6 +1,7 @@
 import { invoke as nativeInvoke, isTauri } from '@tauri-apps/api/core';
 import { listen as nativeListen, type UnlistenFn } from '@tauri-apps/api/event';
-import { APP_VERSION, DEFAULT_CONFIG, MVP_CAPABILITIES, type Config, type HistoryRecord, type User } from '../types';
+import { APP_VERSION, DEFAULT_CONFIG, MVP_CAPABILITIES, EMPTY_SCAN, type Config, type HistoryRecord, type User, type ScanStatus } from '../types';
+import { validateScanOptions } from '../utils/netValidation';
 
 type Callback = (payload: any) => void;
 interface Envelope { event: string; payload: unknown }
@@ -16,6 +17,7 @@ const supported = new Set([
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
   'screenshot.start',
+  'network.scan_range', 'network.scan_cancel', 'network.scan_status',
   'file.select', 'file.send', 'file.discard', 'file.accept', 'file.reject', 'file.cancel', 'file.open_folder',
   'window.set_active_conversation', 'frontend.error',
 ]);
@@ -81,6 +83,7 @@ if (import.meta.hot) {
     nativeUnlisten?.();
     nativeUnlisten = undefined;
     listeners.clear();
+    if (mockScanTimer) clearInterval(mockScanTimer);
   });
 }
 
@@ -102,6 +105,37 @@ let mockSequence = 0;
 const mockAssets = new Map([['mock-image', mockRows[0].image!]]);
 const mockTemporary = new Set<string>();
 const mockTasks = new Map<string, { target: string; timers: ReturnType<typeof setTimeout>[] }>();
+let mockScan: ScanStatus = { ...EMPTY_SCAN };
+let mockScanTimer: ReturnType<typeof setInterval> | undefined;
+let mockStartupHandled = false;
+const mockScanActive = () => ['running', 'waiting', 'cancelling'].includes(mockScan.state);
+function startMockScan(args: Record<string, unknown>) {
+  if (mockScanActive()) return { success: false, error: '已有扫描正在进行，请先取消' };
+  if (!Array.isArray(args.ranges) || args.ranges.some((r) => typeof r !== 'string')) return { success: false, error: '扫描范围无效' };
+  const parsed = validateScanOptions(args.ranges, args.port as number, args.delayMs as number);
+  if ('error' in parsed) return { success: false, error: parsed.error };
+  if (!parsed.value.total) return { success: false, error: '请至少配置一个扫描范围' };
+  const options = parsed.value;
+  mockScan = { ...EMPTY_SCAN, scanId: mockScan.scanId + 1, revision: 1, state: 'running', total: options.total,
+    ranges: options.ranges, port: options.port, delayMs: options.delayMs };
+  dispatch({ event: 'network.scan_progress', payload: { ...mockScan } });
+  mockScanTimer = setInterval(() => {
+    const current = Math.min(mockScan.total, mockScan.current + Math.max(1, Math.ceil(mockScan.total / 10)));
+    if (mockScan.state === 'waiting') {
+      const ipNumber = (ip: string) => ip.split('.').reduce((n, part) => n * 256 + Number(part), 0);
+      const responding = new Set(mockUsers.filter((user) => user.port === options.port && options.ranges.some((range) => {
+        const [start, end] = range.split('-').map(ipNumber); return ipNumber(user.ip) >= start && ipNumber(user.ip) <= end;
+      })).map((user) => `${user.ip}:${user.port}`));
+      mockScan = { ...mockScan, revision: mockScan.revision + 1, state: 'completed', found: responding.size };
+      clearInterval(mockScanTimer); mockScanTimer = undefined;
+      dispatch({ event: 'network.scan_complete', payload: { ...mockScan } });
+    } else {
+      mockScan = { ...mockScan, revision: mockScan.revision + 1, current, state: current === mockScan.total ? 'waiting' : 'running' };
+      dispatch({ event: 'network.scan_progress', payload: { ...mockScan } });
+    }
+  }, 100);
+  return { success: true, scan: { ...mockScan } };
+}
 
 function mockResponse(command: string, args: Record<string, unknown>): unknown {
   const localUser = {
@@ -109,6 +143,17 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {
+    case 'network.scan_range': return startMockScan(args);
+    case 'network.scan_status': return { success: true, scan: { ...mockScan } };
+    case 'network.scan_cancel': {
+      if (args.scanId !== mockScan.scanId) return { success: false, error: '扫描任务已变更，请刷新状态' };
+      if (mockScanActive()) {
+        if (mockScanTimer) clearInterval(mockScanTimer); mockScanTimer = undefined;
+        mockScan = { ...mockScan, revision: mockScan.revision + 1, state: 'cancelled' };
+        dispatch({ event: 'network.scan_complete', payload: { ...mockScan } });
+      }
+      return { success: true, scan: { ...mockScan } };
+    }
     case 'file.select':
     case 'file.send':
     case 'file.accept':
@@ -163,15 +208,25 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
       if (discarded) mockAssets.delete(id);
       return { success: true, discarded };
     }
-    case 'config.set':
-      mockConfig = { ...mockConfig, ...args } as Config;
+    case 'config.set': {
+      const next = { ...mockConfig, ...args } as Config;
+      if (!Array.isArray(next.ipScanRanges) || next.ipScanRanges.some((r) => typeof r !== 'string') || typeof next.scanOnStartup !== 'boolean') return { success: false, error: '扫描设置无效' };
+      const parsed = validateScanOptions(next.ipScanRanges, next.scanPort, next.scanDelayMs);
+      if ('error' in parsed) return { success: false, error: parsed.error };
+      mockConfig = next;
       return { success: true, config: mockConfig };
+    }
     case 'user.local': return { success: true, ...localUser };
     case 'user.list': return { success: true, users: mockUsers, count: mockUsers.length };
     case 'user.discover':
       for (const user of mockUsers) dispatch({ event: 'user.discovered', payload: user });
       return { success: true };
     case 'config.loaded':
+      if (!mockStartupHandled) {
+        mockStartupHandled = true;
+        if (mockConfig.scanOnStartup && mockConfig.ipScanRanges.length) startMockScan({ ranges: mockConfig.ipScanRanges, port: mockConfig.scanPort, delayMs: mockConfig.scanDelayMs });
+      }
+      return { success: true };
     case 'window.set_active_conversation':
     case 'frontend.error': return { success: true };
     case 'message.send': {

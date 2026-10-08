@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub notification_sound: bool,
     pub segments: Vec<String>,
     pub ip_scan_ranges: Vec<String>,
+    pub scan_port: u16,
+    pub scan_delay_ms: u32,
+    pub scan_on_startup: bool,
     pub data_dir: String,
 }
 impl Default for AppConfig {
@@ -33,6 +36,9 @@ impl Default for AppConfig {
             notification_sound: false,
             segments: vec![],
             ip_scan_ranges: vec![],
+            scan_port: 2425,
+            scan_delay_ms: 20,
+            scan_on_startup: true,
             data_dir: String::new(),
         }
     }
@@ -47,12 +53,8 @@ impl AppConfig {
         if !matches!(self.minimize_behavior.as_str(), "tray" | "taskbar") {
             return Err("无效的关闭行为".into());
         }
-        if self.notification_sound
-            || !self.segments.is_empty()
-            || !self.ip_scan_ranges.is_empty()
-            || !self.data_dir.is_empty()
-        {
-            return Err("Rust核心版暂不支持提示音、网段扫描或修改数据目录".into());
+        if self.notification_sound || !self.segments.is_empty() || !self.data_dir.is_empty() {
+            return Err("Rust核心版暂不支持提示音、自定义广播网段或修改数据目录".into());
         }
         crate::protocol::encode_packet(
             1,
@@ -68,6 +70,12 @@ impl AppConfig {
         for address in &self.direct_users {
             parse_address(address)?;
         }
+        crate::scan::ScanOptions {
+            ranges: self.ip_scan_ranges.clone(),
+            port: self.scan_port,
+            delay_ms: self.scan_delay_ms,
+        }
+        .plan()?;
         Ok(())
     }
     fn merged(&self, patch: Value) -> Result<Self, String> {
@@ -217,6 +225,33 @@ mod tests {
             .merged(serde_json::json!({"nickname":"测试","directUsers":["127.0.0.1:2426"]}))
             .unwrap();
         assert_eq!(next.nickname, "测试");
+    }
+    #[test]
+    fn scan_settings_validate_without_changing_legacy_defaults() {
+        let legacy: AppConfig =
+            serde_json::from_value(serde_json::json!({"nickname":"原配置","ipScanRanges":[]}))
+                .unwrap();
+        assert_eq!(
+            (
+                legacy.scan_port,
+                legacy.scan_delay_ms,
+                legacy.scan_on_startup
+            ),
+            (2425, 20, true)
+        );
+        legacy.validate().unwrap();
+        let next=legacy.merged(serde_json::json!({"ipScanRanges":["10.8.33.0/24"],"scanPort":2426,"scanDelayMs":50,"scanOnStartup":false})).unwrap();
+        assert_eq!(next.scan_port, 2426);
+        assert_eq!(legacy.scan_port, 2425);
+        for patch in [
+            serde_json::json!({"scanPort":0}),
+            serde_json::json!({"scanDelayMs":9}),
+            serde_json::json!({"scanOnStartup":"yes"}),
+            serde_json::json!({"ipScanRanges":["224.0.0.1"]}),
+            serde_json::json!({"ipScanRanges":["10.0.0.0/16","10.1.0.0/16"]}),
+        ] {
+            assert!(legacy.merged(patch).is_err());
+        }
     }
     #[tokio::test]
     async fn save_is_durable_and_failures_keep_previous_state() {

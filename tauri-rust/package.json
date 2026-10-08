@@ -10,6 +10,7 @@
     "test:store": "node tools/test-store.cjs",
     "test:screenshot": "node tools/test-screenshot.cjs",
     "test:files": "node tools/test-file-selection.cjs",
+    "test:scan": "node tools/test-scan.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

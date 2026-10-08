@@ -49,6 +49,19 @@ async fn dispatch(
     }
     match command {
         "app.info" => Ok(state.info()),
+        "network.scan_range" => {
+            let options: ipmsg_core::scan::ScanOptions =
+                serde_json::from_value(args).map_err(|e| format!("扫描参数无效：{e}"))?;
+            Ok(json!({"success":true,"scan":state.network.start_scan(options).await?}))
+        }
+        "network.scan_cancel" => {
+            let id = args
+                .get("scanId")
+                .and_then(Value::as_u64)
+                .ok_or("缺少有效扫描任务编号")?;
+            Ok(json!({"success":true,"scan":state.network.cancel_scan(id).await?}))
+        }
+        "network.scan_status" => Ok(json!({"success":true,"scan":state.network.scan_status()})),
         "screenshot.start" => crate::capture::start(&window, state.clone()).await,
         "file.select" => crate::files::select(&window, state.clone()).await,
         "file.send" => Ok(

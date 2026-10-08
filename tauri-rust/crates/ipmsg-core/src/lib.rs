@@ -6,6 +6,7 @@ pub mod file;
 pub mod image;
 pub mod network;
 pub mod protocol;
+pub mod scan;
 pub mod text;
 
 use serde::{Deserialize, Serialize};
