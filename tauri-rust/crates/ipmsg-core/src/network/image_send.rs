@@ -101,6 +101,41 @@ impl Network {
         }
     }
     pub async fn import_image_path(&self, path: PathBuf) -> Result<ImageMetadata, String> {
+        self.import_image_source(move || {
+            let mut input = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let info = input.metadata().map_err(|e| e.to_string())?;
+            if !info.is_file() || info.len() == 0 || info.len() > MAX_IMPORT_BYTES as u64 {
+                return Err("仅支持不超过20 MiB的图片文件".to_string());
+            }
+            let mut bytes = Vec::new();
+            (&mut input)
+                .take(MAX_IMPORT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            let name = path
+                .with_extension("png")
+                .file_name()
+                .ok_or("图片文件名无效")?
+                .to_string_lossy()
+                .into_owned();
+            Ok((bytes, name))
+        })
+        .await
+    }
+
+    /// Import an editor result without exposing filesystem paths to its window.
+    pub async fn import_screenshot(&self, png: Vec<u8>) -> Result<ImageMetadata, String> {
+        if png.len() > MAX_IMPORT_BYTES || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("截图必须是20 MiB以内的PNG".into());
+        }
+        self.import_image_source(move || Ok((png, format!("截图_{}.png", unix_seconds()))))
+            .await
+    }
+
+    async fn import_image_source(
+        &self,
+        source: impl FnOnce() -> Result<(Vec<u8>, String), String> + Send + 'static,
+    ) -> Result<ImageMetadata, String> {
         if self.stopping.load(Ordering::Acquire) {
             return Err("程序正在退出".into());
         }
@@ -117,24 +152,10 @@ impl Network {
         let store = self.assets.clone();
         let pending = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let mut input = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-            let info = input.metadata().map_err(|e| e.to_string())?;
-            if !info.is_file() || info.len() == 0 || info.len() > MAX_IMPORT_BYTES as u64 {
-                return Err("仅支持不超过20 MiB的图片文件".to_string());
-            }
-            let mut bytes = Vec::new();
-            (&mut input)
-                .take(MAX_IMPORT_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
+            let (bytes, name) = source()?;
             let decoded = import_image(&bytes)?;
             let mut pending = store.persist(decoded, "import")?;
-            pending.metadata.file_name = path
-                .with_extension("png")
-                .file_name()
-                .ok_or("图片文件名无效")?
-                .to_string_lossy()
-                .into_owned();
+            pending.metadata.file_name = name;
             Ok::<_, String>(pending)
         })
         .await

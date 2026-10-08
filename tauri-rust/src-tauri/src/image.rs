@@ -6,7 +6,7 @@ use tauri::{
     Manager, UriSchemeContext, UriSchemeResponder,
 };
 
-struct SelectionGuard(Arc<Runtime>);
+pub(crate) struct SelectionGuard(pub Arc<Runtime>);
 impl Drop for SelectionGuard {
     fn drop(&mut self) {
         self.0.image_selecting.store(false, Ordering::Release);
@@ -18,6 +18,9 @@ pub async fn select(
     state: Arc<Runtime>,
 ) -> Result<serde_json::Value, String> {
     use tauri_plugin_dialog::DialogExt;
+    if state.capture.active_label().is_some() {
+        return Err("请先完成或取消截图".into());
+    }
     if state.image_selecting.swap(true, Ordering::AcqRel) {
         return Err("已有图片选择正在进行".into());
     }

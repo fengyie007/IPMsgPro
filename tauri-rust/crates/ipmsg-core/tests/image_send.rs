@@ -132,6 +132,49 @@ async fn ack(peer: &UdpSocket, port: u16, command: u32, body: &str, extra: Optio
 }
 
 #[tokio::test]
+async fn screenshot_import_validates_png_and_reclaims_unreferenced_assets() {
+    let fixture = Fixture::new(vec![]).await;
+    let pixels = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap();
+    let mut png = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels.clone())
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let bytes = png.into_inner();
+    for invalid in [
+        vec![],
+        b"\xff\xd8\xffnot-png".to_vec(),
+        b"\x89PNG\r\n\x1a\nbroken".to_vec(),
+        vec![0; 20 * 1024 * 1024 + 1],
+    ] {
+        assert!(fixture.net.import_screenshot(invalid).await.is_err());
+    }
+    let imported = fixture.net.import_screenshot(bytes.clone()).await.unwrap();
+    assert_eq!((imported.width, imported.height), (2, 1));
+    assert!(imported.file_name.starts_with("截图_"));
+    let stored = fixture
+        .net
+        .read_image(&imported.asset_id, false)
+        .await
+        .unwrap();
+    assert_eq!(image::load_from_memory(&stored).unwrap().to_rgba8(), pixels);
+    assert!(fixture
+        .db
+        .history("peer".into(), fixture.net.local().id, 50, 0)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(fixture.net.discard_image(&imported.asset_id).await.unwrap());
+    assert!(fixture
+        .net
+        .read_image(&imported.asset_id, false)
+        .await
+        .is_err());
+    fixture.net.shutdown().await;
+    assert!(fixture.net.import_screenshot(bytes).await.is_err());
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn image_data_precedes_reference_and_wrong_source_ack_cannot_complete() {
     let mut f = Fixture::new(vec![]).await;
     let (peer, id) = f.peer().await;

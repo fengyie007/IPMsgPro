@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "check": "tsc --noEmit",
     "test:store": "node tools/test-store.cjs",
+    "test:screenshot": "node tools/test-screenshot.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

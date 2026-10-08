@@ -1,3 +1,4 @@
+mod capture;
 mod commands;
 mod image;
 mod platform;
@@ -12,6 +13,17 @@ use tauri::{
 };
 
 fn show_main(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<Arc<Runtime>>() {
+        if state.quitting.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(label) = state.capture.active_label() {
+            if let Some(editor) = app.get_webview_window(&label) {
+                let _ = editor.set_focus();
+            }
+            return;
+        }
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -84,7 +96,12 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("ipmsg-image", image::serve)
-        .invoke_handler(tauri::generate_handler![commands::ipmsg_command])
+        .register_asynchronous_uri_scheme_protocol("ipmsg-capture", capture::serve)
+        .invoke_handler(tauri::generate_handler![
+            commands::ipmsg_command,
+            capture::screenshot_command,
+            capture::screenshot_confirm
+        ])
         .setup(move |app| {
             let state =
                 tauri::async_runtime::block_on(Runtime::create(app.handle(), options.clone()))
@@ -110,6 +127,20 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label().starts_with("capture-") {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                }
+                if matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                ) {
+                    if let Some(state) = window.try_state::<Arc<Runtime>>() {
+                        capture::window_closed(window.app_handle(), state.inner(), window.label());
+                    }
+                }
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(state) = window.try_state::<Arc<Runtime>>() {
                     if state.finished.load(Ordering::Acquire) {

@@ -15,6 +15,7 @@ const supported = new Set([
   'user.local', 'user.list', 'user.discover', 'message.send',
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
+  'screenshot.start',
   'window.set_active_conversation', 'frontend.error',
 ]);
 
@@ -107,6 +108,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {
+    case 'screenshot.start': return { success: false, error: '截图需要在 Windows 桌面版中使用' };
     case 'app.info': return { success: true, version: APP_VERSION, dataDir: '浏览器演示：不写入磁盘', port: 2427, capabilities: MVP_CAPABILITIES };
     case 'config.get': return { success: true, config: mockConfig };
     case 'image.read':

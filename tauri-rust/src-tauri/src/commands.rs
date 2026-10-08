@@ -41,7 +41,7 @@ async fn dispatch(
     command: &str,
     args: Value,
 ) -> Result<Value, String> {
-    if window.label() != "main" {
+    if window.label() != "main" || !crate::capture::local_window(&window) {
         return Err("此窗口不允许调用该命令".into());
     }
     if !state.accepting.load(Ordering::Acquire) {
@@ -49,6 +49,7 @@ async fn dispatch(
     }
     match command {
         "app.info" => Ok(state.info()),
+        "screenshot.start" => crate::capture::start(&window, state.clone()).await,
         "image.read" => {
             let id = string(&args, "assetId")?;
             let thumbnail = match args.get("thumbnail") {

@@ -3038,6 +3038,7 @@ dependencies = [
 name = "speedipmsg-rust"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ipmsg-core",
  "rusqlite",
  "serde",

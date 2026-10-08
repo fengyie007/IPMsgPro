@@ -31,6 +31,7 @@ pub struct Runtime {
     pub finished: AtomicBool,
     pub tray_available: AtomicBool,
     pub image_selecting: AtomicBool,
+    pub capture: crate::capture::Capture,
     pub active_conversation: Mutex<String>,
     pub events: Mutex<Option<tokio::sync::mpsc::Receiver<Event>>>,
     event_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -104,6 +105,7 @@ impl Runtime {
             finished: AtomicBool::new(false),
             tray_available: AtomicBool::new(false),
             image_selecting: AtomicBool::new(false),
+            capture: crate::capture::Capture::default(),
             active_conversation: Mutex::new(String::new()),
             events: Mutex::new(Some(rx)),
             event_task: Mutex::new(None),
@@ -122,7 +124,7 @@ impl Runtime {
     }
     pub fn info(&self) -> Value {
         json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
-            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":false,"screenshot":false,"scan":false,"notificationSound":false}})
+            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":false,"screenshot":cfg!(windows),"scan":false,"notificationSound":false}})
     }
     pub fn log(&self, level: &str, message: &str) {
         if level == "DEBUG" && !self.verbose {
@@ -179,9 +181,19 @@ pub fn request_exit(app: &AppHandle) {
         return;
     }
     state.accepting.store(false, Ordering::Release);
+    crate::capture::shutdown(app, &state);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         state.log("INFO", "Shutdown requested");
+        if tokio::time::timeout(Duration::from_secs(3), state.capture.wait_idle())
+            .await
+            .is_err()
+        {
+            state.log(
+                "WARN",
+                "Screenshot cleanup exceeded deadline; shutdown continues",
+            );
+        }
         if tokio::time::timeout(Duration::from_secs(5), state.network.shutdown())
             .await
             .is_err()

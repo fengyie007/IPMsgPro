@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FiCamera, FiImage, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
+import { useConfigStore } from '../stores/configStore';
+import { captureAndSend } from '../services/screenshot';
 import { toast } from '../stores/toastStore';
 import { buildEmojiMessage, emojiStyle } from '../emojiData';
 import { isSameDay, formatDateSeparator } from '../utils/format';
@@ -61,9 +63,22 @@ export default function ChatPanel() {
   const imageGeneration = useRef(0);
   const imageBusyRef = useRef(false);
   const [imageBusy, setImageBusy] = useState(false);
+  const [screenshotBusy, setScreenshotBusy] = useState(false);
+  const screenshotSupported = useConfigStore((s) => s.info?.capabilities.screenshot ?? false);
+  const takeScreenshot = async () => {
+    if (!userId || imageBusyRef.current || previewRef.current) return;
+    imageBusyRef.current = true; setImageBusy(true); setScreenshotBusy(true);
+    const generation = imageGeneration.current;
+    try { await captureAndSend(userId); }
+    catch (error) { toast.error('截图发送失败：' + String(error)); }
+    finally {
+      imageBusyRef.current = false;
+      if (generation === imageGeneration.current) { setImageBusy(false); setScreenshotBusy(false); }
+    }
+  };
   const discard = (assetId: string) => invoke('image.discard', { assetId }).catch((error) => console.error('Preview cleanup failed', error));
   useEffect(() => {
-    setPreview(null); setImageBusy(false);
+    setPreview(null); setImageBusy(false); setScreenshotBusy(false);
     return () => {
       ++imageGeneration.current;
       const pending = previewRef.current; previewRef.current = null;
@@ -248,10 +263,10 @@ export default function ChatPanel() {
         {emojiOpen && <EmojiPicker onSelect={insertEmoji} onClose={() => setEmojiOpen(false)} />}
         <div className="flex items-center gap-2 px-4 pt-2">
           <button disabled={sending} title="表情" onClick={() => setEmojiOpen(!emojiOpen)} className={`p-1.5 rounded ${emojiOpen ? 'text-primary-500 bg-gray-100' : 'text-gray-400 hover:text-gray-600'}`}><FiSmile size={18} /></button>
-          <button disabled title="截图：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiCamera size={18} /></button>
+          <button disabled={!screenshotSupported || imageBusy || !!preview} title={screenshotSupported ? '截图与标注' : '截图需要 Windows 桌面版'} onClick={takeScreenshot} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiCamera size={18} /></button>
           <button disabled={imageBusy || !!preview} title="发送图片" onClick={selectImage} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiImage size={18} /></button>
           <button disabled title="文件发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiFile size={18} /></button>
-          <span className="text-[11px] text-gray-400 ml-1">支持图片收发；截图及文件暂未迁移</span>
+          <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : screenshotSupported ? '支持图片与截图；文件暂未迁移' : '支持图片收发；文件暂未迁移'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">
           <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}
