@@ -53,8 +53,8 @@ impl AppConfig {
         if !matches!(self.minimize_behavior.as_str(), "tray" | "taskbar") {
             return Err("无效的关闭行为".into());
         }
-        if self.notification_sound || !self.segments.is_empty() || !self.data_dir.is_empty() {
-            return Err("Rust核心版暂不支持提示音、自定义广播网段或修改数据目录".into());
+        if !self.segments.is_empty() || !self.data_dir.is_empty() {
+            return Err("Rust核心版不支持自定义广播网段或修改数据目录".into());
         }
         crate::protocol::encode_packet(
             1,
@@ -218,7 +218,7 @@ mod tests {
             .merged(serde_json::json!({"directUsers":["127.0.0.1:0"]}))
             .is_err());
         assert!(current
-            .merged(serde_json::json!({"notificationSound":true}))
+            .merged(serde_json::json!({"notificationSound":"yes"}))
             .is_err());
         assert_eq!(current.minimize_behavior, "tray");
         let next = current
@@ -252,6 +252,50 @@ mod tests {
         ] {
             assert!(legacy.merged(patch).is_err());
         }
+    }
+    #[tokio::test]
+    async fn notification_sound_is_boolean_durable_and_opt_in() {
+        let root = std::env::temp_dir().join(format!(
+            "ipmsg-sound-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("config.json");
+        let store = ConfigStore::open(path.clone()).unwrap();
+        assert!(!store.get().notification_sound);
+        store
+            .save(serde_json::json!({"notificationSound":true}))
+            .await
+            .unwrap();
+        assert!(
+            ConfigStore::open(path.clone())
+                .unwrap()
+                .get()
+                .notification_sound
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(store
+            .save(serde_json::json!({"notificationSound":1}))
+            .await
+            .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store.get().notification_sound);
+        store
+            .save(serde_json::json!({"notificationSound":false}))
+            .await
+            .unwrap();
+        assert!(
+            !ConfigStore::open(path.clone())
+                .unwrap()
+                .get()
+                .notification_sound
+        );
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
     }
     #[tokio::test]
     async fn save_is_durable_and_failures_keep_previous_state() {

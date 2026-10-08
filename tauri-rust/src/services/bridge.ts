@@ -17,6 +17,7 @@ const supported = new Set([
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
   'screenshot.start',
+  'notification.test_sound',
   'network.scan_range', 'network.scan_cancel', 'network.scan_status',
   'file.select', 'file.send', 'file.discard', 'file.accept', 'file.reject', 'file.cancel', 'file.open_folder',
   'window.set_active_conversation', 'frontend.error',
@@ -143,6 +144,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {
+    case 'notification.test_sound': return { success: false, error: '提示音试听需要 Windows 桌面版，浏览器演示不播放原生音效' };
     case 'network.scan_range': return startMockScan(args);
     case 'network.scan_status': return { success: true, scan: { ...mockScan } };
     case 'network.scan_cancel': {
@@ -210,6 +212,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     }
     case 'config.set': {
       const next = { ...mockConfig, ...args } as Config;
+      if (typeof next.notificationSound !== 'boolean') return { success: false, error: '提示音开关必须是布尔值' };
       if (!Array.isArray(next.ipScanRanges) || next.ipScanRanges.some((r) => typeof r !== 'string') || typeof next.scanOnStartup !== 'boolean') return { success: false, error: '扫描设置无效' };
       const parsed = validateScanOptions(next.ipScanRanges, next.scanPort, next.scanDelayMs);
       if ('error' in parsed) return { success: false, error: parsed.error };

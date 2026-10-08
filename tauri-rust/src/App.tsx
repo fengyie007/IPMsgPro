@@ -35,6 +35,9 @@ export default function App() {
     if (data.error) toast.error(data.error);
     else if (data.files?.length) useFileSelectionStore.getState().picked(data.target, data.files);
   }), []);
+  useEffect(() => listen('notification.sound_failed', (data: { error?: string }) => {
+    toast.error('提示音播放失败：' + (data.error || '请在设置中试听并检查音频设备'));
+  }), []);
 
   useEffect(() => {
     let cancelled = false;

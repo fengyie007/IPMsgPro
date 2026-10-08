@@ -2,6 +2,7 @@ mod capture;
 mod commands;
 mod files;
 mod image;
+mod notification;
 mod platform;
 mod runtime;
 

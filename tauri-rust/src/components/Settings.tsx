@@ -6,6 +6,7 @@ import { APP_NAME, APP_VERSION, type Config } from '../types';
 import { normalizeDirectUser, validateScanOptions } from '../utils/netValidation';
 import ConfirmDialog from './ConfirmDialog';
 import ScanSettings from './ScanSettings';
+import NotificationSettings from './NotificationSettings';
 
 export default function Settings({ onClose }: { onClose: () => void }) {
   const config = useConfigStore((s) => s.config);
@@ -35,6 +36,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         nickname: draft.nickname, group: draft.group,
         minimizeBehavior: draft.minimizeBehavior, directUsers: draft.directUsers,
         ipScanRanges: scan.value.ranges, scanPort: draft.scanPort, scanDelayMs: draft.scanDelayMs, scanOnStartup: draft.scanOnStartup,
+        notificationSound: draft.notificationSound,
       });
       toast.success('设置已保存并应用');
       onClose();
@@ -60,7 +62,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       </div>
       <div className="flex-1 overflow-y-auto p-6 space-y-7">
         <div className="rounded border border-primary-100 bg-primary-50 px-4 py-3 text-sm text-gray-600">
-          Rust 预览版：文本、图片、普通文件、Windows 截图、IP范围扫描、历史、通讯录和托盘已接入。文件夹及提示音暂不支持。
+          Rust 预览版：文本、图片、普通文件、Windows 截图与提示音、IP范围扫描、历史、通讯录和托盘已接入。文件夹暂不支持。
         </div>
         <Section title="个人信息">
           <Field label="昵称"><input disabled={busy} className="input-field" value={draft.nickname} maxLength={128} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })} placeholder="留空使用默认昵称" /></Field>
@@ -82,6 +84,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           </div>
         </Section>
         {info?.capabilities.scan && <ScanSettings draft={draft} setDraft={setDraft} disabled={busy} />}
+        <NotificationSettings enabled={draft.notificationSound} supported={info?.capabilities.notificationSound ?? false} disabled={busy}
+          onChange={(notificationSound) => setDraft({ ...draft, notificationSound })} />
         <Section title="窗口行为">
           <Field label="点击窗口关闭按钮时">
             <div className="flex flex-wrap gap-3">
@@ -99,19 +103,13 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           <p className="text-xs text-gray-400 mt-2">Rust 版使用独立配置、SQLite与日志，不迁移或覆盖原版数据。本阶段目录不可修改。</p>
           <p className="text-xs text-gray-500 mt-2">当前监听端口：{info?.port ?? '—'}（通过 --port 指定）</p>
         </Section>
-        <Section title="后续迁移能力">
-          <fieldset disabled className="space-y-3 text-sm text-gray-400">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={false} readOnly />新消息提示音（暂不支持）</label>
-            <input className="input-field" placeholder="多网段广播配置（暂不支持）" value="" readOnly />
-          </fieldset>
-        </Section>
         <Section title="关于"><p className="text-sm text-gray-500">{APP_NAME} v{APP_VERSION} · Rust + Tauri 2</p></Section>
       </div>
       <div className="border-t px-6 py-4 flex items-center justify-between gap-3 shrink-0">
         <button disabled={busy} onClick={() => setResetOpen(true)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50"><FiRotateCcw size={14} />恢复默认</button>
         <button disabled={busy} onClick={save} className="px-5 py-2 bg-primary-500 text-white rounded text-sm hover:bg-primary-600 disabled:opacity-50">{busy ? '保存中…' : '保存设置'}</button>
       </div>
-      {resetOpen && <ConfirmDialog title="恢复默认设置" message="将重置昵称、组名、直接用户、扫描设置和关闭行为。不会删除聊天记录，也不会改变已经启动的扫描。" onConfirm={() => void reset()} onCancel={() => { if (!busyRef.current) setResetOpen(false); }} />}
+      {resetOpen && <ConfirmDialog title="恢复默认设置" message="将重置昵称、组名、直接用户、扫描、提示音和关闭行为。不会删除聊天记录，也不会改变已经启动的扫描。" onConfirm={() => void reset()} onCancel={() => { if (!busyRef.current) setResetOpen(false); }} />}
     </div>
   );
 }

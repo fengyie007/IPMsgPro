@@ -49,6 +49,14 @@ async fn dispatch(
     }
     match command {
         "app.info" => Ok(state.info()),
+        "notification.test_sound" => {
+            let sound = state
+                .sound
+                .as_ref()
+                .ok_or("提示音服务不可用，需要Windows桌面版")?;
+            let duration = sound.preview().await?;
+            Ok(json!({"success":true,"durationMs":duration}))
+        }
         "network.scan_range" => {
             let options: ipmsg_core::scan::ScanOptions =
                 serde_json::from_value(args).map_err(|e| format!("扫描参数无效：{e}"))?;
@@ -120,6 +128,9 @@ async fn dispatch(
         "config.get" => Ok(json!({"success":true,"config":state.config.get()})),
         "config.set" => {
             let config = state.config.save(args).await?;
+            if let Some(sound) = &state.sound {
+                sound.set_enabled(config.notification_sound);
+            }
             state
                 .network
                 .apply_config(&config)
