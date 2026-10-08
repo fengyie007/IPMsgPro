@@ -169,7 +169,32 @@ async fn screenshot_import_validates_png_and_reclaims_unreferenced_assets() {
         .read_image(&imported.asset_id, false)
         .await
         .is_err());
+    let clipboard = fixture.net.import_clipboard(bytes.clone()).await.unwrap();
+    assert!(clipboard.file_name.starts_with("粘贴图片_"));
+    assert_eq!(
+        image::load_from_memory(
+            &fixture
+                .net
+                .read_image(&clipboard.asset_id, false)
+                .await
+                .unwrap()
+        )
+        .unwrap()
+        .to_rgba8(),
+        pixels
+    );
+    assert!(fixture
+        .net
+        .discard_image(&clipboard.asset_id)
+        .await
+        .unwrap());
+    assert!(fixture
+        .net
+        .import_clipboard(b"not an image".to_vec())
+        .await
+        .is_err());
     fixture.net.shutdown().await;
+    assert!(fixture.net.import_clipboard(bytes.clone()).await.is_err());
     assert!(fixture.net.import_screenshot(bytes).await.is_err());
     fixture.stop().await;
 }

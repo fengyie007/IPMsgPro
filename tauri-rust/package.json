@@ -12,6 +12,8 @@
     "test:files": "node tools/test-file-selection.cjs",
     "test:scan": "node tools/test-scan.cjs",
     "test:notification": "node tools/test-notification.cjs",
+    "test:clipboard": "node tools/test-clipboard.cjs",
+    "test:system-notification": "node tools/test-system-notification.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

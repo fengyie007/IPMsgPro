@@ -6,7 +6,7 @@ import type { FileSelection } from '../types';
 interface SelectionState {
   target: string; files: FileSelection[]; busy: boolean;
   picked: (target: string, files: FileSelection[]) => void;
-  select: (target: string) => Promise<void>;
+  select: (target: string, directory?: boolean) => Promise<void>;
   cancel: () => Promise<void>;
   send: () => Promise<void>;
 }
@@ -22,11 +22,11 @@ export const useFileSelectionStore = create<SelectionState>((set, get) => ({
     }
     set({ target, files });
   },
-  select: async (target) => {
+  select: async (target, directory = false) => {
     if (!target || get().busy || get().files.length) return;
     set({ busy: true });
     try {
-      const result = await invoke<{ cancelled?: boolean; files?: FileSelection[] }>('file.select');
+      const result = await invoke<{ cancelled?: boolean; files?: FileSelection[] }>(directory ? 'file.select_folder' : 'file.select');
       if (!result.cancelled && result.files?.length) set({ target, files: result.files });
     } catch (error) { toast.error('选择文件失败：' + String(error)); }
     finally { set({ busy: false }); }

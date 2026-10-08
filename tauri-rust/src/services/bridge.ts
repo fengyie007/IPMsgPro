@@ -18,8 +18,11 @@ const supported = new Set([
   'image.select', 'image.send', 'image.cancel', 'image.discard',
   'screenshot.start',
   'notification.test_sound',
+  'notification.test_system', 'notification.take_activation',
+  'storage.info', 'storage.select', 'storage.default', 'storage.apply', 'storage.cancel',
   'network.scan_range', 'network.scan_cancel', 'network.scan_status',
   'file.select', 'file.send', 'file.discard', 'file.accept', 'file.reject', 'file.cancel', 'file.open_folder',
+  'file.select_folder', 'file.resume', 'file.pause',
   'window.set_active_conversation', 'frontend.error',
 ]);
 
@@ -144,6 +147,10 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {
+    case 'storage.info': return { success: true, active: '浏览器演示，不写磁盘', pending: null, defaultDirectory: '', isDefault: true, error: null };
+    case 'storage.select': case 'storage.default': case 'storage.apply': case 'storage.cancel': return { success: false, error: '目录切换需要桌面版' };
+    case 'notification.test_system': return { success: false, error: '系统通知需要 Windows 桌面版' };
+    case 'notification.take_activation': return { success: true, userId: null };
     case 'notification.test_sound': return { success: false, error: '提示音试听需要 Windows 桌面版，浏览器演示不播放原生音效' };
     case 'network.scan_range': return startMockScan(args);
     case 'network.scan_status': return { success: true, scan: { ...mockScan } };
@@ -157,6 +164,9 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
       return { success: true, scan: { ...mockScan } };
     }
     case 'file.select':
+    case 'file.select_folder':
+    case 'file.pause':
+    case 'file.resume':
     case 'file.send':
     case 'file.accept':
     case 'file.reject':

@@ -5,10 +5,14 @@ import { toast } from './toastStore';
 import type { FileEvent, FileMetadata, HistoryRecord, HistoryResult, ImageMetadata, ImageSendEvent, Message, MessageReceivedEvent } from '../types';
 
 const earlyFiles = new Map<string, { data: FileEvent; at: number }>();
-const fileTerminal = (file: FileMetadata) => ['completed','failed','cancelled','rejected'].includes(file.state);
+const fileTerminal = (file: FileMetadata) => ['completed','failed','cancelled','rejected','paused'].includes(file.state);
 function mergeFile(previous: FileMetadata | undefined, incoming: FileMetadata | undefined): FileMetadata | undefined {
   if (!previous) return incoming;
-  if (!incoming || fileTerminal(previous)) return previous;
+  if (!incoming) return previous;
+  if ((incoming.attempt || 0) < (previous.attempt || 0)) return previous;
+  if ((incoming.attempt || 0) > (previous.attempt || 0)) return incoming;
+  if (previous.state === 'paused' && incoming.state === 'paused') return { ...incoming, transferred: Math.max(previous.transferred,incoming.transferred) };
+  if (fileTerminal(previous)) return previous;
   if (fileTerminal(incoming)) return incoming;
   const rank = { offered: 0, transferring: 1, finalizing: 2 };
   return { ...incoming, transferred: Math.max(previous.transferred, incoming.transferred),

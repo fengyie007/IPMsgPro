@@ -159,7 +159,7 @@ impl Database {
                     db.busy_timeout(std::time::Duration::from_secs(1))?;
                     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
                     let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                    if version > 4 { return Err(rusqlite::Error::InvalidQuery); }
+                    if version > 5 { return Err(rusqlite::Error::InvalidQuery); }
                     let transaction = db.transaction()?;
                     transaction.execute_batch(
                         "CREATE TABLE IF NOT EXISTS messages (
@@ -185,9 +185,10 @@ impl Database {
                     transaction.execute_batch("CREATE TABLE IF NOT EXISTS message_files (
                         message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
                         metadata TEXT NOT NULL, local_path TEXT);
-                        UPDATE message_files SET metadata=json_set(metadata,'$.state','failed','$.error','程序重启，传输已中断')
+                        CREATE TABLE IF NOT EXISTS file_receives(message_id TEXT PRIMARY KEY, checkpoint TEXT NOT NULL);
+                        UPDATE message_files SET metadata=json_set(metadata,'$.state',CASE WHEN json_extract(metadata,'$.canResume')=1 THEN 'paused' ELSE 'failed' END,'$.attempt',COALESCE(json_extract(metadata,'$.attempt'),0)+1,'$.error','程序重启，传输已中断')
                         WHERE json_extract(metadata,'$.state') IN ('offered','transferring','finalizing');")?;
-                    transaction.pragma_update(None, "user_version", 4)?;
+                    transaction.pragma_update(None, "user_version", 5)?;
                     transaction.commit()?;
                     Ok(db)
                 })();
@@ -435,6 +436,91 @@ impl Database {
                 .optional().map_err(|e| e.to_string())?.flatten();
             path.map(PathBuf::from).ok_or_else(|| "文件尚未接收完成或历史已清空".into())
         }).await
+    }
+    pub async fn receive_checkpoint(
+        &self,
+        id: String,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.call(move |db| {
+            let text: Option<String> = db
+                .query_row(
+                    "SELECT checkpoint FROM file_receives WHERE message_id=?",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            text.map(|s| serde_json::from_str(&s))
+                .transpose()
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn save_receive(&self, id: String, data: serde_json::Value) -> Result<(), String> {
+        self.call(move |db| {
+            let count: i64 = db
+                .query_row("SELECT COUNT(*) FROM file_receives", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            if count >= 32
+                && !db
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM file_receives WHERE message_id=?)",
+                        [&id],
+                        |r| r.get::<_, bool>(0),
+                    )
+                    .map_err(|e| e.to_string())?
+            {
+                return Err("续传任务已达32项，请取消不需要的任务".into());
+            }
+            db.execute(
+                "INSERT OR REPLACE INTO file_receives VALUES (?,?)",
+                params![id, data.to_string()],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn remove_receive(&self, id: String) -> Result<(), String> {
+        self.call(move |db| {
+            db.execute("DELETE FROM file_receives WHERE message_id=?", [id])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .await
+    }
+    pub async fn receive_ids(&self) -> Result<Vec<String>, String> {
+        self.call(|db| {
+            let mut s = db
+                .prepare("SELECT message_id FROM file_receives")
+                .map_err(|e| e.to_string())?;
+            let rows = s
+                .query_map([], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+        .await
+    }
+    pub async fn file_metadata(
+        &self,
+        id: String,
+    ) -> Result<Option<crate::file::FileMetadata>, String> {
+        self.call(move |db| {
+            let text: Option<String> = db
+                .query_row(
+                    "SELECT metadata FROM message_files WHERE message_id=?",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            text.map(|s| serde_json::from_str(&s))
+                .transpose()
+                .map_err(|e| e.to_string())
+        })
+        .await
     }
     pub async fn history(
         &self,

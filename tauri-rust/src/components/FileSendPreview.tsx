@@ -26,7 +26,7 @@ export default function FileSendPreview() {
     <div ref={root} tabIndex={-1} role="dialog" aria-modal="true" aria-label="确认发送文件" className="bg-white rounded-lg shadow-xl w-96 max-w-full outline-none">
       <h2 className="p-4 border-b font-medium truncate">发送文件给 {user?.nickname || target}</h2>
       <ul className="px-4 py-3 space-y-3 max-h-64 overflow-y-auto">{files.map((file) => <li key={file.selectionId}><p className="text-sm break-all">{file.fileName}</p><p className="text-xs text-gray-400">{formatFileSize(file.fileSize)}</p></li>)}</ul>
-      <p className="px-4 pb-3 text-xs text-gray-500">对方确认接收后开始传输。</p>
+      <p className="px-4 pb-3 text-xs text-gray-500">{files.some((file) => file.isDirectory) ? '包含文件夹；对方需支持 IPMsg 目录传输。' : '对方确认接收后开始传输。'}</p>
       <div className="border-t p-3 flex justify-end gap-4"><button disabled={busy} onClick={() => void cancel()} className="text-sm text-gray-500">取消</button><button disabled={busy} onClick={() => void send()} className="bg-primary-500 text-white rounded px-4 py-1.5 text-sm disabled:opacity-50">{busy ? '正在发送…' : '发送'}</button></div>
     </div>
   </div>;

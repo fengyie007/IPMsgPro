@@ -7,6 +7,8 @@ import { normalizeDirectUser, validateScanOptions } from '../utils/netValidation
 import ConfirmDialog from './ConfirmDialog';
 import ScanSettings from './ScanSettings';
 import NotificationSettings from './NotificationSettings';
+import StorageSettings from './StorageSettings';
+import { invoke } from '../services/bridge';
 
 export default function Settings({ onClose }: { onClose: () => void }) {
   const config = useConfigStore((s) => s.config);
@@ -37,6 +39,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         minimizeBehavior: draft.minimizeBehavior, directUsers: draft.directUsers,
         ipScanRanges: scan.value.ranges, scanPort: draft.scanPort, scanDelayMs: draft.scanDelayMs, scanOnStartup: draft.scanOnStartup,
         notificationSound: draft.notificationSound,
+        systemNotifications: draft.systemNotifications, notificationPreview: draft.notificationPreview,
       });
       toast.success('设置已保存并应用');
       onClose();
@@ -62,7 +65,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       </div>
       <div className="flex-1 overflow-y-auto p-6 space-y-7">
         <div className="rounded border border-primary-100 bg-primary-50 px-4 py-3 text-sm text-gray-600">
-          Rust 预览版：文本、图片、普通文件、Windows 截图与提示音、IP范围扫描、历史、通讯录和托盘已接入。文件夹暂不支持。
+          Rust 预览版：文本、图片、文件与文件夹、Windows 截图和通知、IP范围扫描、历史、通讯录和托盘已接入。
         </div>
         <Section title="个人信息">
           <Field label="昵称"><input disabled={busy} className="input-field" value={draft.nickname} maxLength={128} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })} placeholder="留空使用默认昵称" /></Field>
@@ -87,6 +90,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         <NotificationSettings enabled={draft.notificationSound} supported={info?.capabilities.notificationSound ?? false} disabled={busy}
           onChange={(notificationSound) => setDraft({ ...draft, notificationSound })} />
         <Section title="窗口行为">
+          <label className="flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" disabled={busy || !info?.systemNotifications} checked={draft.systemNotifications} onChange={(e) => setDraft({ ...draft, systemNotifications: e.target.checked })} />显示 Windows 系统通知</label>
+          <label className="flex items-center gap-2 text-sm text-gray-600"><input type="checkbox" disabled={busy || !info?.systemNotifications} checked={draft.notificationPreview} onChange={(e) => setDraft({ ...draft, notificationPreview: e.target.checked })} />在通知中显示文字消息摘要</label>
+          <button disabled={busy || !info?.systemNotifications} className="text-sm text-primary-600 disabled:opacity-40" onClick={() => void invoke('notification.test_system').then(() => toast.info('已交给 Windows 显示通知；未显示时请检查系统通知设置')).catch((e) => toast.error(String(e)))}>测试系统通知</button>
+          <p className="text-xs text-gray-400">保存后生效。系统通知不重复播放声音；点击通知打开对应会话，前台当前会话不弹窗。</p>
           <Field label="点击窗口关闭按钮时">
             <div className="flex flex-wrap gap-3">
               {(['tray', 'taskbar'] as const).map((behavior) => <button key={behavior} disabled={busy}
@@ -98,9 +105,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             <p className="text-xs text-gray-400 mt-2">隐藏到托盘时仍可收发消息；托盘菜单“退出”才结束程序。标题栏最小化按钮仍最小化到任务栏。</p>
           </Field>
         </Section>
-        <Section title="独立数据目录">
-          <input readOnly className="input-field text-gray-500 bg-gray-50" value={info?.dataDir || ''} aria-label="Rust 版独立数据目录" />
-          <p className="text-xs text-gray-400 mt-2">Rust 版使用独立配置、SQLite与日志，不迁移或覆盖原版数据。本阶段目录不可修改。</p>
+        <StorageSettings disabled={busy} />
+        <Section title="监听端口">
           <p className="text-xs text-gray-500 mt-2">当前监听端口：{info?.port ?? '—'}（通过 --port 指定）</p>
         </Section>
         <Section title="关于"><p className="text-sm text-gray-500">{APP_NAME} v{APP_VERSION} · Rust + Tauri 2</p></Section>

@@ -22,10 +22,11 @@ export interface ImageMetadata {
   height: number;
 }
 export interface FileMetadata {
-  fileName: string; fileSize: number; state: 'offered' | 'transferring' | 'finalizing' | 'completed' | 'failed' | 'cancelled' | 'rejected';
+  fileName: string; fileSize: number; state: 'offered' | 'transferring' | 'finalizing' | 'completed' | 'failed' | 'cancelled' | 'rejected' | 'paused';
+  isDirectory?: boolean; canResume?: boolean; attempt?: number; inFlightBytes?: number;
   transferred: number; incoming: boolean; hasLocalFile: boolean; error?: string | null;
 }
-export interface FileSelection { selectionId: string; fileName: string; fileSize: number }
+export interface FileSelection { selectionId: string; fileName: string; fileSize: number; isDirectory?: boolean }
 export interface FileEvent { messageId: string; target: string; file: FileMetadata }
 
 export interface ImageReadResult {
@@ -86,6 +87,8 @@ export interface Config {
   directUsers: string[];
   dataDir: string;
   notificationSound: boolean;
+  systemNotifications: boolean;
+  notificationPreview: boolean;
   segments: string[];
   ipScanRanges: string[];
   scanPort: number;
@@ -96,6 +99,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   nickname: '', group: '', minimizeBehavior: 'tray', directUsers: [],
   dataDir: '', notificationSound: false, segments: [], ipScanRanges: [],
+  systemNotifications: false, notificationPreview: false,
   scanPort: 2425, scanDelayMs: 20, scanOnStartup: true,
 };
 
@@ -125,6 +129,8 @@ export const MVP_CAPABILITIES: Capabilities = {
 };
 
 export interface AppInfo {
+  storageError?: string | null;
+  systemNotifications?: boolean;
   success: boolean;
   version: string;
   dataDir: string;

@@ -13,6 +13,7 @@ import { useConfigStore } from './stores/configStore';
 import { useScanStore } from './stores/scanStore';
 import { toast } from './stores/toastStore';
 import { bridgeReady, invoke, isMockMode, listen } from './services/bridge';
+import { watchNotificationActivation } from './services/notificationActivation';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -20,6 +21,11 @@ export default function App() {
   const [startupError, setStartupError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const currentUser = useUserStore((s) => s.currentUser);
+  useEffect(() => {
+    if (!ready) return;
+    return watchNotificationActivation((user) => { useUserStore.getState().setCurrentUser(user); setViewMode('chat'); });
+  }, [ready]);
+  useEffect(() => listen('notification.system_failed', (data: { error?: string }) => toast.error('系统通知失败：' + (data.error || '请检查 Windows 通知设置'))), []);
 
   useEffect(() => {
     const prevent = (event: DragEvent) => event.preventDefault();
@@ -51,6 +57,8 @@ export default function App() {
         await bridgeReady();
         if (cancelled) return;
         await useConfigStore.getState().loadConfig();
+        const storageError = useConfigStore.getState().info?.storageError;
+        if (storageError) toast.error('数据目录切换失败，仍使用原目录：' + storageError);
         if (cancelled) return;
         await useMessageStore.getState().loadLocalUserId();
         if (cancelled) return;

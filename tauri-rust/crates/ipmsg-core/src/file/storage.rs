@@ -10,9 +10,36 @@ pub struct PartialFile {
     keep: bool,
 }
 impl PartialFile {
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+    pub fn resume(root: &Path, name: &str, size: u64) -> Result<(Self, std::fs::File), String> {
+        let path = checked_part(root, name)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || super::directory::is_link(&metadata) || metadata.len() > size {
+            return Err("续传文件已改变或不安全".into());
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        Ok((Self { path, keep: true }, file))
+    }
     pub fn create(root: &Path, id: u32) -> Result<(Self, std::fs::File), String> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         for sequence in 0..1000 {
-            let path = root.join(format!(".ipmsg-{id}-{sequence}.part"));
+            let path = root.join(format!(
+                ".ipmsg-{}-{nonce}-{id}-{sequence}.part",
+                std::process::id()
+            ));
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -54,8 +81,19 @@ impl PartialFile {
         self.keep = true;
     }
 }
+pub(super) fn checked_part(root: &Path, name: &str) -> Result<PathBuf, String> {
+    if !name.starts_with(".ipmsg-")
+        || !name.ends_with(".part")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+    {
+        return Err("无效续传标识".into());
+    }
+    Ok(root.join(name))
+}
 #[cfg(windows)]
-fn publish_new(source: &Path, dest: &Path) -> std::io::Result<()> {
+pub(super) fn publish_new(source: &Path, dest: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let dest: Vec<u16> = dest.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -70,7 +108,15 @@ fn publish_new(source: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 #[cfg(not(windows))]
-fn publish_new(source: &Path, dest: &Path) -> std::io::Result<()> {
+pub(super) fn publish_new(source: &Path, dest: &Path) -> std::io::Result<()> {
+    if source.is_dir() {
+        fs::create_dir(dest)?;
+        if let Err(e) = fs::rename(source, dest) {
+            let _ = fs::remove_dir(dest);
+            return Err(e);
+        }
+        return Ok(());
+    }
     fs::hard_link(source, dest)?;
     if let Err(e) = fs::remove_file(source) {
         let _ = fs::remove_file(dest);

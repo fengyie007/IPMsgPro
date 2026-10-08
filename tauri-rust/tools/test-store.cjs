@@ -208,6 +208,16 @@ const incoming = (id, from = 'peer') => ({ id, from, to: 'self', content: id, ty
   assert.equal(store.getState().messages.has('file-peer'), false);
   console.log('PASS cleared file tasks cannot reappear through late events');
 
+  const paused = { ...file, incoming: true, state: 'paused', canResume: true, transferred: 40, attempt: 1 };
+  emit('message.received', { id: 'file-resume', from: 'resume-peer', type: 'file', content: '[文件]', timestamp: 4, file: paused });
+  emit('file.updated', { messageId: 'file-resume', target: 'resume-peer', file: { ...paused, state: 'transferring', attempt: 2 } });
+  emit('file.updated', { messageId: 'file-resume', target: 'resume-peer', file: { ...paused, state: 'failed', attempt: 1 } });
+  assert.equal(store.getState().messages.get('resume-peer')[0].file.state, 'transferring');
+  assert.equal(store.getState().messages.get('resume-peer')[0].file.attempt, 2);
+  emit('file.updated', { messageId: 'file-resume', target: 'resume-peer', file: { ...paused, state: 'completed', attempt: 2, transferred: 100 } });
+  assert.equal(store.getState().messages.get('resume-peer')[0].file.state, 'completed');
+  console.log('PASS a resumed transfer advances its attempt and ignores old terminal events');
+
   stopListeners();
   assert.equal(listeners.size, 0);
   console.log('PASS receive failure is reported without a phantom chat message; listeners cleaned');

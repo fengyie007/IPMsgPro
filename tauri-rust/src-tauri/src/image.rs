@@ -7,6 +7,29 @@ use tauri::{
 };
 
 pub(crate) struct SelectionGuard(pub Arc<Runtime>);
+#[tauri::command]
+pub async fn import_clipboard_image(
+    state: tauri::State<'_, Arc<Runtime>>,
+    window: tauri::WebviewWindow,
+    request: tauri::ipc::Request<'_>,
+) -> Result<serde_json::Value, String> {
+    if window.label() != "main"
+        || !crate::capture::local_window(&window)
+        || !state.accepting.load(Ordering::Acquire)
+    {
+        return Err("此窗口不允许导入图片".into());
+    }
+    if state.image_selecting.swap(true, Ordering::AcqRel) {
+        return Err("已有图片选择或截图正在进行".into());
+    }
+    let _guard = SelectionGuard(state.inner().clone());
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) if bytes.len() <= 20 * 1024 * 1024 => bytes.clone(),
+        _ => return Err("剪贴板图片必须是20 MiB以内的二进制图片".into()),
+    };
+    let image = state.network.import_clipboard(bytes).await?;
+    Ok(serde_json::json!({"success":true,"image":image}))
+}
 impl Drop for SelectionGuard {
     fn drop(&mut self) {
         self.0.image_selecting.store(false, Ordering::Release);

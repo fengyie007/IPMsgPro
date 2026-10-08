@@ -132,6 +132,13 @@ impl Network {
             .await
     }
 
+    pub async fn import_clipboard(&self, bytes: Vec<u8>) -> Result<ImageMetadata, String> {
+        if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
+            return Err("剪贴板图片为空或超过20 MiB".into());
+        }
+        self.import_image_source(move || Ok((bytes, format!("粘贴图片_{}.png", unix_seconds()))))
+            .await
+    }
     async fn import_image_source(
         &self,
         source: impl FnOnce() -> Result<(Vec<u8>, String), String> + Send + 'static,

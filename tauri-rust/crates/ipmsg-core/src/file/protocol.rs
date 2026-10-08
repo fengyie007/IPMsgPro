@@ -1,8 +1,11 @@
-use crate::protocol::{decode_text, mode, parse_packet, Packet, IPMSG_GETFILEDATA};
+use crate::protocol::{
+    decode_text, mode, parse_packet, Packet, IPMSG_GETDIRFILES, IPMSG_GETFILEDATA,
+};
 use std::collections::HashSet;
 pub const MAX_FILE_SIZE: u64 = 8 * 1024 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct Offer {
+    pub directory: bool,
     pub id: u32,
     pub name: String,
     pub size: u64,
@@ -87,10 +90,11 @@ pub fn offers(packet: &Packet) -> Result<Vec<Offer>, String> {
         if size > MAX_FILE_SIZE {
             return Err("文件超过8 GiB上限".into());
         }
-        if attr & 0xff != 1 {
-            return Err("暂不支持文件夹或特殊文件".into());
+        if !matches!(attr & 0xff, 1 | 2) {
+            return Err("不支持特殊文件".into());
         }
         offers.push(Offer {
+            directory: attr & 0xff == 2,
             id,
             name: sanitize_name(&name),
             size,
@@ -103,7 +107,7 @@ pub fn offers(packet: &Packet) -> Result<Vec<Offer>, String> {
 }
 pub fn request(bytes: &[u8]) -> Result<(Packet, u32, u32, u64), String> {
     let packet = parse_packet(bytes)?;
-    if mode(packet.command) != IPMSG_GETFILEDATA {
+    if !matches!(mode(packet.command), IPMSG_GETFILEDATA | IPMSG_GETDIRFILES) {
         return Err("不支持的TCP命令".into());
     }
     let body = if packet.body.is_empty() {
@@ -115,12 +119,15 @@ pub fn request(bytes: &[u8]) -> Result<(Packet, u32, u32, u64), String> {
         .map_err(|_| "无效TCP请求")?
         .split(':')
         .collect();
-    if fields.len() != 4 || !fields[3].is_empty() {
+    let directory = mode(packet.command) == IPMSG_GETDIRFILES;
+    if !(fields.len() == 4 && fields[3].is_empty()
+        || directory && fields.len() == 3 && fields[2].is_empty())
+    {
         return Err("TCP请求不完整".into());
     }
     let original = u32::try_from(hex(fields[0])?).map_err(|_| "包号溢出")?;
     let file = u32::try_from(hex(fields[1])?).map_err(|_| "文件ID溢出")?;
-    let offset = hex(fields[2])?;
+    let offset = if directory { 0 } else { hex(fields[2])? };
     Ok((packet, original, file, offset))
 }
 
@@ -168,7 +175,7 @@ mod tests {
         let (_, packet, file, offset) = request(&wire).unwrap();
         assert_eq!((packet, file, offset), (123, 10, 255));
         for extra in [
-            "1:x:1:0:2:\x07",
+            "1:x:1:0:4:\x07",
             "1:x:ffffffffffffffff:0:1:\x07",
             "1:x:-1:0:1:\x07",
             "1:x:1:0:1:\x071:y:1:0:1:\x07",

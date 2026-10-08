@@ -25,6 +25,7 @@ pub struct Runtime {
     pub database: Database,
     pub config: Arc<ConfigStore>,
     pub data_dir: PathBuf,
+    pub storage: crate::storage::Storage,
     pub port: u16,
     pub accepting: AtomicBool,
     pub quitting: AtomicBool,
@@ -33,6 +34,8 @@ pub struct Runtime {
     pub image_selecting: AtomicBool,
     pub capture: crate::capture::Capture,
     pub sound: Option<crate::notification::NotificationSound>,
+    pub system_notifications: Option<crate::system_notification::SystemNotifications>,
+    pub notification_target: Mutex<Option<String>>,
     pub active_conversation: Mutex<String>,
     pub events: Mutex<Option<tokio::sync::mpsc::Receiver<Event>>>,
     event_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -49,12 +52,17 @@ impl Runtime {
         socket
             .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, options.port).into())
             .map_err(|e| format!("无法绑定端口{}（可能已有实例运行）：{e}", options.port))?;
-        let data_dir = app
+        let bootstrap = app
             .path()
             .app_local_data_dir()
             .map_err(|e| e.to_string())?
             .join(format!("port-{}", options.port));
-        fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        let port = options.port;
+        let storage =
+            tokio::task::spawn_blocking(move || crate::storage::Storage::open(bootstrap, port))
+                .await
+                .map_err(|e| e.to_string())??;
+        let data_dir = crate::storage::native_path(&storage.active);
         let config = Arc::new(ConfigStore::open(data_dir.join("config.json"))?);
         let values = config.get();
         let database = Database::open(&data_dir.join("messages.db"))?;
@@ -87,6 +95,15 @@ impl Runtime {
         };
         let (tx, rx) = tokio::sync::mpsc::channel(256);
         let sound_events = tx.clone();
+        let system_notifications = if cfg!(windows) {
+            Some(crate::system_notification::SystemNotifications::new(
+                values.system_notifications,
+                options.port,
+                tx.clone(),
+            )?)
+        } else {
+            None
+        };
         let (sound, sound_error) = if cfg!(windows) {
             match crate::notification::NotificationSound::new(
                 data_dir.join("sounds"),
@@ -118,6 +135,7 @@ impl Runtime {
             database,
             config,
             data_dir,
+            storage,
             port: options.port,
             accepting: AtomicBool::new(true),
             quitting: AtomicBool::new(false),
@@ -126,6 +144,8 @@ impl Runtime {
             image_selecting: AtomicBool::new(false),
             capture: crate::capture::Capture::default(),
             sound,
+            system_notifications,
+            notification_target: Mutex::new(None),
             active_conversation: Mutex::new(String::new()),
             events: Mutex::new(Some(rx)),
             event_task: Mutex::new(None),
@@ -156,7 +176,12 @@ impl Runtime {
         Ok(state)
     }
     pub fn info(&self) -> Value {
-        json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
+        let storage_error = self
+            .storage
+            .info()
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_owned));
+        json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),"systemNotifications":self.system_notifications.is_some(),"storageError":storage_error,
             "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":self.network.file_transfers().is_ok(),"screenshot":cfg!(windows),"scan":true,"notificationSound":self.sound.as_ref().is_some_and(|s|s.available())}})
     }
     pub fn log(&self, level: &str, message: &str) {
@@ -179,6 +204,7 @@ impl Runtime {
             let state = self.clone();
             let task = tauri::async_runtime::spawn(async move {
                 let mut notifications = crate::notification::NotificationGate::default();
+                let mut system_gate = crate::notification::NotificationGate::default();
                 while let Some(event) = receiver.recv().await {
                     if event.event == "network.diagnostic" {
                         state.log(
@@ -190,12 +216,31 @@ impl Runtime {
                         continue;
                     }
                     state.log("DEBUG", &format!("Event {}", event.event));
+                    if event.event == "notification.activated"
+                        && state.accepting.load(Ordering::Acquire)
+                    {
+                        *state
+                            .notification_target
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) =
+                            event.payload["userId"].as_str().map(str::to_owned);
+                        crate::show_main(&app);
+                    }
                     if event.event == "notification.sound_failed" {
                         state.log(
                             "WARN",
                             &format!(
                                 "提示音播放失败：{}",
                                 event.payload["error"].as_str().unwrap_or("未知设备错误")
+                            ),
+                        );
+                    }
+                    if event.event == "notification.system_failed" {
+                        state.log(
+                            "WARN",
+                            &format!(
+                                "系统通知失败：{}",
+                                event.payload["error"].as_str().unwrap_or("未知通知错误")
                             ),
                         );
                     }
@@ -227,6 +272,24 @@ impl Runtime {
                                 sound.notify();
                             }
                         }
+                        let config = state.config.get();
+                        let system_context = crate::notification::Context {
+                            enabled: config.system_notifications
+                                && state.system_notifications.is_some(),
+                            ..context
+                        };
+                        if system_gate.should_play(
+                            &event,
+                            system_context,
+                            std::time::Instant::now(),
+                        ) {
+                            if let Some(service) = &state.system_notifications {
+                                service.notify(crate::system_notification::notice(
+                                    &event,
+                                    config.notification_preview,
+                                ));
+                            }
+                        }
                         if let Some(window) = window {
                             if !window.is_focused().unwrap_or(false) {
                                 let _ = window.request_user_attention(Some(
@@ -251,6 +314,9 @@ pub fn request_exit(app: &AppHandle) {
         return;
     }
     state.accepting.store(false, Ordering::Release);
+    if let Some(service) = &state.system_notifications {
+        service.close();
+    }
     if let Some(sound) = &state.sound {
         sound.close();
     }
@@ -258,6 +324,9 @@ pub fn request_exit(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         state.log("INFO", "Shutdown requested");
+        if let Some(service) = &state.system_notifications {
+            let _ = tokio::time::timeout(Duration::from_secs(2), service.shutdown()).await;
+        }
         if let Some(sound) = &state.sound {
             match tokio::time::timeout(Duration::from_secs(2), sound.shutdown()).await {
                 Ok(Ok(())) => {}

@@ -5,22 +5,36 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 use tauri::{Emitter, Manager, WebviewWindow};
-pub async fn select(window: &WebviewWindow, state: Arc<Runtime>) -> Result<Value, String> {
+pub async fn select(
+    window: &WebviewWindow,
+    state: Arc<Runtime>,
+    directory: bool,
+) -> Result<Value, String> {
     use tauri_plugin_dialog::DialogExt;
     if state.image_selecting.swap(true, Ordering::AcqRel) {
         return Err("请先完成已有选择或截图".into());
     }
     let _guard = crate::image::SelectionGuard(state.clone());
     let (tx, rx) = tokio::sync::oneshot::channel();
-    window
+    let dialog = window
         .app_handle()
         .dialog()
         .file()
         .set_parent(window)
-        .set_title("选择要发送的文件")
-        .pick_file(move |path| {
+        .set_title(if directory {
+            "选择要发送的文件夹"
+        } else {
+            "选择要发送的文件"
+        });
+    if directory {
+        dialog.pick_folder(move |path| {
             let _ = tx.send(path);
         });
+    } else {
+        dialog.pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+    }
     let Some(path) = rx.await.map_err(|_| "文件选择中断")? else {
         return Ok(json!({"success":true,"cancelled":true}));
     };
@@ -51,7 +65,7 @@ pub fn dropped(app: tauri::AppHandle, paths: Vec<PathBuf>) {
                 return Err("请先选择一个聊天对象".to_string());
             }
             if paths.is_empty() || paths.len() > 8 {
-                return Err("一次最多拖入8个普通文件".into());
+                return Err("一次最多拖入8个文件或文件夹".into());
             }
             if state.image_selecting.swap(true, Ordering::AcqRel) {
                 return Err("请先完成已有选择或截图".into());
@@ -89,7 +103,7 @@ pub fn dropped(app: tauri::AppHandle, paths: Vec<PathBuf>) {
 pub async fn open_folder(state: Arc<Runtime>, id: String) -> Result<Value, String> {
     let path = state.database.file_path(id).await?;
     tokio::task::spawn_blocking(move || {
-        if !path.is_file() {
+        if !path.is_file() && !path.is_dir() {
             return Err("本地文件已移动或删除".to_string());
         }
         #[cfg(windows)]

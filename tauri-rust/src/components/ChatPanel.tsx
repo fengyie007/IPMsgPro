@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FiCamera, FiImage, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
+import { FiCamera, FiImage, FiFile, FiFolder, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
 import { useConfigStore } from '../stores/configStore';
@@ -11,6 +11,7 @@ import { isSameDay, formatDateSeparator } from '../utils/format';
 import type { ImageMetadata, ImageReadResult, Message } from '../types';
 import { invoke } from '../services/bridge';
 import ImageSendPreview from './ImageSendPreview';
+import { clipboardImage, importClipboardImage } from '../services/clipboard';
 import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
@@ -88,15 +89,14 @@ export default function ChatPanel() {
       if (pending) { pending.abandoned = true; if (!pending.sending) void discard(pending.image.assetId); }
     };
   }, [userId]);
-  const selectImage = async () => {
+  const openImagePreview = async (importImage: () => Promise<ImageMetadata | undefined>) => {
     if (!userId || imageBusyRef.current || previewRef.current) return;
     const generation = imageGeneration.current, target = userId;
     imageBusyRef.current = true; setImageBusy(true);
     let image: ImageMetadata | undefined, retained = false;
     try {
-      const result = await invoke<{ success: boolean; cancelled?: boolean; image?: ImageMetadata }>('image.select');
-      if (result.cancelled) return;
-      image = result.image;
+      image = await importImage();
+      if (!image) return;
       if (!image?.assetId) throw new Error('图片导入失败');
       const source = await invoke<ImageReadResult>('image.read', { assetId: image.assetId, thumbnail: true });
       if (!source.url) throw new Error('图片预览不可用');
@@ -110,6 +110,11 @@ export default function ChatPanel() {
       if (generation === imageGeneration.current) setImageBusy(false);
     }
   };
+  const selectImage = () => openImagePreview(async () => {
+    const result = await invoke<{ cancelled?: boolean; image?: ImageMetadata }>('image.select');
+    if (!result.cancelled && !result.image?.assetId) throw new Error('图片导入失败');
+    return result.cancelled ? undefined : result.image;
+  });
   const cancelPreview = useCallback(() => {
     if (imageBusyRef.current) return;
     const pending = previewRef.current; previewRef.current = null; setPreview(null);
@@ -200,10 +205,14 @@ export default function ChatPanel() {
   const pasteText = (event: React.ClipboardEvent) => {
     event.preventDefault();
     if (sendingRef.current) return;
+    try {
+      const image = clipboardImage(event.clipboardData.files);
+      if (image) { void openImagePreview(() => importClipboardImage(image)); return; }
+    } catch (error) { toast.error(String(error)); return; }
     const text = event.clipboardData.getData('text/plain');
     if (text) { document.execCommand('insertText', false, text); syncHasInput(); saveSelection(); }
     else if (event.clipboardData.files.length || event.clipboardData.getData('text/html')) {
-      toast.info('Rust 核心版暂不支持粘贴图片或富文本，仅支持纯文本和内置表情');
+      toast.info('仅支持图片、纯文本和内置表情，不导入外部富文本资源');
     }
   };
   const loadMore = async () => {
@@ -269,7 +278,8 @@ export default function ChatPanel() {
           <button disabled={!screenshotSupported || imageBusy || !!preview} title={screenshotSupported ? '截图与标注' : '截图需要 Windows 桌面版'} onClick={takeScreenshot} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiCamera size={18} /></button>
           <button disabled={imageBusy || !!preview} title="发送图片" onClick={selectImage} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiImage size={18} /></button>
           <button disabled={!filesSupported || fileBusy || imageBusy || !!preview} title="发送文件" onClick={() => void useFileSelectionStore.getState().select(userId)} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiFile size={18} /></button>
-          <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入普通文件，确认后发送' : '支持图片收发'}</span>
+          <button disabled={!filesSupported || fileBusy || imageBusy || !!preview} title="发送文件夹" onClick={() => void useFileSelectionStore.getState().select(userId, true)} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiFolder size={18} /></button>
+          <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入文件或文件夹，确认后发送' : '支持图片收发'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">
           <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}

@@ -5,6 +5,8 @@ mod image;
 mod notification;
 mod platform;
 mod runtime;
+mod storage;
+mod system_notification;
 
 use runtime::{request_exit, Runtime};
 use std::sync::{atomic::Ordering, Arc};
@@ -14,7 +16,7 @@ use tauri::{
     Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
-fn show_main(app: &tauri::AppHandle) {
+pub(crate) fn show_main(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<Arc<Runtime>>() {
         if state.quitting.load(Ordering::Acquire) {
             return;
@@ -100,6 +102,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("ipmsg-image", image::serve)
         .register_asynchronous_uri_scheme_protocol("ipmsg-capture", capture::serve)
         .invoke_handler(tauri::generate_handler![
+            image::import_clipboard_image,
             commands::ipmsg_command,
             capture::screenshot_command,
             capture::screenshot_confirm

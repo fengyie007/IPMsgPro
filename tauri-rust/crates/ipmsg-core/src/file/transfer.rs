@@ -9,7 +9,8 @@ use crate::{
     protocol::*,
     User,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+mod streams;
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -36,9 +37,11 @@ pub struct Selection {
     pub selection_id: String,
     pub file_name: String,
     pub file_size: u64,
+    pub is_directory: bool,
 }
 struct Source {
-    file: File,
+    file: Option<Arc<File>>,
+    folder: Option<super::directory::Snapshot>,
     modified: Option<SystemTime>,
     selection: Selection,
     created: Instant,
@@ -48,6 +51,7 @@ struct State {
     acknowledged: bool,
     attempts: u8,
     retry: Instant,
+    last_activity: Instant,
 }
 struct Transfer {
     id: String,
@@ -58,7 +62,7 @@ struct Transfer {
     wire: Vec<u8>,
     state: Mutex<State>,
     cancel: watch::Sender<bool>,
-    busy: AtomicBool,
+    busy: AtomicU32,
     created: Instant,
 }
 impl Transfer {
@@ -73,7 +77,7 @@ impl Transfer {
 struct Busy(Arc<Transfer>);
 impl Drop for Busy {
     fn drop(&mut self) {
-        self.0.busy.store(false, Ordering::Release);
+        self.0.busy.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -92,6 +96,7 @@ pub struct FileTransfers {
     stop: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
     active: Arc<Semaphore>,
+    uploads: Arc<Semaphore>,
     stopped: AtomicBool,
 }
 impl FileTransfers {
@@ -130,8 +135,19 @@ impl FileTransfers {
             stop,
             task: Mutex::new(None),
             active: Arc::new(Semaphore::new(4)),
+            uploads: Arc::new(Semaphore::new(4)),
             stopped: AtomicBool::new(false),
         });
+        for id in manager.db.receive_ids().await? {
+            if manager
+                .db
+                .file_metadata(id.clone())
+                .await?
+                .is_none_or(|m| !m.can_resume)
+            {
+                manager.discard_partial(&id).await?;
+            }
+        }
         let worker = manager.clone();
         *manager.task.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(tokio::spawn(
@@ -216,31 +232,43 @@ impl FileTransfers {
             return Err("最多预览8个文件，请先发送或取消".into());
         }
         let id = format!("file-{}-{}", unix_seconds(), self.next());
-        let source = tokio::task::spawn_blocking(move || {
+        let source = tokio::task::spawn_blocking(move || -> Result<Source, String> {
             let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                return Err("暂不支持文件夹或链接，请选择普通文件".to_string());
+            if super::directory::is_link(&metadata) {
+                return Err("不支持链接或重解析点".into());
             }
-            let file = File::open(&path).map_err(|e| e.to_string())?;
-            let info = file.metadata().map_err(|e| e.to_string())?;
-            if !info.is_file() || info.len() > MAX_FILE_SIZE {
-                return Err("仅支持8 GiB以内的普通文件".into());
+            let folder = if metadata.is_dir() {
+                Some(super::directory::Snapshot::capture(&path)?)
+            } else {
+                None
+            };
+            let file = if metadata.is_file() {
+                Some(Arc::new(File::open(&path).map_err(|e| e.to_string())?))
+            } else {
+                None
+            };
+            if folder.is_none() && file.is_none() {
+                return Err("请选择普通文件或文件夹".into());
+            }
+            let size = folder.as_ref().map(|f| f.size).unwrap_or(metadata.len());
+            if size > MAX_FILE_SIZE {
+                return Err("文件或文件夹超过8 GiB".into());
             }
             let name = path
                 .file_name()
-                .ok_or("文件名无效")?
-                .to_str()
-                .ok_or("文件名编码无效")?;
+                .and_then(|n| n.to_str())
+                .ok_or("文件名无效")?;
             let file_name = protocol::sanitize_name(name);
-            // Reject unrepresentable GBK names before opening an invitation, without lossy replacement.
             encode_packet(1, "p", "h", IPMSG_SENDMSG, "", Some(&file_name))?;
             Ok(Source {
-                modified: info.modified().ok(),
+                modified: metadata.modified().ok(),
                 file,
+                folder,
                 selection: Selection {
                     selection_id: id,
                     file_name,
-                    file_size: info.len(),
+                    file_size: size,
+                    is_directory: metadata.is_dir(),
                 },
                 created: Instant::now(),
             })
@@ -288,6 +316,10 @@ impl FileTransfers {
             .ok_or("文件预览已过期")?;
         let packet = self.next();
         let metadata = FileMetadata {
+            is_directory: source.selection.is_directory,
+            can_resume: false,
+            attempt: 0,
+            in_flight_bytes: 0,
             file_name: source.selection.file_name.clone(),
             file_size: source.selection.file_size,
             state: "offered".into(),
@@ -297,9 +329,10 @@ impl FileTransfers {
             error: None,
         };
         let extra = format!(
-            "1:{}:{:x}:0:1:\x07",
+            "1:{}:{:x}:0:{:x}:\x07",
             metadata.file_name.replace(':', "::"),
-            metadata.file_size
+            metadata.file_size,
+            if metadata.is_directory { 2 } else { 1 }
         );
         let wire = self.wire(
             packet,
@@ -333,9 +366,10 @@ impl FileTransfers {
                 acknowledged: false,
                 attempts: 1,
                 retry: Instant::now() + Duration::from_secs(2),
+                last_activity: Instant::now(),
             }),
             cancel,
-            busy: AtomicBool::new(false),
+            busy: AtomicU32::new(0),
             created: Instant::now(),
         });
         self.transfers
@@ -372,6 +406,10 @@ impl FileTransfers {
         for offer in offers {
             let id = format!("{}:{}:file:{}", peer.id, packet.packet_no, offer.id);
             let metadata = FileMetadata {
+                is_directory: offer.directory,
+                can_resume: false,
+                attempt: 0,
+                in_flight_bytes: 0,
                 file_name: offer.name.clone(),
                 file_size: offer.size,
                 state: "offered".into(),
@@ -410,9 +448,10 @@ impl FileTransfers {
                                 acknowledged: true,
                                 attempts: 0,
                                 retry: Instant::now(),
+                                last_activity: Instant::now(),
                             }),
                             cancel,
-                            busy: AtomicBool::new(false),
+                            busy: AtomicU32::new(0),
                             created: Instant::now(),
                         }),
                     );
@@ -461,30 +500,48 @@ impl FileTransfers {
         if self.stopped.load(Ordering::Acquire) {
             return Err("程序正在退出".into());
         }
-        let t = self.get(id)?;
+        if self
+            .list()
+            .iter()
+            .filter(|t| t.source.is_none() && t.busy.load(Ordering::Acquire) > 0)
+            .count()
+            >= 4
         {
+            return Err("接收队列已满，请稍后重试".into());
+        }
+        let t = self.restore(id).await?;
+        let previous = {
             let mut state = t.state.lock().unwrap_or_else(|e| e.into_inner());
-            if t.source.is_some() || state.metadata.state != "offered" {
+            if t.source.is_some()
+                || !matches!(state.metadata.state.as_str(), "offered" | "paused")
+                || t.busy.load(Ordering::Acquire) > 0
+            {
                 return Err("文件已处理或不能接收".into());
             }
+            let previous = state.metadata.clone();
             state.metadata.state = "transferring".into();
-        }
+            state.metadata.error = None;
+            state.metadata.in_flight_bytes = 0;
+            state.metadata.attempt += 1;
+            t.cancel.send_replace(false);
+            t.busy.fetch_add(1, Ordering::AcqRel);
+            previous
+        };
         if self.downloads.try_send(t.clone()).is_err() {
-            t.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .metadata
-                .state = "offered".into();
+            t.busy.fetch_sub(1, Ordering::AcqRel);
+            t.state.lock().unwrap_or_else(|e| e.into_inner()).metadata = previous;
             return Err("接收队列已满".into());
         }
         self.update(&t).await;
         Ok(())
     }
     pub async fn cancel(&self, id: &str, reject: bool) -> Result<bool, String> {
-        let t = self.get(id)?;
+        let t = self.restore(id).await?;
         {
             let mut state = t.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.metadata.terminal() || state.metadata.state == "finalizing" {
+            if (state.metadata.terminal() && state.metadata.state != "paused")
+                || state.metadata.state == "finalizing"
+            {
                 return Ok(false);
             }
             state.metadata.state = if reject { "rejected" } else { "cancelled" }.into();
@@ -496,8 +553,10 @@ impl FileTransfers {
                 }
                 .into(),
             );
+            state.metadata.can_resume = false;
             t.cancel.send_replace(true);
         }
+        self.discard_partial(id).await?;
         self.db.file_state(t.id.clone(), t.metadata(), None).await?;
         self.update(&t).await;
         if t.source.is_none()
@@ -507,7 +566,11 @@ impl FileTransfers {
                 .filter(|other| {
                     other.packet == t.packet && other.peer.id == t.peer.id && other.source.is_none()
                 })
-                .all(|other| other.metadata().terminal())
+                .all(|other| {
+                    let metadata = other.metadata();
+                    metadata.terminal() && metadata.state != "paused"
+                })
+            && !self.retains_invitation(&t).await?
         {
             if let Ok(wire) =
                 self.wire(self.next(), IPMSG_RELEASEFILES, &t.packet.to_string(), None)
@@ -520,6 +583,16 @@ impl FileTransfers {
     pub async fn cancel_cleared(&self, ids: &[String]) {
         for id in ids {
             let _ = self.cancel(id, false).await;
+            if self
+                .db
+                .file_metadata(id.clone())
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                let _ = self.discard_partial(id).await;
+            }
         }
     }
     async fn finish(
@@ -535,6 +608,7 @@ impl FileTransfers {
                 return Ok(());
             }
             state.metadata.state = phase.into();
+            state.metadata.in_flight_bytes = 0;
             state.metadata.error = error;
             state.metadata.has_local_file = path.is_some();
             if phase == "completed" {
@@ -558,10 +632,14 @@ impl FileTransfers {
     async fn progress(&self, t: &Transfer, bytes: u64) {
         {
             let mut state = t.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.metadata.terminal() {
+            if state.metadata.terminal() && state.metadata.state != "paused" {
                 return;
             }
             state.metadata.transferred = state.metadata.transferred.max(bytes);
+            state.last_activity = Instant::now();
+        }
+        if t.metadata().state == "paused" {
+            let _ = self.db.file_state(t.id.clone(), t.metadata(), None).await;
         }
         self.update(t).await;
     }
@@ -577,185 +655,6 @@ impl FileTransfers {
         tokio::select! {
             _=cancel.changed()=>Err("文件传输已取消".into()),
             result=tokio::time::timeout(Duration::from_secs(30),operation)=>result.map_err(|_|"文件传输30秒无响应".to_string())?.map_err(|e|e.to_string())
-        }
-    }
-    async fn receive(&self, t: Arc<Transfer>) -> Result<(), String> {
-        let _permit = self
-            .active
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "当前传输已达4个，请稍后重试")?;
-        let mut socket = self
-            .io(&t, TcpStream::connect(Self::address(&t.peer)?))
-            .await?;
-        let ack = self.wire(self.next(), IPMSG_RECVMSG, &t.packet.to_string(), None)?;
-        self.socket
-            .send_to(&ack, Self::address(&t.peer)?)
-            .await
-            .map_err(|e| e.to_string())?;
-        let request = self.wire(
-            self.next(),
-            IPMSG_GETFILEDATA,
-            &format!("{:x}:{:x}:0:", t.packet, t.file_id),
-            None,
-        )?;
-        self.io(&t, socket.write_all(&request)).await?;
-        let root = self.root.clone();
-        let next = self.next();
-        let (mut owned, file) =
-            tokio::task::spawn_blocking(move || PartialFile::create(&root, next))
-                .await
-                .map_err(|e| e.to_string())??;
-        let mut file = tokio::fs::File::from_std(file);
-        let size = t.metadata().file_size;
-        let mut read = 0;
-        let mut buffer = vec![0; 64 * 1024];
-        let mut last = Instant::now();
-        while read < size {
-            let count = ((size - read) as usize).min(buffer.len());
-            let n = self.io(&t, socket.read(&mut buffer[..count])).await?;
-            if n == 0 {
-                return Err("连接提前结束，文件不完整".into());
-            }
-            self.io(&t, file.write_all(&buffer[..n])).await?;
-            read += n as u64;
-            if last.elapsed() >= Duration::from_millis(100) {
-                self.progress(&t, read).await;
-                last = Instant::now();
-            }
-        }
-        self.io(&t, file.flush()).await?;
-        self.io(&t, file.sync_all()).await?;
-        drop(file);
-        {
-            let mut state = t.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.metadata.terminal() {
-                return Err("文件传输已取消".into());
-            }
-            state.metadata.state = "finalizing".into();
-        }
-        let name = t.metadata().file_name;
-        let root = self.root.clone();
-        let (mut owned, path) = tokio::task::spawn_blocking(move || {
-            let path = owned.publish(&root, &name)?;
-            Ok::<_, String>((owned, path))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-        self.finish(&t, "completed", None, Some(path)).await?;
-        owned.keep();
-        Ok(())
-    }
-    async fn serve(&self, mut socket: TcpStream, address: SocketAddr) -> Result<(), String> {
-        let mut bytes = Vec::new();
-        let (packet, original, file_id, offset) =
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    if bytes.len() >= 4096 {
-                        return Err("TCP文件请求过长".to_string());
-                    }
-                    let mut chunk = [0; 512];
-                    let n = socket.read(&mut chunk).await.map_err(|e| e.to_string())?;
-                    if n == 0 {
-                        return Err("TCP请求被截断".into());
-                    }
-                    bytes.extend_from_slice(&chunk[..n]);
-                    if bytes.len() > 4096 {
-                        return Err("TCP文件请求过长".into());
-                    }
-                    if let Ok(request) = protocol::request(&bytes) {
-                        return Ok(request);
-                    }
-                }
-            })
-            .await
-            .map_err(|_| "TCP请求超时")??;
-        let t = self
-            .list()
-            .into_iter()
-            .find(|t| {
-                t.source.is_some()
-                    && t.packet == original
-                    && t.file_id == file_id
-                    && t.peer.ip == address.ip().to_string()
-                    && t.peer.username == packet.username
-                    && t.peer.hostname == packet.hostname
-            })
-            .ok_or("未授权的文件请求")?;
-        let _permit = self
-            .active
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| "同时传输过多")?;
-        if t.busy.swap(true, Ordering::AcqRel) {
-            return Err("该文件已有TCP连接".into());
-        }
-        let _busy = Busy(t.clone());
-        let metadata = t.metadata();
-        if (metadata.terminal() && metadata.state != "completed") || offset > metadata.file_size {
-            return Err("文件任务已取消或偏移无效".into());
-        }
-        let source = t.source.as_ref().ok_or("缺少文件源")?;
-        let info = source.file.metadata().map_err(|e| e.to_string())?;
-        if info.len() != metadata.file_size || info.modified().ok() != source.modified {
-            return self
-                .finish(&t, "failed", Some("源文件已修改，请重新发送".into()), None)
-                .await;
-        }
-        let mut file =
-            tokio::fs::File::from_std(source.file.try_clone().map_err(|e| e.to_string())?);
-        {
-            let mut state = t.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.acknowledged = true;
-            if state.metadata.state == "finalizing"
-                || (state.metadata.terminal() && state.metadata.state != "completed")
-            {
-                return Err("文件任务已结束".into());
-            }
-            if !state.metadata.terminal() {
-                state.metadata.state = "transferring".into();
-            }
-        }
-        let operation = async {
-            self.io(&t, file.seek(std::io::SeekFrom::Start(offset)))
-                .await?;
-            let mut sent = offset;
-            let mut buffer = vec![0; 64 * 1024];
-            let mut last = Instant::now();
-            while sent < metadata.file_size {
-                let count = ((metadata.file_size - sent) as usize).min(buffer.len());
-                let n = self.io(&t, file.read(&mut buffer[..count])).await?;
-                if n == 0 {
-                    return Err("源文件长度发生变化".into());
-                }
-                self.io(&t, socket.write_all(&buffer[..n])).await?;
-                sent += n as u64;
-                if last.elapsed() >= Duration::from_millis(100) {
-                    self.progress(&t, sent).await;
-                    last = Instant::now();
-                }
-            }
-            let info = source.file.metadata().map_err(|e| e.to_string())?;
-            if info.len() != metadata.file_size || info.modified().ok() != source.modified {
-                return Err("发送过程中源文件被修改".into());
-            }
-            self.io(&t, socket.shutdown()).await?;
-            Ok::<_, String>(())
-        };
-        match tokio::time::timeout(Duration::from_secs(3600), operation).await {
-            Ok(Ok(())) => self.finish(&t, "completed", None, None).await,
-            result => {
-                self.finish(
-                    &t,
-                    "failed",
-                    Some(match result {
-                        Ok(Err(e)) => e,
-                        _ => "文件传输超过1小时".into(),
-                    }),
-                    None,
-                )
-                .await
-            }
         }
     }
     async fn fail_offer(&self, t: &Transfer, error: &str) -> Result<(), String> {
@@ -777,6 +676,21 @@ impl FileTransfers {
             .retain(|_, s| s.created.elapsed() < Duration::from_secs(600));
         for t in self.list() {
             let metadata = t.metadata();
+            if t.source.is_some()
+                && metadata.state == "transferring"
+                && t.busy.load(Ordering::Acquire) == 0
+                && t.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last_activity
+                    .elapsed()
+                    > Duration::from_secs(60)
+            {
+                let _ = self
+                    .finish(&t, "failed", Some("对方未继续接收文件".into()), None)
+                    .await;
+                continue;
+            }
             if metadata.state == "offered" && t.created.elapsed() > Duration::from_secs(600) {
                 let _ = self.fail_offer(&t, "文件邀请已过期").await;
                 continue;
@@ -812,7 +726,7 @@ impl FileTransfers {
             .unwrap_or_else(|e| e.into_inner())
             .retain(|_, t| {
                 !t.metadata().terminal()
-                    || t.busy.load(Ordering::Acquire)
+                    || t.busy.load(Ordering::Acquire) > 0
                     || t.created.elapsed() < Duration::from_secs(600)
             });
     }
@@ -837,8 +751,8 @@ impl FileTransfers {
                     if let Ok(permit)=handshakes.clone().try_acquire_owned(){let me=self.clone();jobs.spawn(async move {let _permit=permit;let _=me.serve(socket,address).await;});}
                 },
                 Some(t)=receiver.recv()=>{let me=self.clone();jobs.spawn(async move {
-                    let result=tokio::time::timeout(Duration::from_secs(3600),me.receive(t.clone())).await;
-                    if !matches!(result,Ok(Ok(()))){let error=match result{Ok(Err(e))=>e,_=>"文件接收超过1小时".into()};let _=me.finish(&t,"failed",Some(error),None).await;}
+                    let _busy=Busy(t.clone());let result=tokio::time::timeout(Duration::from_secs(3600),me.receive(t.clone())).await;
+                    if !matches!(result,Ok(Ok(()))){let error=match result{Ok(Err(e))=>e,_=>"文件接收超过1小时".into()};let _=me.receive_failed(&t,error).await;}
                 });}
             }
         }
@@ -865,7 +779,7 @@ impl FileTransfers {
         }
         for t in self.list() {
             let _ = self
-                .finish(&t, "failed", Some("程序退出，文件传输中断".into()), None)
+                .receive_failed(&t, "程序退出，文件传输中断".into())
                 .await;
         }
         self.selections

@@ -49,6 +49,43 @@ async fn dispatch(
     }
     match command {
         "app.info" => Ok(state.info()),
+        "storage.info" => state.storage.info(),
+        "storage.select" => crate::storage::select(&window, state.clone(), false).await,
+        "storage.default" => crate::storage::select(&window, state.clone(), true).await,
+        "storage.apply" => {
+            let selection = string(&args, "selectionId")?;
+            let state = state.clone();
+            tokio::task::spawn_blocking(move || state.storage.apply(&selection))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        "storage.cancel" => {
+            let state = state.clone();
+            tokio::task::spawn_blocking(move || state.storage.cancel_pending())
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        "notification.test_system" => {
+            state
+                .system_notifications
+                .as_ref()
+                .ok_or("系统通知需要Windows桌面版")?
+                .test()
+                .await?;
+            Ok(json!({"success":true}))
+        }
+        "notification.take_activation" => {
+            let target = if state.capture.active_label().is_some() {
+                None
+            } else {
+                state
+                    .notification_target
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+            };
+            Ok(json!({"success":true,"userId":target}))
+        }
         "notification.test_sound" => {
             let sound = state
                 .sound
@@ -71,7 +108,24 @@ async fn dispatch(
         }
         "network.scan_status" => Ok(json!({"success":true,"scan":state.network.scan_status()})),
         "screenshot.start" => crate::capture::start(&window, state.clone()).await,
-        "file.select" => crate::files::select(&window, state.clone()).await,
+        "file.select" => crate::files::select(&window, state.clone(), false).await,
+        "file.select_folder" => crate::files::select(&window, state.clone(), true).await,
+        "file.resume" => {
+            state
+                .network
+                .file_transfers()?
+                .accept(&string(&args, "messageId")?)
+                .await?;
+            Ok(json!({"success":true}))
+        }
+        "file.pause" => {
+            state
+                .network
+                .file_transfers()?
+                .pause(&string(&args, "messageId")?)
+                .await?;
+            Ok(json!({"success":true}))
+        }
         "file.send" => Ok(
             json!({"success":true,"message":state.network.send_file(&string(&args,"target")?,&string(&args,"selectionId")?).await?}),
         ),
@@ -127,7 +181,16 @@ async fn dispatch(
         }
         "config.get" => Ok(json!({"success":true,"config":state.config.get()})),
         "config.set" => {
+            let previous = state.config.get();
             let config = state.config.save(args).await?;
+            if let Some(service) = &state.system_notifications {
+                service.set_enabled(config.system_notifications);
+            }
+            if previous.notification_preview != config.notification_preview {
+                if let Some(service) = &state.system_notifications {
+                    service.invalidate();
+                }
+            }
             if let Some(sound) = &state.sound {
                 sound.set_enabled(config.notification_sound);
             }
