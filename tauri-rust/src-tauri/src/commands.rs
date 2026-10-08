@@ -50,6 +50,31 @@ async fn dispatch(
     match command {
         "app.info" => Ok(state.info()),
         "screenshot.start" => crate::capture::start(&window, state.clone()).await,
+        "file.select" => crate::files::select(&window, state.clone()).await,
+        "file.send" => Ok(
+            json!({"success":true,"message":state.network.send_file(&string(&args,"target")?,&string(&args,"selectionId")?).await?}),
+        ),
+        "file.discard" => {
+            state
+                .network
+                .file_transfers()?
+                .discard(&string(&args, "selectionId")?);
+            Ok(json!({"success":true}))
+        }
+        "file.accept" => {
+            state
+                .network
+                .file_transfers()?
+                .accept(&string(&args, "messageId")?)
+                .await?;
+            Ok(json!({"success":true}))
+        }
+        "file.reject" | "file.cancel" => Ok(
+            json!({"success":true,"cancelled":state.network.file_transfers()?.cancel(&string(&args,"messageId")?,command=="file.reject").await?}),
+        ),
+        "file.open_folder" => {
+            crate::files::open_folder(state.clone(), string(&args, "messageId")?).await
+        }
         "image.read" => {
             let id = string(&args, "assetId")?;
             let thumbnail = match args.get("thumbnail") {
@@ -155,6 +180,9 @@ async fn dispatch(
                 Some(_) => Some(string(&args, "userId")?),
             };
             let deleted = state.database.clear(user, state.network.local().id).await?;
+            if let Ok(files) = state.network.file_transfers() {
+                files.cancel_cleared(&deleted).await;
+            }
             Ok(json!({"success":true,"deletedIds":deleted}))
         }
         "window.set_active_conversation" => {

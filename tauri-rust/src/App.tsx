@@ -4,11 +4,14 @@ import UserListPanel from './components/UserListPanel';
 import ChatPanel from './components/ChatPanel';
 import Settings from './components/Settings';
 import ToastHost from './components/Toast';
+import FileSendPreview from './components/FileSendPreview';
+import { useFileSelectionStore } from './stores/fileSelectionStore';
+import type { FileSelection } from './types';
 import { useUserStore } from './stores/userStore';
 import { useMessageStore } from './stores/messageStore';
 import { useConfigStore } from './stores/configStore';
 import { toast } from './stores/toastStore';
-import { bridgeReady, invoke, isMockMode } from './services/bridge';
+import { bridgeReady, invoke, isMockMode, listen } from './services/bridge';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
@@ -21,12 +24,16 @@ export default function App() {
     const prevent = (event: DragEvent) => event.preventDefault();
     const drop = (event: DragEvent) => {
       event.preventDefault();
-      toast.info('Rust 核心版暂不支持拖放，请使用文本输入框');
+      if (isMockMode) toast.info('拖放文件需要桌面版');
     };
     window.addEventListener('dragover', prevent);
     window.addEventListener('drop', drop);
     return () => { window.removeEventListener('dragover', prevent); window.removeEventListener('drop', drop); };
   }, []);
+  useEffect(() => listen('file.selected', (data: { target: string; files?: FileSelection[]; error?: string }) => {
+    if (data.error) toast.error(data.error);
+    else if (data.files?.length) useFileSelectionStore.getState().picked(data.target, data.files);
+  }), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +110,7 @@ export default function App() {
         )}
       </div>
       <ToastHost />
+      <FileSendPreview />
     </div>
   );
 }

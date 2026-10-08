@@ -13,7 +13,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -70,7 +70,8 @@ pub struct Network {
     config: Arc<ConfigStore>,
     db: Database,
     events: mpsc::Sender<Event>,
-    packet: AtomicU32,
+    packet: Arc<AtomicU32>,
+    files: OnceLock<Arc<crate::file::FileTransfers>>,
     ready: AtomicBool,
     stopping: AtomicBool,
     cancel: watch::Sender<bool>,
@@ -170,7 +171,8 @@ impl Network {
             config,
             db,
             events,
-            packet: AtomicU32::new(unix_seconds() as u32),
+            packet: Arc::new(AtomicU32::new(unix_seconds() as u32)),
+            files: OnceLock::new(),
             ready: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             cancel,
@@ -182,6 +184,39 @@ impl Network {
     }
     pub fn local(&self) -> User {
         self.local.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub async fn enable_files(&self, root: std::path::PathBuf) -> Result<(), String> {
+        let manager = crate::file::FileTransfers::start(
+            self.socket.clone(),
+            self.local(),
+            self.wire_version.clone(),
+            self.packet.clone(),
+            self.db.clone(),
+            self.events.clone(),
+            root,
+        )
+        .await?;
+        if self.files.set(manager.clone()).is_err() {
+            manager.shutdown().await;
+            return Err("文件服务已启动".into());
+        }
+        Ok(())
+    }
+    pub fn file_transfers(&self) -> Result<Arc<crate::file::FileTransfers>, String> {
+        self.files
+            .get()
+            .cloned()
+            .ok_or_else(|| "文件服务未启动".into())
+    }
+    pub async fn send_file(&self, target: &str, selection: &str) -> Result<Record, String> {
+        let peer = self
+            .peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(target)
+            .map(|p| p.user.clone())
+            .ok_or("未找到目标用户")?;
+        self.file_transfers()?.send(peer, selection).await
     }
     pub fn users(&self) -> Vec<User> {
         self.peers
@@ -210,6 +245,15 @@ impl Network {
     }
     fn wire(&self, command: u32, body: &str, extra: Option<&str>) -> Result<Vec<u8>, String> {
         let local = self.local();
+        let command = if self.files.get().is_some()
+            && matches!(
+                mode(command),
+                IPMSG_BR_ENTRY | IPMSG_ANSENTRY | IPMSG_BR_ABSENCE
+            ) {
+            command | IPMSG_FILEATTACHOPT
+        } else {
+            command
+        };
         encode_packet_with_version(
             &self.wire_version,
             self.next_packet(),
@@ -369,6 +413,7 @@ impl Network {
                 kind: 0,
                 timestamp: unix_seconds(),
                 status: 0,
+                file: None,
                 image: None,
             })
             .await?;
@@ -524,6 +569,7 @@ impl Network {
                 kind: 0,
                 timestamp,
                 status: 1,
+                file: None,
                 image: None,
             })
             .await?;
@@ -554,6 +600,11 @@ impl Network {
             }
         }
         let peer_id = self.resolve_peer_id(&packet, address)?;
+        if matches!(mode(packet.command), IPMSG_RECVMSG | IPMSG_RELEASEFILES) {
+            if let Some(files) = self.files.get() {
+                files.receipt(&packet, address).await;
+            }
+        }
         match mode(packet.command) {
             IPMSG_BR_ENTRY | IPMSG_ANSENTRY | IPMSG_BR_ABSENCE => {
                 self.seen(&packet, address, true).await?;
@@ -595,6 +646,16 @@ impl Network {
                     return Ok(());
                 }
                 let sender = self.seen(&packet, address, true).await?;
+                if packet.command & IPMSG_FILEATTACHOPT != 0 {
+                    if let Some(files) = self.files.get() {
+                        let result = files.incoming(sender, &packet).await;
+                        if let Err(error) = &result {
+                            self.event("file.receive_failed", json!({"error":error}))
+                                .await;
+                        }
+                        return result;
+                    }
+                }
                 let unsupported_file = packet.command & IPMSG_FILEATTACHOPT != 0;
                 let text = decode_text(&packet.body, packet.command)?;
                 if !unsupported_file {
@@ -823,6 +884,9 @@ impl Network {
         let _send = self.send_gate.lock().await;
         let _images = self.image_send_gate.lock().await;
         self.cancel_image_sends();
+        if let Some(files) = self.files.get() {
+            files.shutdown().await;
+        }
         let local = self.local();
         if let Ok(wire) = self.wire(IPMSG_BR_EXIT, &local.nickname, None) {
             for address in self.direct_addresses() {

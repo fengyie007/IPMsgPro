@@ -56,7 +56,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       </div>
       <div className="flex-1 overflow-y-auto p-6 space-y-7">
         <div className="rounded border border-primary-100 bg-primary-50 px-4 py-3 text-sm text-gray-600">
-          Rust 预览版：文本与图片收发、Windows 截图标注、历史预览、通讯录和托盘已接入。文件、扫描及提示音将在后续迁移。
+          Rust 预览版：文本、图片、普通文件收发与拖放、Windows 截图标注、历史、通讯录和托盘已接入。文件夹、扫描及提示音暂不支持。
         </div>
         <Section title="个人信息">
           <Field label="昵称"><input disabled={busy} className="input-field" value={draft.nickname} maxLength={128} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })} placeholder="留空使用默认昵称" /></Field>

@@ -8,6 +8,7 @@ import { invoke } from '../services/bridge';
 import EmojiSprite from './EmojiSprite';
 import { useMessageStore } from '../stores/messageStore';
 import { toast } from '../stores/toastStore';
+import FileBubble from './FileBubble';
 
 function ImageSendState({ message }: { message: Message }) {
   const [busy, setBusy] = useState(false);
@@ -146,12 +147,12 @@ export default memo(function MessageBubble({ message }: { message: Message }) {
         <div className={`px-3 py-2 rounded-lg text-sm leading-relaxed break-words ${self ? 'bg-chat-sent text-gray-800 rounded-tr-none' : 'bg-chat-received text-gray-800 rounded-tl-none shadow-sm'}`}>
           {message.type === 'text' ? renderText(message.content) : message.type === 'image' ? (
             message.image?.assetId ? <ReceivedImage image={message.image} /> : <span className="text-gray-500">[图片信息缺失，无法预览]</span>
-          ) : <span className="text-gray-500">[文件：Rust 核心版暂不支持，请使用原版查看]</span>}
+          ) : <FileBubble message={message} />}
         </div>
         {self && message.type === 'image' && <ImageSendState message={message} />}
         <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-0.5 ${self ? 'justify-end' : 'justify-start'}`}>
           <span>{formatTime(message.timestamp)}</span>
-          {self && (message.status === 'sending'
+          {self && message.type !== 'file' && (message.status === 'sending'
             ? <FiClock size={10} title="等待对方确认" />
             : message.status === 'delivered'
             ? <FiCheck size={10} className="text-green-500" title="对方已收到" />

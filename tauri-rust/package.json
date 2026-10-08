@@ -9,6 +9,7 @@
     "check": "tsc --noEmit",
     "test:store": "node tools/test-store.cjs",
     "test:screenshot": "node tools/test-screenshot.cjs",
+    "test:files": "node tools/test-file-selection.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

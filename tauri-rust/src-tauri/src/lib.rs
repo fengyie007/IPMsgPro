@@ -1,5 +1,6 @@
 mod capture;
 mod commands;
+mod files;
 mod image;
 mod platform;
 mod runtime;
@@ -125,6 +126,17 @@ pub fn run() {
             state.start_events(app.handle().clone());
             tauri::async_runtime::block_on(state.network.start());
             Ok(())
+        })
+        .on_webview_event(|webview, event| {
+            if webview.label() == "main" {
+                if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
+                    event
+                {
+                    if webview.url().is_ok_and(|url| capture::local_url(&url)) {
+                        files::dropped(webview.app_handle().clone(), paths.clone());
+                    }
+                }
+            }
         })
         .on_window_event(|window, event| {
             if window.label().starts_with("capture-") {

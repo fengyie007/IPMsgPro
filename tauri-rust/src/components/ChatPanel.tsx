@@ -3,6 +3,7 @@ import { FiCamera, FiImage, FiFile, FiSmile, FiMoreHorizontal, FiTrash2, FiChevr
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
 import { useConfigStore } from '../stores/configStore';
+import { useFileSelectionStore } from '../stores/fileSelectionStore';
 import { captureAndSend } from '../services/screenshot';
 import { toast } from '../stores/toastStore';
 import { buildEmojiMessage, emojiStyle } from '../emojiData';
@@ -65,6 +66,8 @@ export default function ChatPanel() {
   const [imageBusy, setImageBusy] = useState(false);
   const [screenshotBusy, setScreenshotBusy] = useState(false);
   const screenshotSupported = useConfigStore((s) => s.info?.capabilities.screenshot ?? false);
+  const filesSupported = useConfigStore((s) => s.info?.capabilities.files ?? false);
+  const fileBusy = useFileSelectionStore((s) => s.busy || s.files.length > 0);
   const takeScreenshot = async () => {
     if (!userId || imageBusyRef.current || previewRef.current) return;
     imageBusyRef.current = true; setImageBusy(true); setScreenshotBusy(true);
@@ -265,8 +268,8 @@ export default function ChatPanel() {
           <button disabled={sending} title="表情" onClick={() => setEmojiOpen(!emojiOpen)} className={`p-1.5 rounded ${emojiOpen ? 'text-primary-500 bg-gray-100' : 'text-gray-400 hover:text-gray-600'}`}><FiSmile size={18} /></button>
           <button disabled={!screenshotSupported || imageBusy || !!preview} title={screenshotSupported ? '截图与标注' : '截图需要 Windows 桌面版'} onClick={takeScreenshot} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiCamera size={18} /></button>
           <button disabled={imageBusy || !!preview} title="发送图片" onClick={selectImage} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiImage size={18} /></button>
-          <button disabled title="文件发送：后续版本迁移" className="p-1.5 text-gray-300 cursor-not-allowed"><FiFile size={18} /></button>
-          <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : screenshotSupported ? '支持图片与截图；文件暂未迁移' : '支持图片收发；文件暂未迁移'}</span>
+          <button disabled={!filesSupported || fileBusy || imageBusy || !!preview} title="发送文件" onClick={() => void useFileSelectionStore.getState().select(userId)} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiFile size={18} /></button>
+          <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入普通文件，确认后发送' : '支持图片收发'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">
           <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}

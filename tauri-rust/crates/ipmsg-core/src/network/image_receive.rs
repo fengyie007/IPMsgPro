@@ -245,6 +245,7 @@ impl Network {
                 kind: 1,
                 timestamp,
                 status: 1,
+                file: None,
                 image: Some(metadata.clone()),
             };
             // The DB queue owns the pending asset and checks the receive state

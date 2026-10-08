@@ -26,6 +26,8 @@ pub struct Record {
     pub status: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<crate::file::FileMetadata>,
 }
 #[derive(Debug)]
 pub struct ImageCommit {
@@ -49,6 +51,7 @@ fn row(record: &Row<'_>) -> rusqlite::Result<Record> {
         kind: record.get(4)?,
         timestamp: record.get(5)?,
         status: record.get(6)?,
+        file: None,
         image: None,
     })
 }
@@ -63,6 +66,20 @@ fn image_row(row: &Row<'_>) -> rusqlite::Result<ImageMetadata> {
     })
 }
 fn hydrate_images(db: &Connection, records: &mut [Record]) -> Result<(), String> {
+    for record in records.iter_mut().filter(|r| r.kind == 2) {
+        let encoded: Option<String> = db
+            .query_row(
+                "SELECT metadata FROM message_files WHERE message_id=?",
+                [&record.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        record.file = encoded
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+    }
     let mut query = db
         .prepare(
             "SELECT a.asset_id,a.file_name,a.file_size,a.mime,a.width,a.height
@@ -142,7 +159,7 @@ impl Database {
                     db.busy_timeout(std::time::Duration::from_secs(1))?;
                     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
                     let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                    if version > 3 { return Err(rusqlite::Error::InvalidQuery); }
+                    if version > 4 { return Err(rusqlite::Error::InvalidQuery); }
                     let transaction = db.transaction()?;
                     transaction.execute_batch(
                         "CREATE TABLE IF NOT EXISTS messages (
@@ -165,7 +182,12 @@ impl Database {
                         transaction.execute_batch("ALTER TABLE image_assets ADD COLUMN temporary INTEGER NOT NULL DEFAULT 0;
                             ALTER TABLE image_assets ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;")?;
                     }
-                    transaction.pragma_update(None, "user_version", 3)?;
+                    transaction.execute_batch("CREATE TABLE IF NOT EXISTS message_files (
+                        message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                        metadata TEXT NOT NULL, local_path TEXT);
+                        UPDATE message_files SET metadata=json_set(metadata,'$.state','failed','$.error','程序重启，传输已中断')
+                        WHERE json_extract(metadata,'$.state') IN ('offered','transferring','finalizing');")?;
+                    transaction.pragma_update(None, "user_version", 4)?;
                     transaction.commit()?;
                     Ok(db)
                 })();
@@ -371,6 +393,12 @@ impl Database {
                     params![record.id,record.from_id,record.to_id,record.content,record.kind,record.timestamp,record.status])
                     .map_err(|e| e.to_string())? > 0
             } else { false };
+            if inserted {
+                if let Some(file) = &record.file {
+                    transaction.execute("INSERT INTO message_files(message_id,metadata) VALUES (?,?)",
+                        params![record.id, serde_json::to_string(file).map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+                }
+            }
             transaction.commit().map_err(|e| e.to_string())?;
             Ok(inserted)
         })
@@ -386,6 +414,27 @@ impl Database {
             .map_err(|e| e.to_string())
         })
         .await
+    }
+    pub async fn file_state(
+        &self,
+        id: String,
+        metadata: crate::file::FileMetadata,
+        path: Option<PathBuf>,
+    ) -> Result<(), String> {
+        self.call(move |db| {
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            tx.execute("UPDATE messages SET status=? WHERE id=?", params![metadata.status(), id]).map_err(|e| e.to_string())?;
+            tx.execute("UPDATE message_files SET metadata=?,local_path=COALESCE(?,local_path) WHERE message_id=?",
+                params![serde_json::to_string(&metadata).map_err(|e| e.to_string())?,path.map(|p|p.to_string_lossy().into_owned()),id]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
+        }).await
+    }
+    pub async fn file_path(&self, id: String) -> Result<PathBuf, String> {
+        self.call(move |db| {
+            let path: Option<String> = db.query_row("SELECT local_path FROM message_files WHERE message_id=? AND json_extract(metadata,'$.state')='completed'", [id], |row| row.get(0))
+                .optional().map_err(|e| e.to_string())?.flatten();
+            path.map(PathBuf::from).ok_or_else(|| "文件尚未接收完成或历史已清空".into())
+        }).await
     }
     pub async fn history(
         &self,
@@ -509,6 +558,7 @@ mod tests {
                 kind: 0,
                 timestamp: n,
                 status: 0,
+                file: None,
                 image: None,
             };
             assert!(db.insert(record.clone()).await.unwrap());
@@ -563,6 +613,7 @@ mod tests {
             kind: 0,
             timestamp: 1,
             status: 1,
+            file: None,
             image: None,
         };
         db.insert(wanted.clone()).await.unwrap();
@@ -664,6 +715,7 @@ mod tests {
             kind: 1,
             timestamp: 1,
             status: 1,
+            file: None,
             image: Some(pending.metadata.clone()),
         };
         (pending, record)

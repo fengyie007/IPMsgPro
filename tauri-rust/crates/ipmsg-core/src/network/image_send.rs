@@ -214,6 +214,7 @@ impl Network {
                 kind: 1,
                 timestamp: unix_seconds(),
                 status: 0,
+                file: None,
                 image: Some(image.clone()),
             })
             .await?;

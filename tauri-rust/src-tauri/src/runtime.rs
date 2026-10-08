@@ -112,6 +112,16 @@ impl Runtime {
             log_file: Mutex::new(log_file),
             verbose: options.verbose,
         });
+        // Bind TCP to the same port as UDP; never advertise a fallback port.
+        state
+            .network
+            .enable_files(
+                app.path()
+                    .download_dir()
+                    .map_err(|e| e.to_string())?
+                    .join("SpeedIpMsgRust"),
+            )
+            .await?;
         state.log(
             "INFO",
             &format!(
@@ -124,7 +134,7 @@ impl Runtime {
     }
     pub fn info(&self) -> Value {
         json!({"success":true,"version":"0.1.0","port":self.port,"dataDir":self.data_dir.to_string_lossy(),
-            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":false,"screenshot":cfg!(windows),"scan":false,"notificationSound":false}})
+            "capabilities":{"images":true,"imageReceive":true,"imageSend":true,"files":self.network.file_transfers().is_ok(),"screenshot":cfg!(windows),"scan":false,"notificationSound":false}})
     }
     pub fn log(&self, level: &str, message: &str) {
         if level == "DEBUG" && !self.verbose {

@@ -21,6 +21,12 @@ export interface ImageMetadata {
   width: number;
   height: number;
 }
+export interface FileMetadata {
+  fileName: string; fileSize: number; state: 'offered' | 'transferring' | 'finalizing' | 'completed' | 'failed' | 'cancelled' | 'rejected';
+  transferred: number; incoming: boolean; hasLocalFile: boolean; error?: string | null;
+}
+export interface FileSelection { selectionId: string; fileName: string; fileSize: number }
+export interface FileEvent { messageId: string; target: string; file: FileMetadata }
 
 export interface ImageReadResult {
   success: boolean;
@@ -46,6 +52,7 @@ export interface Message {
   status: 'sending' | 'delivered' | 'failed';
   fromUser?: User;
   image?: ImageMetadata;
+  file?: FileMetadata;
   imageProgress?: number;
   imageStage?: string;
   imageError?: string;
@@ -61,6 +68,7 @@ export interface HistoryRecord {
   timestamp: number;
   status: number;
   image?: ImageMetadata;
+  file?: FileMetadata;
 }
 
 export interface HistoryResult {
@@ -118,4 +126,5 @@ export interface MessageReceivedEvent {
   timestamp: number;
   command?: number;
   image?: ImageMetadata;
+  file?: FileMetadata;
 }

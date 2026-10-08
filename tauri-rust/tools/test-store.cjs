@@ -173,6 +173,41 @@ const incoming = (id, from = 'peer') => ({ id, from, to: 'self', content: id, ty
   assert.equal(store.getState().messages.has('tx-peer'), false);
   console.log('PASS late outbound image events do not resurrect cleared history');
 
+  const file = { fileName: '中文.txt', fileSize: 100, state: 'offered', transferred: 0, incoming: false, hasLocalFile: false };
+  invoke = async (command) => {
+    assert.equal(command, 'file.send');
+    emit('file.updated', { messageId: 'file-early', target: 'file-peer', file: { ...file, state: 'completed', transferred: 100 } });
+    emit('file.updated', { messageId: 'file-early', target: 'file-peer', file: { ...file, state: 'transferring', transferred: 20 } });
+    return { success: true, message: { id: 'file-early', fromId: 'local', toId: 'file-peer', type: 2, content: '[文件]', timestamp: 1, status: 0, file } };
+  };
+  await store.getState().sendFile('file-peer', 'selection');
+  assert.equal(store.getState().messages.get('file-peer')[0].file.state, 'completed');
+  assert.equal(store.getState().messages.get('file-peer')[0].file.transferred, 100);
+  emit('file.updated', { messageId: 'file-early', target: 'file-peer', file: { ...file, state: 'failed' } });
+  assert.equal(store.getState().messages.get('file-peer')[0].file.state, 'completed');
+  console.log('PASS file completion before invoke and late progress cannot reverse terminal status');
+
+  emit('message.received', { id: 'file-receive', from: 'file-peer', type: 'file', content: '[文件]', timestamp: 2, file: { ...file, incoming: true } });
+  emit('file.updated', { messageId: 'file-receive', target: 'file-peer', file: { ...file, incoming: true, state: 'transferring', transferred: 60 } });
+  emit('file.updated', { messageId: 'file-receive', target: 'file-peer', file: { ...file, incoming: true, state: 'transferring', transferred: 20 } });
+  assert.equal(store.getState().messages.get('file-peer')[1].file.transferred, 60);
+  emit('file.updated', { messageId: 'file-receive', target: 'file-peer', file: { ...file, incoming: true, state: 'cancelled' } });
+  emit('file.updated', { messageId: 'file-receive', target: 'file-peer', file: { ...file, incoming: true, state: 'completed' } });
+  assert.equal(store.getState().messages.get('file-peer')[1].file.state, 'cancelled');
+  console.log('PASS file receive progress is monotonic and cancelled transfer stays cancelled');
+
+  invoke = async () => ({ success: true, localUserId: 'local', messages: [{ id: 'file-history', fromId: 'file-peer', toId: 'local', type: 2, content: '[文件]', timestamp: 3, status: 2, file: { ...file, incoming: true, state: 'completed', hasLocalFile: true, transferred: 100 } }] });
+  await store.getState().loadHistory('file-peer');
+  assert.equal(store.getState().messages.get('file-peer').find((m) => m.id === 'file-history').file.hasLocalFile, true);
+  console.log('PASS completed file metadata survives history reload');
+
+  invoke = async () => ({ success: true, deletedIds: ['file-early', 'file-receive', 'file-history'] });
+  await store.getState().clearHistory('file-peer');
+  emit('file.updated', { messageId: 'file-receive', target: 'file-peer', file: { ...file, state: 'completed' } });
+  emit('message.received', { id: 'file-receive', from: 'file-peer', type: 'file', timestamp: 2, file });
+  assert.equal(store.getState().messages.has('file-peer'), false);
+  console.log('PASS cleared file tasks cannot reappear through late events');
+
   stopListeners();
   assert.equal(listeners.size, 0);
   console.log('PASS receive failure is reported without a phantom chat message; listeners cleaned');

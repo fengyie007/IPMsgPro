@@ -16,6 +16,7 @@ const supported = new Set([
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
   'screenshot.start',
+  'file.select', 'file.send', 'file.discard', 'file.accept', 'file.reject', 'file.cancel', 'file.open_folder',
   'window.set_active_conversation', 'frontend.error',
 ]);
 
@@ -108,6 +109,13 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {
+    case 'file.select':
+    case 'file.send':
+    case 'file.accept':
+    case 'file.reject':
+    case 'file.cancel':
+    case 'file.open_folder': return { success: false, error: '文件传输需要桌面版，浏览器演示未连接文件服务' };
+    case 'file.discard': return { success: true };
     case 'screenshot.start': return { success: false, error: '截图需要在 Windows 桌面版中使用' };
     case 'app.info': return { success: true, version: APP_VERSION, dataDir: '浏览器演示：不写入磁盘', port: 2427, capabilities: MVP_CAPABILITIES };
     case 'config.get': return { success: true, config: mockConfig };

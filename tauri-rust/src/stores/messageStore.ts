@@ -2,7 +2,18 @@ import { create } from 'zustand';
 import { invoke, listen } from '../services/bridge';
 import { useUserStore } from './userStore';
 import { toast } from './toastStore';
-import type { HistoryRecord, HistoryResult, ImageMetadata, ImageSendEvent, Message, MessageReceivedEvent } from '../types';
+import type { FileEvent, FileMetadata, HistoryRecord, HistoryResult, ImageMetadata, ImageSendEvent, Message, MessageReceivedEvent } from '../types';
+
+const earlyFiles = new Map<string, { data: FileEvent; at: number }>();
+const fileTerminal = (file: FileMetadata) => ['completed','failed','cancelled','rejected'].includes(file.state);
+function mergeFile(previous: FileMetadata | undefined, incoming: FileMetadata | undefined): FileMetadata | undefined {
+  if (!previous) return incoming;
+  if (!incoming || fileTerminal(previous)) return previous;
+  if (fileTerminal(incoming)) return incoming;
+  const rank = { offered: 0, transferring: 1, finalizing: 2 };
+  return { ...incoming, transferred: Math.max(previous.transferred, incoming.transferred),
+    state: (rank[previous.state as keyof typeof rank] || 0) > (rank[incoming.state as keyof typeof rank] || 0) ? previous.state : incoming.state };
+}
 
 type ImagePhase = 'progress' | 'completed' | 'failed';
 const earlyImages = new Map<string, { data: ImageSendEvent; phase: ImagePhase; at: number }>();
@@ -39,6 +50,7 @@ function fromHistory(row: HistoryRecord, localId: string): Message {
     timestamp: row.timestamp * 1000,
     status: row.status === 0 ? 'sending' : row.status === 1 || row.status === 2 ? 'delivered' : 'failed',
     image: row.image,
+    file: row.file,
   };
 }
 
@@ -51,6 +63,7 @@ function mergeHistory(existing: Message[], incoming: Message[]): Message[] {
       ...message, ...current,
       status: current.status === 'sending' ? message.status : current.status,
       image: current.image ?? message.image,
+      file: mergeFile(current.file, message.file),
     } : message);
   }
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
@@ -67,6 +80,8 @@ interface MessageStore {
   loadLocalUserId: () => Promise<void>;
   sendMessage: (target: string, content: string) => Promise<boolean>;
   sendImage: (target: string, assetId: string) => Promise<boolean>;
+  sendFile: (target: string, selectionId: string) => Promise<boolean>;
+  updateFile: (event: FileEvent) => void;
   cancelImage: (messageId: string) => Promise<boolean>;
   updateImage: (data: ImageSendEvent, phase: ImagePhase) => void;
   recvMessage: (message: Message) => void;
@@ -84,6 +99,12 @@ interface MessageStore {
 export const useMessageStore = create<MessageStore>((set, get) => {
   const replay = (messages: Message[]) => {
     for (const message of messages) {
+      if (message.type === 'file') {
+        const key = imageKey(message.from === 'self' ? message.to : message.from, message.id), event = earlyFiles.get(key);
+        earlyFiles.delete(key);
+        if (event && Date.now() - event.at <= EARLY_TTL) get().updateFile(event.data);
+        continue;
+      }
       if (message.type === 'image' && message.from === 'self') {
         const key = imageKey(message.to, message.id), event = earlyImages.get(key);
         earlyImages.delete(key);
@@ -153,6 +174,33 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           image: result.image, timestamp: Date.now(), status: 'sending', imageProgress: 0, imageStage: 'queued' };
         get().recvMessage(message); replay([message]); return true;
       } catch (error) { set({ error: error instanceof Error ? error.message : String(error) }); return false; }
+    },
+    sendFile: async (target, selectionId) => {
+      set({ error: null });
+      try {
+        const result = await invoke<{ success: boolean; message: HistoryRecord }>('file.send', { target, selectionId });
+        if (!result.message?.id || !result.message.file) throw new Error('后端未返回文件任务');
+        const message = fromHistory(result.message, result.message.fromId);
+        get().recvMessage(message); replay([message]); return true;
+      } catch (error) { set({ error: String(error) }); return false; }
+    },
+    updateFile: (data) => {
+      if (!data?.messageId || !data.target || !data.file || clearedIds.has(data.messageId)) return;
+      let found = false;
+      set((state) => {
+        const list = state.messages.get(data.target), index = list?.findIndex((m) => m.id === data.messageId && m.type === 'file') ?? -1;
+        if (!list || index < 0) return {};
+        found = true; const file = mergeFile(list[index].file, data.file)!;
+        const updated = [...list]; updated[index] = { ...list[index], file,
+          status: file.state === 'completed' ? 'delivered' : fileTerminal(file) ? 'failed' : 'sending' };
+        const messages = new Map(state.messages); messages.set(data.target, updated); return { messages };
+      });
+      if (!found) {
+        for (const [key, event] of earlyFiles) if (Date.now() - event.at > EARLY_TTL) earlyFiles.delete(key);
+        const key = imageKey(data.target, data.messageId), previous = earlyFiles.get(key);
+        if (!previous && earlyFiles.size >= EARLY_LIMIT) earlyFiles.delete(earlyFiles.keys().next().value!);
+        earlyFiles.set(key, { data: { ...data, file: mergeFile(previous?.data.file, data.file)! }, at: Date.now() });
+      }
     },
     cancelImage: async (messageId) => {
       const result = await invoke<{ success: boolean; cancelled: boolean }>('image.cancel', { messageId });
@@ -294,6 +342,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         if (!Array.isArray(result.deletedIds) || result.deletedIds.some((id) => typeof id !== 'string')) throw new Error('清空历史返回格式错误');
         deleted = new Set(result.deletedIds);
         for (const [key, event] of earlyImages) if (deleted.has(event.data.messageId)) earlyImages.delete(key);
+        for (const [key, event] of earlyFiles) if (deleted.has(event.data.messageId)) earlyFiles.delete(key);
         for (const id of result.deletedIds) {
           clearedIds.add(id);
           earlyDelivery.delete(id);
@@ -329,9 +378,15 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           get().recvMessage({
             id: data.id, from: data.from, to: 'self',
             content: data.content, type: data.type === 'text' ? 'text' : data.type === 'image' ? 'image' : 'file',
-            timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser, image: data.image,
+            timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser, image: data.image, file: data.file,
           });
+          if (data.file) {
+            const key = imageKey(data.from, data.id), early = earlyFiles.get(key);
+            earlyFiles.delete(key); get().updateFile(early?.data || { messageId: data.id, target: data.from, file: data.file });
+          }
         }),
+        listen('file.updated', (data: FileEvent) => get().updateFile(data)),
+        listen('file.receive_failed', (data: { error?: string }) => toast.error('文件邀请无法处理：' + (data.error || '无效文件信息'))),
         listen('image.send_progress', (data: ImageSendEvent) => get().updateImage(data, 'progress')),
         listen('image.send_completed', (data: ImageSendEvent) => get().updateImage(data, 'completed')),
         listen('image.send_failed', (data: ImageSendEvent) => get().updateImage(data, 'failed')),

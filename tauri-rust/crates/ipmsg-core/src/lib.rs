@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod database;
+pub mod file;
 pub mod image;
 pub mod network;
 pub mod protocol;
