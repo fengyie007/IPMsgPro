@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import LeftSidebar, { type ViewMode } from './components/LeftSidebar';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
+import LeftSidebar from './components/LeftSidebar';
 import UserListPanel from './components/UserListPanel';
 import ChatPanel from './components/ChatPanel';
 import Settings from './components/Settings';
@@ -14,16 +14,21 @@ import { useScanStore } from './stores/scanStore';
 import { toast } from './stores/toastStore';
 import { bridgeReady, invoke, isMockMode, listen } from './services/bridge';
 import { watchNotificationActivation } from './services/notificationActivation';
+import { useWorkspaceStore } from './stores/workspaceStore';
+import ContactDetails from './components/ContactDetails';
+import ConfirmDialog from './components/ConfirmDialog';
 
 export default function App() {
-  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  const viewMode = useWorkspaceStore((state) => state.view);
+  const pendingNavigation = useWorkspaceStore((state) => state.pendingNavigation);
+  const settingsBusy = useWorkspaceStore((state) => state.settingsBusy);
   const [ready, setReady] = useState(false);
   const [startupError, setStartupError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const currentUser = useUserStore((s) => s.currentUser);
   useEffect(() => {
     if (!ready) return;
-    return watchNotificationActivation((user) => { useUserStore.getState().setCurrentUser(user); setViewMode('chat'); });
+    return watchNotificationActivation((user) => useWorkspaceStore.getState().openChat(user));
   }, [ready]);
   useEffect(() => listen('notification.system_failed', (data: { error?: string }) => toast.error('系统通知失败：' + (data.error || '请检查 Windows 通知设置'))), []);
 
@@ -79,8 +84,8 @@ export default function App() {
     return () => { cancelled = true; unlistenUsers(); unlistenMessages(); unlistenScans(); };
   }, [attempt]);
 
-  const activeConversation = ready && viewMode !== 'settings' ? currentUser?.id || '' : '';
-  useEffect(() => {
+  const activeConversation = ready && viewMode === 'chat' ? currentUser?.id || '' : '';
+  useLayoutEffect(() => {
     useMessageStore.getState().setActiveConversation(activeConversation);
     if (!ready) return;
     void invoke('window.set_active_conversation', { userId: activeConversation })
@@ -110,21 +115,24 @@ export default function App() {
     <div className="flex flex-col h-screen w-screen bg-gray-100">
       {isMockMode && <div className="shrink-0 bg-amber-100 text-amber-900 text-xs px-4 py-1">浏览器演示模式：不进行网络收发，不保存到磁盘</div>}
       <div className="flex flex-1 min-h-0">
-        <LeftSidebar viewMode={viewMode} onViewChange={setViewMode} />
-        <UserListPanel viewMode={viewMode} onViewChange={setViewMode} />
-        {viewMode === 'settings' ? <Settings onClose={() => setViewMode('chat')} /> : currentUser ? (
+        <LeftSidebar viewMode={viewMode} onViewChange={(view) => useWorkspaceStore.getState().navigate(view)} disabled={settingsBusy} />
+        {viewMode !== 'settings' && <UserListPanel key={viewMode} viewMode={viewMode} />}
+        {viewMode === 'settings' ? <Settings onClose={() => { const state = useWorkspaceStore.getState(); state.navigate(state.returnView); }} /> : viewMode === 'contacts' ? <ContactDetails /> : currentUser ? (
           <ChatPanel key={currentUser.id} />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-chat-bg">
             <div className="text-center text-gray-400">
-              <p className="text-lg">选择一个用户开始聊天</p>
-              <p className="text-xs mt-3">Rust 核心版支持文本、表情、历史与托盘</p>
+              <p className="text-lg text-gray-600">开始一段对话</p>
+              <p className="text-sm mt-3">选择已有会话，或到通讯录查找联系人</p>
+              <button className="mt-5 text-sm text-primary-700 hover:text-primary-600" onClick={() => useWorkspaceStore.getState().navigate('contacts')}>打开通讯录</button>
             </div>
           </div>
         )}
       </div>
       <ToastHost />
       <FileSendPreview />
+      {pendingNavigation && !settingsBusy && <ConfirmDialog title="设置尚未保存" message="离开将放弃本次未保存的设置。已经确认的目录切换安排不受影响。" confirmText="放弃更改并离开" cancelText="继续编辑" danger
+        onConfirm={() => useWorkspaceStore.getState().confirmNavigation()} onCancel={() => useWorkspaceStore.getState().cancelNavigation()} />}
     </div>
   );
 }

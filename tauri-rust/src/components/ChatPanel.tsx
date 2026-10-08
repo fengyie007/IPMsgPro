@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FiCamera, FiImage, FiFile, FiFolder, FiSmile, FiMoreHorizontal, FiTrash2, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
@@ -6,7 +6,7 @@ import { useConfigStore } from '../stores/configStore';
 import { useFileSelectionStore } from '../stores/fileSelectionStore';
 import { captureAndSend } from '../services/screenshot';
 import { toast } from '../stores/toastStore';
-import { buildEmojiMessage, emojiStyle } from '../emojiData';
+import { emojiStyle } from '../emojiData';
 import { isSameDay, formatDateSeparator } from '../utils/format';
 import type { ImageMetadata, ImageReadResult, Message } from '../types';
 import { invoke } from '../services/bridge';
@@ -15,25 +15,9 @@ import { clipboardImage, importClipboardImage } from '../services/clipboard';
 import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
-
-const BLOCK_TAG = /^(DIV|P|LI|TR|PRE|BLOCKQUOTE|H[1-6])$/;
-function serializeEditor(root: HTMLElement): string {
-  let out = '';
-  const lineBreak = () => { if (out && !out.endsWith('\n')) out += '\n'; };
-  const walk = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) { out += node.textContent || ''; return; }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const elem = node as HTMLElement;
-    if (elem.dataset.emojiId) { out += buildEmojiMessage(elem.dataset.emojiId); return; }
-    if (elem.tagName === 'BR') { out += '\n'; return; }
-    const block = BLOCK_TAG.test(elem.tagName);
-    if (block) lineBreak();
-    elem.childNodes.forEach(walk);
-    if (block) lineBreak();
-  };
-  root.childNodes.forEach(walk);
-  return out;
-}
+import { useWorkspaceStore } from '../stores/workspaceStore';
+import { draftText, readEditor, restoreEditor, type DraftPart } from '../utils/chatEditor';
+const EMPTY_DRAFT: DraftPart[] = [];
 
 export default function ChatPanel() {
   const user = useUserStore((s) => s.currentUser);
@@ -41,23 +25,46 @@ export default function ChatPanel() {
   const userMessages = useMessageStore((s) => s.messages.get(userId)) || [];
   const page = useMessageStore((s) => s.historyPages.get(userId));
   const loading = useMessageStore((s) => s.loading);
-  const [hasInput, setHasInput] = useState(false);
-  const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
+  const draft = useWorkspaceStore((state) => state.drafts.get(userId)) || EMPTY_DRAFT;
+  const hasInput = !!draftText(draft).trim();
+  const sending = useWorkspaceStore((state) => state.sending.has(userId));
+  const sendingRef = useRef(sending);
+  sendingRef.current = sending;
+  const remembered = useRef(useWorkspaceStore.getState().chatViews.get(userId));
+  const scrollPosition = useRef(remembered.current?.scrollTop || 0);
+  const restoreScroll = useRef(true);
+  const mounted = useRef(true);
   const editorRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const nearBottom = useRef(true);
+  const nearBottom = useRef(remembered.current?.nearBottom ?? true);
   const prependHeight = useRef<number | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const clearing = useRef(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Message[] | null>(null);
+  const [searchOpen, setSearchOpen] = useState(remembered.current?.searchOpen ?? false);
+  const [query, setQuery] = useState(remembered.current?.query || '');
+  const [searchResults, setSearchResults] = useState<Message[] | null>(remembered.current?.results ?? null);
   const [searching, setSearching] = useState(false);
   const searchGeneration = useRef(0);
+  const viewSnapshot = useRef({ searchOpen, query, results: searchResults });
+  viewSnapshot.current = { searchOpen, query, results: searchResults };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      useWorkspaceStore.getState().saveChatView(userId, {
+        ...viewSnapshot.current, scrollTop: scrollPosition.current, nearBottom: nearBottom.current,
+      });
+    };
+  }, [userId]);
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (editor && JSON.stringify(readEditor(editor)) !== JSON.stringify(draft)) {
+      restoreEditor(editor, draft); savedRange.current = null;
+    }
+  }, [draft]);
   const visibleMessages = searchResults ?? userMessages;
   type Preview = { target: string; image: ImageMetadata; url: string; sending: boolean; abandoned: boolean };
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -137,26 +144,29 @@ export default function ChatPanel() {
   }, []);
 
   useEffect(() => {
-    if (userId) {
+    if (userId && !useMessageStore.getState().historyPages.has(userId)) {
       void useMessageStore.getState().loadHistory(userId);
-      useMessageStore.getState().clearUnread(userId);
     }
     return () => { ++searchGeneration.current; };
   }, [userId]);
   const lastMessage = visibleMessages[visibleMessages.length - 1];
   const scrollKey = `${lastMessage?.id || ''}|${visibleMessages.length}|${searchResults !== null}`;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    if (prependHeight.current !== null) {
+    if (restoreScroll.current) {
+      el.scrollTop = nearBottom.current ? el.scrollHeight : scrollPosition.current;
+      restoreScroll.current = false;
+    } else if (prependHeight.current !== null) {
       el.scrollTop += el.scrollHeight - prependHeight.current;
       prependHeight.current = null;
     } else if (nearBottom.current || lastMessage?.from === 'self') el.scrollTop = el.scrollHeight;
+    scrollPosition.current = el.scrollTop;
   }, [scrollKey]);
 
   const syncHasInput = () => {
     const el = editorRef.current;
-    setHasInput(!!el && (!!(el.textContent || '').trim() || !!el.querySelector('[data-emoji-id]')));
+    if (el) useWorkspaceStore.getState().saveDraft(userId, readEditor(el));
   };
   const saveSelection = () => {
     const selection = window.getSelection();
@@ -185,15 +195,20 @@ export default function ChatPanel() {
   };
   const send = async () => {
     if (!user || !editorRef.current || sendingRef.current) return;
-    const content = serializeEditor(editorRef.current).replace(/\s+$/g, '');
+    const parts = readEditor(editorRef.current);
+    const content = draftText(parts).replace(/\s+$/g, '');
     if (!content.trim()) return;
-    sendingRef.current = true; setSending(true);
+    const workspace = useWorkspaceStore.getState();
+    if (!workspace.beginSend(userId)) return;
+    workspace.saveDraft(userId, parts);
+    const submittedDraft = useWorkspaceStore.getState().drafts.get(userId);
+    sendingRef.current = true;
     try {
       const ok = await useMessageStore.getState().sendMessage(user.id, content);
       if (!ok) { toast.error('发送失败：' + (useMessageStore.getState().error || '后端未接受消息')); return; }
-      if (editorRef.current) editorRef.current.innerHTML = '';
-      savedRange.current = null; setHasInput(false); setSearchResults(null); setQuery('');
-    } finally { sendingRef.current = false; setSending(false); }
+      useWorkspaceStore.getState().clearSentDraft(userId, submittedDraft);
+      if (mounted.current) { savedRange.current = null; setSearchResults(null); setQuery(''); }
+    } finally { sendingRef.current = false; useWorkspaceStore.getState().endSend(userId); }
   };
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
@@ -248,7 +263,7 @@ export default function ChatPanel() {
   if (!user) return null;
   const status = user.status === 'online' ? '在线' : user.status === 'away' ? '离开' : '离线';
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-white">
+    <section aria-label="聊天内容" className="flex-1 flex flex-col min-w-0 bg-white">
       <div className="h-16 px-5 flex items-center border-b border-gray-200 shrink-0 gap-2">
         <div className="min-w-0"><h2 className="font-semibold text-gray-800 truncate">{user.nickname}</h2><p className="text-xs text-gray-400 mt-0.5 truncate">{status}{user.group ? ` · ${user.group}` : ''} · {user.ip ? `${user.ip}:${user.port}` : '历史联系人'}</p></div>
         <button className="ml-auto p-2 text-gray-500 rounded hover:bg-gray-100" title="搜索本会话历史" onClick={() => setSearchOpen(true)}><FiSearch size={17} /></button>
@@ -262,7 +277,7 @@ export default function ChatPanel() {
         <button disabled={searching} onClick={search} className="text-sm text-primary-600 disabled:opacity-50">{searching ? '搜索中…' : '搜索'}</button>
         <button onClick={closeSearch} className="p-1 text-gray-500" title="返回聊天"><FiX /></button>
       </div>}
-      <div ref={listRef} onScroll={() => { const el = listRef.current; if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }} className="flex-1 overflow-y-auto p-4 space-y-3 bg-chat-bg">
+      <div ref={listRef} aria-label="消息记录" onScroll={() => { const el = listRef.current; if (el) { nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; scrollPosition.current = el.scrollTop; } }} className="flex-1 overflow-y-auto p-4 space-y-3 bg-chat-bg">
         {searchResults !== null && <p className="text-center text-xs text-gray-400">搜索结果：{searchResults.length} 条</p>}
         {page?.hasMore && searchResults === null && <div className="flex justify-center"><button disabled={loading} onClick={loadMore} className="flex items-center gap-1 px-3 py-1 text-xs text-gray-500 bg-white/70 rounded-full disabled:opacity-50"><FiChevronUp size={12} />{loading ? '加载中…' : '加载更早的消息'}</button></div>}
         {!visibleMessages.length && <p className="text-center text-gray-400 text-sm mt-10">{searchResults !== null ? '没有匹配的历史消息' : loading ? '正在加载历史…' : '暂无消息，发送一条消息开始聊天'}</p>}
@@ -282,7 +297,7 @@ export default function ChatPanel() {
           <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入文件或文件夹，确认后发送' : '支持图片收发'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">
-          <div ref={editorRef} contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}
+          <div ref={editorRef} role="textbox" aria-label="消息输入框" aria-multiline="true" contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}
             data-placeholder="输入消息，Enter 发送，Shift+Enter 或 Ctrl+Enter 换行"
             className="chat-editor w-full min-h-[4.5rem] max-h-40 overflow-y-auto text-sm leading-relaxed p-2 rounded border border-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-400 whitespace-pre-wrap break-words" />
           <div className="flex justify-end mt-1"><button onClick={send} disabled={!hasInput || sending} className="px-4 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed">{sending ? '发送中…' : '发送'}</button></div>
@@ -290,6 +305,6 @@ export default function ChatPanel() {
       </div>
       {preview && <ImageSendPreview image={preview.image} url={preview.url} busy={imageBusy} onConfirm={sendPreview} onCancel={cancelPreview} />}
       {clearOpen && <ConfirmDialog title="清空聊天记录" message="仅清空本会话在 Rust 版中的记录，不影响原版。此操作无法撤销。" danger onConfirm={() => void clear()} onCancel={() => { if (!clearing.current) setClearOpen(false); }} />}
-    </div>
+    </section>
   );
 }

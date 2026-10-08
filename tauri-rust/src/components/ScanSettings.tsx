@@ -4,11 +4,12 @@ import type { Config } from '../types';
 import { normalizeScanRange, validateScanOptions } from '../utils/netValidation';
 import { scanActive, useScanStore } from '../stores/scanStore';
 
-export default function ScanSettings({ draft, setDraft, disabled }: {
+export default function ScanSettings({ draft, setDraft, disabled, input, onInputChange: setInput }: {
   draft: Config; setDraft: React.Dispatch<React.SetStateAction<Config>>; disabled: boolean;
+  input: string; onInputChange: (value: string) => void;
 }) {
   const { status, busy, error, refresh, start, cancel } = useScanStore();
-  const [input, setInput] = useState(''), [inputError, setInputError] = useState('');
+  const [inputError, setInputError] = useState('');
   const active = scanActive(status.state), locked = disabled || busy || active;
   const validation = validateScanOptions(draft.ipScanRanges, draft.scanPort, draft.scanDelayMs);
   useEffect(() => { void refresh(); }, [refresh]);

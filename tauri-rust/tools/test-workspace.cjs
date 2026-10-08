@@ -1,0 +1,111 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const ts = require('typescript');
+const root = path.resolve(__dirname, '../src');
+const modules = new Map();
+const alice = { id: 'alice', nickname: 'Alice', status: 'online' };
+const bob = { id: 'bob', nickname: 'Bob', status: 'online' };
+const users = { users: [alice, bob], currentUser: alice, setCurrentUser(user) { this.currentUser = user; } };
+function load(file) {
+  if (modules.has(file)) return modules.get(file);
+  const exports = {}; modules.set(file, exports);
+  const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { fileName: file,
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+  vm.runInNewContext(code, { exports, console, require(name) {
+    if (name === 'zustand') return require('zustand');
+    if (name === './userStore') return { useUserStore: { getState: () => users } };
+    let target = path.resolve(path.dirname(file), name);
+    if (fs.existsSync(target + '.ts')) target += '.ts'; else target = path.join(target, 'index.ts');
+    return load(target);
+  } }, { filename: file });
+  return exports;
+}
+const store = load(path.join(root, 'stores/workspaceStore.ts')).useWorkspaceStore;
+const { prepareSettings, settingsDirty } = load(path.join(root, 'utils/settingsDraft.ts'));
+const { DEFAULT_CONFIG } = load(path.join(root, 'types/index.ts'));
+const state = () => store.getState();
+
+state().navigate('contacts');
+store.setState({ contactId: bob.id });
+assert.equal(users.currentUser, alice);
+state().navigate('settings');
+assert.equal(state().returnView, 'contacts');
+state().navigate(state().returnView);
+assert.equal(state().view, 'contacts');
+assert.equal(state().contactId, bob.id);
+assert.equal(users.currentUser, alice);
+console.log('PASS contact browsing and settings return preserve the active chat independently');
+
+state().navigate('settings');
+state().setSettingsDirty(true);
+state().openChat(bob);
+assert.equal(state().view, 'settings');
+assert.equal(users.currentUser, alice);
+assert.equal(state().pendingNavigation.user.id, bob.id);
+state().cancelNavigation();
+assert.equal(state().settingsDirty, true);
+assert.equal(state().pendingNavigation, null);
+state().openChat(bob);
+state().confirmNavigation();
+assert.equal(state().view, 'chat');
+assert.equal(state().settingsDirty, false);
+assert.equal(users.currentUser, bob);
+console.log('PASS unsaved settings guard also defers notification-originated chat switches');
+
+state().navigate('settings');
+state().setSettingsDirty(true);
+state().setSettingsBusy(true);
+state().openChat(alice);
+state().confirmNavigation();
+assert.equal(state().view, 'settings');
+state().setSettingsBusy(false);
+assert.equal(state().view, 'settings', 'failed save must retain draft and pending decision');
+state().setSettingsBusy(true);
+state().setSettingsDirty(false);
+state().setSettingsBusy(false);
+assert.equal(state().view, 'chat');
+assert.equal(users.currentUser, alice);
+console.log('PASS pending navigation waits for saves and failures cannot discard edits');
+
+state().saveDraft(alice.id, [{ text: '多行\n草稿' }, { emoji: '1' }]);
+const submitted = state().drafts.get(alice.id);
+state().saveDraft(bob.id, [{ text: '另一位联系人' }]);
+state().navigate('contacts'); state().navigate('settings'); state().navigate('chat');
+assert.equal(state().drafts.get(alice.id), submitted);
+assert.equal(state().beginSend(alice.id), true);
+assert.equal(state().beginSend(alice.id), false);
+assert.equal(state().beginSend(bob.id), true);
+state().saveDraft(alice.id, [{ text: '发送期间产生的新草稿' }]);
+state().clearSentDraft(alice.id, submitted);
+assert.equal(state().drafts.get(alice.id)[0].text, '发送期间产生的新草稿');
+state().clearSentDraft(alice.id, state().drafts.get(alice.id));
+assert.equal(state().drafts.has(alice.id), false);
+assert.equal(state().drafts.has(bob.id), true);
+state().endSend(alice.id); state().endSend(bob.id);
+assert.equal(state().sending.size, 0);
+console.log('PASS per-chat drafts and send guards survive navigation without stale completion clearing new text');
+
+store.setState({ searches: { chat: 'Alice', contacts: '研发' }, collapsedGroups: new Set(['研发']), settingsCategory: 'network' });
+state().saveScroll('list:chat', 100); state().saveScroll('list:contacts', 240); state().saveScroll('settings:network', 360);
+state().saveChatView(alice.id, { scrollTop: 125, nearBottom: false, query: '资料', searchOpen: true, results: [] });
+state().navigate('contacts'); state().navigate('settings'); state().navigate('chat');
+assert.equal(state().searches.chat, 'Alice'); assert.equal(state().searches.contacts, '研发');
+assert.equal(state().scrollPositions.get('list:contacts'), 240);
+assert.equal(state().scrollPositions.get('settings:network'), 360);
+assert.equal(state().chatViews.get(alice.id).scrollTop, 125);
+assert.equal(state().settingsCategory, 'network'); assert.ok(state().collapsedGroups.has('研发'));
+console.log('PASS separate search, selection, collapsed groups and scroll memories survive view changes');
+
+const draft = { ...DEFAULT_CONFIG, nickname: '新昵称', notificationSound: true };
+assert.equal(settingsDirty(DEFAULT_CONFIG, DEFAULT_CONFIG), false);
+assert.equal(settingsDirty(DEFAULT_CONFIG, DEFAULT_CONFIG, '192.168.2.88:2425'), true);
+assert.equal(settingsDirty(DEFAULT_CONFIG, draft), true);
+const result = prepareSettings(draft, '192.168.2.88:2425', '10.8.33.1-3');
+assert.equal(result.nickname, '新昵称'); assert.equal(result.notificationSound, true);
+assert.equal(result.directUsers[0], '192.168.2.88:2425'); assert.equal(result.ipScanRanges.length, 1);
+assert.equal(draft.directUsers.length, 0); assert.equal(draft.ipScanRanges.length, 0);
+assert.throws(() => prepareSettings(draft, 'not an address', ''));
+assert.throws(() => prepareSettings(draft, '', 'bad range'));
+console.log('PASS settings save includes pending address/range input and validates without mutating the draft');

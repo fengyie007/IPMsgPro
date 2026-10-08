@@ -36,7 +36,7 @@ export default {
       },
       width: {
         'sidebar': '60px',
-        'user-list': '300px',
+        'user-list': '280px',
       },
     },
   },

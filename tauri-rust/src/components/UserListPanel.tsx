@@ -1,15 +1,15 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { FiSearch, FiRefreshCw, FiMessageSquare, FiUsers, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useUserStore } from '../stores/userStore';
 import { useMessageStore } from '../stores/messageStore';
 import { useConfigStore } from '../stores/configStore';
 import { Message, User } from '../types';
 import { formatListTime, formatPreview } from '../utils/format';
-import { ViewMode } from './LeftSidebar';
+import { useWorkspaceStore } from '../stores/workspaceStore';
+import { useScrollMemory } from '../utils/useScrollMemory';
 
 interface UserListPanelProps {
-  viewMode: ViewMode;
-  onViewChange?: (mode: ViewMode) => void;
+  viewMode: 'chat' | 'contacts';
 }
 
 /** Contacts sharing one group name. key is the trimmed group name, '' for no group. */
@@ -52,15 +52,20 @@ function groupContacts(users: User[], ownGroup: string): ContactGroup[] {
   })).sort((a, b) => rank(a.key) - rank(b.key) || collator.compare(a.key, b.key));
 }
 
-export default function UserListPanel({ viewMode, onViewChange }: UserListPanelProps) {
-  const [searchText, setSearchText] = useState('');
-  // Collapsed contact groups (ContactGroup keys). Kept for this run only; the
-  // panel stays mounted when the view changes, so switching views keeps them.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+export default function UserListPanel({ viewMode }: UserListPanelProps) {
+  const searchText = useWorkspaceStore((state) => state.searches[viewMode]);
+  const collapsedGroups = useWorkspaceStore((state) => state.collapsedGroups);
+  const contactId = useWorkspaceStore((state) => state.contactId);
+  const drafts = useWorkspaceStore((state) => state.drafts);
+  const scroll = useScrollMemory(`list:${viewMode}`);
+  const setSearchText = (value: string) => {
+    useWorkspaceStore.setState((state) => ({ searches: { ...state.searches, [viewMode]: value } }));
+    if (scroll.ref.current) scroll.ref.current.scrollTop = 0;
+    useWorkspaceStore.getState().saveScroll(`list:${viewMode}`, 0);
+  };
   const ownGroup = useConfigStore((s) => s.config.group);
   const users = useUserStore((s) => s.users);
   const currentUser = useUserStore((s) => s.currentUser);
-  const setCurrentUser = useUserStore((s) => s.setCurrentUser);
   const discoverUsers = useUserStore((s) => s.discoverUsers);
   const loading = useUserStore((s) => s.loading);
   const messages = useMessageStore((s) => s.messages);
@@ -68,13 +73,13 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
 
   // Get conversation users - users with any messages, sorted by latest message
   const conversationUsers = useMemo(() => {
-    const userLastMsg: { user: User; lastMsg: Message }[] = [];
+    const userLastMsg: { user: User; lastMsg?: Message }[] = [];
 
     // First, add users from userStore who have messages
     for (const user of users) {
       const userMsgs = messages.get(user.id);
-      if (userMsgs && userMsgs.length > 0) {
-        const lastMsg = userMsgs[userMsgs.length - 1];
+      if (userMsgs?.length || drafts.has(user.id) || currentUser?.id === user.id) {
+        const lastMsg = userMsgs?.[userMsgs.length - 1];
         userLastMsg.push({ user, lastMsg });
       }
     }
@@ -101,9 +106,9 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
     }
 
     // Sort by latest message timestamp (newest first)
-    userLastMsg.sort((a, b) => b.lastMsg.timestamp - a.lastMsg.timestamp);
+    userLastMsg.sort((a, b) => (b.lastMsg?.timestamp || 0) - (a.lastMsg?.timestamp || 0));
     return userLastMsg;
-  }, [users, messages]);
+  }, [users, messages, drafts, currentUser]);
 
   // Contacts filtered by search text, then grouped. The search also matches the
   // group name, so typing a group name lists all of its members.
@@ -129,30 +134,28 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
   };
 
   const toggleGroup = (key: string) => {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
+    useWorkspaceStore.setState((state) => {
+      const next = new Set(state.collapsedGroups);
       if (next.has(key)) {
         next.delete(key);
       } else {
         next.add(key);
       }
-      return next;
+      return { collapsedGroups: next };
     });
   };
 
   const handleSelectUser = (user: User) => {
-    setCurrentUser(user);
-    // If we're in contacts mode, switch to chat mode after selecting a user
-    if (viewMode === 'contacts' && onViewChange) {
-      onViewChange('chat');
-    }
+    if (viewMode === 'contacts') useWorkspaceStore.setState({ contactId: user.id });
+    else useWorkspaceStore.getState().openChat(user);
   };
 
   const isContactsMode = viewMode === 'contacts';
   const searching = searchText !== '';
 
   return (
-    <div className="w-user-list bg-list-bg border-r border-gray-200 flex flex-col shrink-0">
+    <aside aria-label={isContactsMode ? '联系人列表' : '会话列表'} className="w-[240px] min-[840px]:w-user-list bg-list-bg border-r border-gray-200 flex flex-col shrink-0">
+      <div className="h-16 px-4 flex items-center justify-between shrink-0"><h1 className="text-lg font-semibold text-gray-800">{isContactsMode ? '通讯录' : '聊天'}</h1>{isContactsMode && <span className="text-xs text-gray-500">{users.filter((user) => user.status !== 'offline').length} 人在线</span>}</div>
       {/* Search bar */}
       <div className="p-3 flex items-center gap-2">
         <div className="flex-1 relative">
@@ -160,6 +163,7 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
           <input
             type="text"
             placeholder={isContactsMode ? '搜索联系人' : '搜索对话'}
+            aria-label={isContactsMode ? '搜索联系人' : '搜索对话'}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 text-sm bg-gray-200/60 rounded-md
@@ -178,14 +182,14 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div {...scroll} className="flex-1 overflow-y-auto">
         {isContactsMode ? (
           // Contacts mode - all users, grouped by group name
           contactGroups.length === 0 ? (
             <div className="text-center text-gray-400 py-10">
               <FiUsers size={32} className="mx-auto mb-2 opacity-50" />
-              <p className="text-sm">暂无在线用户</p>
-              <p className="text-xs mt-1">点击刷新按钮搜索</p>
+              <p className="text-sm">{searching ? '没有匹配的联系人' : '尚未发现联系人'}</p>
+              <p className="text-xs mt-1">{searching ? '试试姓名、分组或 IP 地址' : '点击刷新按钮发现局域网用户'}</p>
             </div>
           ) : (
             contactGroups.map((group) => {
@@ -205,8 +209,9 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
                     <ContactCard
                       key={user.id}
                       user={user}
-                      selected={currentUser?.id === user.id}
+                      selected={contactId === user.id}
                       onClick={() => handleSelectUser(user)}
+                      onDoubleClick={() => useWorkspaceStore.getState().openChat(user)}
                     />
                   ))}
                 </section>
@@ -218,8 +223,8 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
           filteredConversations.length === 0 ? (
             <div className="text-center text-gray-400 py-10">
               <FiMessageSquare size={32} className="mx-auto mb-2 opacity-50" />
-              <p className="text-sm">暂无对话</p>
-              <p className="text-xs mt-1">在通讯录中选择用户开始聊天</p>
+              <p className="text-sm">{searching ? '没有匹配的会话' : '暂无对话'}</p>
+              <p className="text-xs mt-1">{searching ? '尝试其他关键词' : '在通讯录中选择用户开始聊天'}</p>
             </div>
           ) : (
             filteredConversations.map(({ user, lastMsg }) => (
@@ -229,21 +234,23 @@ export default function UserListPanel({ viewMode, onViewChange }: UserListPanelP
                 selected={currentUser?.id === user.id}
                 lastMessage={lastMsg}
                 unread={unread.get(user.id) ?? 0}
+                hasDraft={drafts.has(user.id)}
                 onClick={() => handleSelectUser(user)}
               />
             ))
           )
         )}
       </div>
-    </div>
+    </aside>
   );
 }
 
 // Conversation card - shows user with last message preview and unread badge
-function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
+function ConversationCard({ user, selected, lastMessage, unread, onClick, hasDraft }: {
   user: User;
   selected: boolean;
-  lastMessage: Message;
+  lastMessage?: Message;
+  hasDraft: boolean;
   unread: number;
   onClick: () => void;
 }) {
@@ -254,9 +261,9 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
     : 'bg-gray-400';
 
   return (
-    <div
-      className={`flex items-center gap-3 px-3 py-3 cursor-pointer transition-colors
-        ${selected ? 'bg-gray-200/80' : 'hover:bg-gray-200/50'}`}
+    <button type="button" aria-pressed={selected}
+      className={`w-full text-left flex items-center gap-3 px-3 py-3 transition-colors
+        ${selected ? 'bg-primary-100/70' : 'hover:bg-gray-200/50'}`}
       onClick={onClick}
     >
       <div className="relative shrink-0">
@@ -272,11 +279,11 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
           <span className={`text-sm truncate ${unread > 0 ? 'font-semibold text-gray-900' : 'font-medium text-gray-800'}`}>
             {user.nickname}
           </span>
-          <span className="text-[11px] text-gray-400 shrink-0">{formatListTime(lastMessage.timestamp)}</span>
+          <span className="text-[11px] text-gray-400 shrink-0">{lastMessage ? formatListTime(lastMessage.timestamp) : ''}</span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <p className="text-xs text-gray-400 truncate">
-            {formatPreview(lastMessage)}
+            {hasDraft ? <span className="text-primary-700">[草稿] 待发送</span> : lastMessage ? formatPreview(lastMessage) : '开始新的聊天'}
           </p>
           {unread > 0 && (
             <span
@@ -288,7 +295,7 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick }: {
           )}
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -322,10 +329,11 @@ function GroupHeader({ label, online, total, open, disabled, onToggle }: {
 }
 
 // Contact card - one user inside a contacts group
-function ContactCard({ user, selected, onClick }: {
+function ContactCard({ user, selected, onClick, onDoubleClick }: {
   user: User;
   selected: boolean;
   onClick: () => void;
+  onDoubleClick: () => void;
 }) {
   const statusColor = user.status === 'online'
     ? 'bg-green-500'
@@ -334,10 +342,11 @@ function ContactCard({ user, selected, onClick }: {
     : 'bg-gray-400';
 
   return (
-    <div
-      className={`flex items-center gap-3 px-3 py-3 cursor-pointer transition-colors
-        ${selected ? 'bg-gray-200/80' : 'hover:bg-gray-200/50'}`}
+    <button type="button" aria-pressed={selected}
+      className={`w-full text-left flex items-center gap-3 px-3 py-3 transition-colors
+        ${selected ? 'bg-primary-100/70' : 'hover:bg-gray-200/50'}`}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
     >
       <div className="relative shrink-0">
         <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center">
@@ -355,6 +364,6 @@ function ContactCard({ user, selected, onClick }: {
           {user.ip}:{user.port}
         </p>
       </div>
-    </div>
+    </button>
   );
 }

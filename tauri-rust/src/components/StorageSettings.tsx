@@ -4,8 +4,10 @@ import { toast } from '../stores/toastStore';
 import ConfirmDialog from './ConfirmDialog';
 interface Info { active: string; pending: string | null; defaultDirectory: string; isDefault: boolean; error: string | null }
 interface Choice { selectionId: string; source: string; target: string; cancelled?: boolean }
-export default function StorageSettings({ disabled }: { disabled: boolean }) {
+export default function StorageSettings({ disabled, onBusyChange }: { disabled: boolean; onBusyChange?: (busy: boolean) => void }) {
   const [info, setInfo] = useState<Info | null>(null), [choice, setChoice] = useState<Choice | null>(null), [busy, setBusy] = useState(false);
+  useEffect(() => { onBusyChange?.(busy || !!choice); }, [busy, choice, onBusyChange]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
   useEffect(() => { let stopped = false; void invoke<Info>('storage.info').then((value) => { if (!stopped) setInfo(value); }).catch((e) => toast.error('读取存储目录失败：' + String(e))); return () => { stopped = true; }; }, []);
   const choose = async (reset = false) => {
     if (busy) return; setBusy(true);

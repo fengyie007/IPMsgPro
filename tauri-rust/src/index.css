@@ -85,3 +85,13 @@ html, body, #root {
 .chat-editor [data-emoji-id] + [data-emoji-id] {
   margin-left: 1px;
 }
+
+button:focus-visible, [role="button"]:focus-visible {
+  outline: 2px solid #16a34a;
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-in, .status-away { animation: none; }
+  * { scroll-behavior: auto !important; }
+}
