@@ -17,6 +17,7 @@ import { watchNotificationActivation } from './services/notificationActivation';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import ContactDetails from './components/ContactDetails';
 import ConfirmDialog from './components/ConfirmDialog';
+import { APP_NAME } from './types';
 
 export default function App() {
   const viewMode = useWorkspaceStore((state) => state.view);
@@ -63,7 +64,7 @@ export default function App() {
         if (cancelled) return;
         await useConfigStore.getState().loadConfig();
         const storageError = useConfigStore.getState().info?.storageError;
-        if (storageError) toast.error('数据目录切换失败，仍使用原目录：' + storageError);
+        if (storageError) toast.error('数据目录操作未完成：' + storageError);
         if (cancelled) return;
         await useMessageStore.getState().loadLocalUserId();
         if (cancelled) return;
@@ -101,9 +102,9 @@ export default function App() {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-list-bg px-8">
         <div className="max-w-xl text-center">
-          <h1 className="text-lg font-semibold text-gray-800">迅秋 Rust 预览版</h1>
+          <h1 className="text-lg font-semibold text-gray-800">{APP_NAME}</h1>
           <p className="text-sm mt-4 text-gray-500 whitespace-pre-wrap break-words">
-            {startupError || '正在连接 Rust 后端并加载独立数据…'}
+            {startupError || '正在加载配置和聊天记录…'}
           </p>
           {startupError && <button className="mt-5 px-4 py-2 rounded bg-primary-500 text-white text-sm" onClick={() => setAttempt((n) => n + 1)}>重试连接</button>}
         </div>

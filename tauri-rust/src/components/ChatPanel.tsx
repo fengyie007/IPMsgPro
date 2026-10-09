@@ -304,7 +304,7 @@ export default function ChatPanel() {
         </div>
       </div>
       {preview && <ImageSendPreview image={preview.image} url={preview.url} busy={imageBusy} onConfirm={sendPreview} onCancel={cancelPreview} />}
-      {clearOpen && <ConfirmDialog title="清空聊天记录" message="仅清空本会话在 Rust 版中的记录，不影响原版。此操作无法撤销。" danger onConfirm={() => void clear()} onCancel={() => { if (!clearing.current) setClearOpen(false); }} />}
+      {clearOpen && <ConfirmDialog title="清空聊天记录" message="将清空本会话的聊天记录。此操作无法撤销。" danger onConfirm={() => void clear()} onCancel={() => { if (!clearing.current) setClearOpen(false); }} />}
     </section>
   );
 }

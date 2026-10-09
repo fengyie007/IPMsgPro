@@ -39,7 +39,7 @@ function dispatch(envelope: Envelope) {
 export function bridgeReady(): Promise<void> {
   if (disposed) return Promise.reject(new Error('桥接已关闭'));
   if (isMockMode) return Promise.resolve();
-  if (!isTauri()) return Promise.reject(new Error('未连接 Rust 后端，请通过 Tauri 启动；浏览器演示须显式设置 VITE_MOCK_BRIDGE=1'));
+  if (!isTauri()) return Promise.reject(new Error('未连接后端，请通过桌面程序启动；浏览器演示须显式设置 VITE_MOCK_BRIDGE=1'));
   if (!ready) {
     ready = nativeListen<Envelope>('ipmsg-event', (event) => dispatch(event.payload))
       .then((unlisten) => {
@@ -70,7 +70,7 @@ export function listen(event: string, callback: Callback): () => void {
 }
 
 export async function invoke<T = any>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-  if (!supported.has(command)) throw new Error(`Rust 核心版暂不支持：${command}`);
+  if (!supported.has(command)) throw new Error(`当前版本暂不支持：${command}`);
   await bridgeReady();
   const result = isMockMode
     ? mockResponse(command, args)
@@ -98,7 +98,7 @@ const mockUsers: User[] = [
   { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '' },
 ];
 let mockConfig: Config = { ...DEFAULT_CONFIG };
-const mockImageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="22" fill="#166534">Rust Image Preview</text></svg>';
+const mockImageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="22" fill="#166534">图片预览</text></svg>';
 const mockImageUrl = 'data:image/svg+xml,' + encodeURIComponent(mockImageSvg);
 let mockRows: HistoryRecord[] = [{
   id: 'mock-received-image', fromId: mockUsers[0].id, toId: mockLocalId,
@@ -143,7 +143,7 @@ function startMockScan(args: Record<string, unknown>) {
 
 function mockResponse(command: string, args: Record<string, unknown>): unknown {
   const localUser = {
-    id: mockLocalId, nickname: mockConfig.nickname || 'Rust 演示用户', username: 'me-rust-2427',
+    id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me-rust-2427',
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
   };
   switch (command) {

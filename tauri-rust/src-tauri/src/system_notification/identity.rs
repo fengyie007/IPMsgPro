@@ -29,7 +29,8 @@ use windows::{
 };
 
 pub(super) const APP_ID: &str = "com.speedipmsg.rustpreview";
-const SHORTCUT: &str = "SpeedIpMsg Rust Notifications.lnk";
+const SHORTCUT: &str = "迅秋通知.lnk";
+const LEGACY_SHORTCUT: &str = "SpeedIpMsg Rust Notifications.lnk";
 
 fn wide(text: &OsStr) -> Vec<u16> {
     text.encode_wide().chain(Some(0)).collect()
@@ -47,6 +48,7 @@ pub(super) fn register() -> Result<(), String> {
     fs::create_dir_all(&programs).map_err(|e| format!("创建开始菜单目录失败：{e}"))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     ensure_shortcut(&programs.join(SHORTCUT), &executable)?;
+    retire_legacy_shortcut(&programs);
     let app_id = wide(OsStr::new(APP_ID));
     unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(app_id.as_ptr())) }
         .map_err(|e| format!("设置进程 AppUserModelID 失败：{e}"))
@@ -92,6 +94,24 @@ fn load(path: &Path) -> Result<IShellLinkW, String> {
     Ok(link)
 }
 
+fn retire_legacy_shortcut(programs: &Path) {
+    use std::os::windows::fs::MetadataExt;
+    let path = programs.join(LEGACY_SHORTCUT);
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return;
+    };
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return;
+    }
+    if let Ok(link) = load(&path) {
+        if app_id(&link).as_deref() == Ok(APP_ID) {
+            drop(link);
+            // A locked old shortcut should not prevent the new notifier from working.
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 fn target(link: &IShellLinkW) -> Result<PathBuf, String> {
     let mut buffer = vec![0u16; 32768];
     unsafe { link.GetPath(&mut buffer, std::ptr::null_mut(), 0) }.map_err(|e| e.to_string())?;
@@ -120,7 +140,7 @@ fn ensure_shortcut(path: &Path, executable: &Path) -> Result<(), String> {
     };
     let link = shell_link()?;
     let exe = wide(executable.as_os_str());
-    let description = wide(OsStr::new("迅秋 Rust 系统通知"));
+    let description = wide(OsStr::new("迅秋系统通知"));
     unsafe {
         link.SetPath(PCWSTR(exe.as_ptr()))
             .and_then(|_| link.SetDescription(PCWSTR(description.as_ptr())))
@@ -224,6 +244,11 @@ mod tests {
         );
         ensure_shortcut(&path, &b).unwrap();
         assert_eq!(target(&load(&path).unwrap()).unwrap(), b);
+        let legacy = root.join(LEGACY_SHORTCUT);
+        fs::copy(&path, &legacy).unwrap();
+        retire_legacy_shortcut(&root);
+        assert!(!legacy.exists());
+        assert!(path.exists());
         let other = shell_link().unwrap();
         let exe = wide(b.as_os_str());
         unsafe {
@@ -238,11 +263,14 @@ mod tests {
         drop(persist);
         drop(other);
         let before = fs::read(&path).unwrap();
+        fs::copy(&path, &legacy).unwrap();
+        retire_legacy_shortcut(&root);
+        assert!(legacy.exists(), "must preserve a foreign shortcut");
         assert!(ensure_shortcut(&path, &a).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(
             fs::read_dir(&root).unwrap().count(),
-            3,
+            4,
             "no temporary shortcut leak"
         );
         assert!(root

@@ -4,6 +4,8 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
 };
 
+pub const DEFAULT_PORT: u16 = 2427;
+
 #[derive(Clone)]
 pub struct Options {
     pub port: u16,
@@ -13,7 +15,7 @@ pub struct Options {
 impl Options {
     pub fn parse() -> Result<Self, String> {
         let mut options = Self {
-            port: 2427,
+            port: DEFAULT_PORT,
             direct: vec![],
             verbose: false,
         };

@@ -2,13 +2,13 @@
 name = "speedipmsg-rust"
 version = "0.1.0"
 edition = "2021"
-default-run = "SpeedIpMsgRust"
+default-run = "SpeedIpMsg"
 
 [lib]
 name = "speedipmsg_rust_lib"
 
 [[bin]]
-name = "SpeedIpMsgRust"
+name = "SpeedIpMsg"
 path = "src/main.rs"
 
 [build-dependencies]

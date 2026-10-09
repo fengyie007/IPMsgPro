@@ -1,5 +1,5 @@
 export const APP_VERSION = '0.1.0';
-export const APP_NAME = '迅秋 Rust 预览版';
+export const APP_NAME = '迅秋';
 
 export interface User {
   id: string;

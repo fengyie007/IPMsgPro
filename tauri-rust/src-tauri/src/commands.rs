@@ -283,6 +283,6 @@ async fn dispatch(
             state.log("ERROR", &string(&args, "message")?);
             Ok(json!({"success":true}))
         }
-        _ => Err(format!("Rust核心版暂不支持命令：{command}")),
+        _ => Err(format!("当前版本暂不支持命令：{command}")),
     }
 }

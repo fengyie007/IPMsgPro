@@ -36,7 +36,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       invoke<{ success: boolean; config: Config }>('config.get'),
     ]);
     if (!info.success || typeof info.dataDir !== 'string' || !Number.isInteger(info.port)) {
-      throw new Error('无法读取 Rust 运行环境');
+      throw new Error('无法读取应用运行信息');
     }
     set({ info, config: parseConfig(result.config), loaded: true });
   },

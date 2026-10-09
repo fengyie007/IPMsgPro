@@ -1,7 +1,7 @@
 import React from 'react';
 import { FiMessageSquare, FiUsers, FiSettings } from 'react-icons/fi';
 import { useMessageStore } from '../stores/messageStore';
-import { APP_VERSION } from '../types';
+import { APP_NAME, APP_VERSION } from '../types';
 import appIcon from '../assets/app-icon.png';
 import type { ViewMode } from '../stores/workspaceStore';
 
@@ -24,7 +24,7 @@ export default function LeftSidebar({ viewMode, onViewChange, disabled = false }
       <img
         src={appIcon}
         alt="迅秋"
-        title="迅秋 Rust 预览版"
+        title={APP_NAME}
         className="w-10 h-10 rounded-lg mb-8 select-none"
         draggable={false}
       />
@@ -58,7 +58,7 @@ export default function LeftSidebar({ viewMode, onViewChange, disabled = false }
       </div>
 
       {/* Version at bottom */}
-      <div className="mt-auto pt-2 text-[11px] leading-none text-gray-500 select-none" title="迅秋 Rust 预览版">
+      <div className="mt-auto pt-2 text-[11px] leading-none text-gray-500 select-none" title={APP_NAME}>
         v{APP_VERSION}
       </div>
     </nav>

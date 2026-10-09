@@ -52,16 +52,21 @@ impl Runtime {
         socket
             .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, options.port).into())
             .map_err(|e| format!("无法绑定端口{}（可能已有实例运行）：{e}", options.port))?;
-        let bootstrap = app
+        let legacy_root = app
             .path()
             .app_local_data_dir()
             .map_err(|e| e.to_string())?
             .join(format!("port-{}", options.port));
+        let bootstrap = crate::storage::default_directory(
+            &app.path().local_data_dir().map_err(|e| e.to_string())?,
+            options.port,
+        );
         let port = options.port;
-        let storage =
-            tokio::task::spawn_blocking(move || crate::storage::Storage::open(bootstrap, port))
-                .await
-                .map_err(|e| e.to_string())??;
+        let storage = tokio::task::spawn_blocking(move || {
+            crate::storage::Storage::open_compatible(bootstrap, legacy_root, port)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let data_dir = crate::storage::native_path(&storage.active);
         let config = Arc::new(ConfigStore::open(data_dir.join("config.json"))?);
         let values = config.get();
@@ -69,7 +74,7 @@ impl Runtime {
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(data_dir.join("rust-preview.log"))
+            .open(data_dir.join("speedipmsg.log"))
             .map_err(|e| e.to_string())?;
         let username = format!(
             "{}-rust-{}",
@@ -165,7 +170,7 @@ impl Runtime {
         state.log(
             "INFO",
             &format!(
-                "Rust preview started on port {} as {}",
+                "SpeedIpMsg started on port {} as {}",
                 state.port,
                 state.network.local().id
             ),

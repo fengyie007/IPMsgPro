@@ -377,7 +377,7 @@ fn register_identity() -> Result<(), String> {
     }
     let key = Key(key);
     let field: Vec<u16> = "DisplayName".encode_utf16().chain(Some(0)).collect();
-    let value: Vec<u16> = "迅秋 Rust".encode_utf16().chain(Some(0)).collect();
+    let value: Vec<u16> = crate::APP_NAME.encode_utf16().chain(Some(0)).collect();
     let result = unsafe {
         RegSetValueExW(
             key.0,

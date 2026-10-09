@@ -24,9 +24,9 @@ export default function StorageSettings({ disabled, onBusyChange }: { disabled: 
     <h3 className="text-sm font-semibold text-gray-700">数据存储目录</h3>
     <input readOnly aria-label="当前存储目录" value={info?.active || ''} className="input-field text-gray-500 bg-gray-50" />
     <div className="flex gap-4 text-sm text-primary-600"><button disabled={disabled || busy || !info} onClick={() => void choose()}>选择目录</button><button disabled={disabled || busy || !info || info.isDefault} onClick={() => void choose(true)}>恢复默认位置</button></div>
-    <p className="text-xs text-gray-400">确认后已保存目录选择，重启生效。将复制当前 Rust 配置、聊天记录及图片，原目录保留备份；大量数据可能需要等待。普通接收文件仍在 Downloads，不读取旧 C++ 版数据。</p>
+    <p className="text-xs text-gray-400">确认后保存目录选择，重启生效。将复制当前配置、聊天记录及图片，原目录保留备份；大量数据可能需要等待。普通接收文件仍在下载目录。</p>
     {info?.pending && <div className="text-xs bg-primary-50 p-3 rounded break-all">下次启动切换到：{info.pending}<button disabled={busy} onClick={() => void cancel()} className="block mt-2 text-primary-700">取消待执行的切换</button></div>}
-    {info?.error && <p className="text-xs text-red-500">上次切换失败，仍使用原目录：{info.error}</p>}
-    {choice && <ConfirmDialog title="安排数据目录切换" message={`当前目录：${choice.source}\n目标目录：${choice.target}\n\n下次启动复制当前 Rust 数据后切换，原目录保留备份。是否确认？`} onConfirm={() => void apply()} onCancel={() => { if (!busy) setChoice(null); }} />}
+    {info?.error && <p className="text-xs text-red-500">上次目录操作未完成：{info.error}</p>}
+    {choice && <ConfirmDialog title="安排数据目录切换" message={`当前目录：${choice.source}\n目标目录：${choice.target}\n\n下次启动复制当前数据后切换，原目录保留备份。是否确认？`} onConfirm={() => void apply()} onCancel={() => { if (!busy) setChoice(null); }} />}
   </section>;
 }

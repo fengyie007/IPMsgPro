@@ -8,6 +8,8 @@ mod runtime;
 mod storage;
 mod system_notification;
 
+pub(crate) const APP_NAME: &str = "迅秋";
+
 use runtime::{request_exit, Runtime};
 use std::sync::{atomic::Ordering, Arc};
 use tauri::{
@@ -40,7 +42,7 @@ fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
     let mut builder = TrayIconBuilder::with_id("main-tray")
-        .tooltip("迅秋 Rust 预览版")
+        .tooltip(APP_NAME)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -68,16 +70,13 @@ fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn startup_error(error: &str) {
-    eprintln!("Rust预览版启动失败：{error}");
+    eprintln!("迅秋启动失败：{error}");
     // Startup can fail before any webview exists; a native error is visible in Release too.
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
         let text: Vec<u16> = error.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "迅秋 Rust 预览版启动失败"
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let title: Vec<u16> = "迅秋启动失败".encode_utf16().chain(Some(0)).collect();
         unsafe {
             MessageBoxW(
                 std::ptr::null_mut(),
@@ -113,7 +112,7 @@ pub fn run() {
                     .map_err(std::io::Error::other)?;
             app.manage(state.clone());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title(format!("迅秋 Rust 预览版 — {}", state.port))
+                .title(APP_NAME)
                 .inner_size(960.0, 640.0)
                 .min_inner_size(720.0, 480.0)
                 .center()

@@ -1,5 +1,7 @@
 //! Restart-only relocation of this Rust instance, with a stable bootstrap locator.
+mod layout;
 use crate::runtime::Runtime;
+pub use layout::default_directory;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -220,36 +222,60 @@ fn copy_tree(source: &Path, target: &Path, depth: usize, count: &mut usize) -> R
     }
     Ok(())
 }
+fn create_dataset(target: &Path, port: u16, token: &str) -> Result<OwnedDataset, String> {
+    let parent = target.parent().ok_or("无效目标目录")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    if !same(&parent.canonicalize().map_err(|e| e.to_string())?, parent) {
+        return Err("目标目录经过重解析点，已停止迁移".into());
+    }
+    fs::create_dir(target).map_err(|e| format!("目标已存在或无法创建，未覆盖任何数据：{e}"))?;
+    let target = target.canonicalize().map_err(|e| e.to_string())?;
+    if let Err(error) = atomic_json(
+        &target.join(MARKER),
+        &Marker {
+            app: APP.into(),
+            port,
+            token: token.into(),
+            complete: false,
+        },
+    ) {
+        let _ = fs::remove_dir(&target); // Only an empty directory if its marker failed.
+        return Err(error);
+    }
+    Ok(OwnedDataset {
+        path: target,
+        port,
+        token: token.into(),
+        keep: false,
+    })
+}
+fn validate_marker(path: &Path, port: u16) -> Result<(), String> {
+    let marker: Marker = read_json(&path.join(MARKER))?;
+    if marker.app != APP || marker.port != port || !marker.complete {
+        return Err("数据目录身份不符或迁移未完成，未加载其他实例数据".into());
+    }
+    Ok(())
+}
+fn complete_dataset(owned: &OwnedDataset) -> Result<(), String> {
+    atomic_json(
+        &owned.path.join(MARKER),
+        &Marker {
+            app: APP.into(),
+            port: owned.port,
+            token: owned.token.clone(),
+            complete: true,
+        },
+    )
+}
 fn migrate(source: &Path, choice: &Choice, port: u16) -> Result<OwnedDataset, String> {
     if !choice.target.is_absolute() || inside(&choice.target, source) {
         return Err("目标目录不能位于当前数据目录内".into());
     }
     if !source.join("messages.db").is_file() || !source.join("config.json").is_file() {
-        return Err("当前Rust数据不完整，未执行迁移".into());
+        return Err("当前数据不完整，未执行迁移".into());
     }
-    let parent = choice.target.parent().ok_or("无效目标目录")?;
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    if !same(&parent.canonicalize().map_err(|e| e.to_string())?, parent) {
-        return Err("目标目录经过重解析点，已停止迁移".into());
-    }
-    fs::create_dir(&choice.target)
-        .map_err(|e| format!("目标已存在或无法创建，未覆盖任何数据：{e}"))?;
-    let target = choice.target.canonicalize().map_err(|e| e.to_string())?;
-    atomic_json(
-        &target.join(MARKER),
-        &Marker {
-            app: APP.into(),
-            port,
-            token: choice.token.clone(),
-            complete: false,
-        },
-    )?;
-    let owned = OwnedDataset {
-        path: target.clone(),
-        port,
-        token: choice.token.clone(),
-        keep: false,
-    };
+    let owned = create_dataset(&choice.target, port, &choice.token)?;
+    let target = &owned.path;
     let mut count = 0;
     for name in [
         "config.json",
@@ -280,15 +306,7 @@ fn migrate(source: &Path, choice: &Choice, port: u16) -> Result<OwnedDataset, St
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|e| e.to_string())?;
     }
-    atomic_json(
-        &target.join(MARKER),
-        &Marker {
-            app: APP.into(),
-            port,
-            token: choice.token.clone(),
-            complete: true,
-        },
-    )?;
+    complete_dataset(&owned)?;
     Ok(owned)
 }
 impl Storage {
@@ -300,11 +318,8 @@ impl Storage {
         active = active
             .canonicalize()
             .map_err(|e| format!("当前数据目录不可用，未切换为空目录：{e}"))?;
-        if !same(&active, &bootstrap) {
-            let marker: Marker = read_json(&active.join(MARKER))?;
-            if marker.app != APP || marker.port != port || !marker.complete {
-                return Err("目录不属于当前Rust实例，拒绝读取旧版或其他端口数据".into());
-            }
+        if !same(&active, &bootstrap) || active.join(MARKER).exists() {
+            validate_marker(&active, port)?;
         }
         let mut error = None;
         if let Some(choice) = located.pending.take() {
@@ -341,11 +356,18 @@ impl Storage {
             error: Mutex::new(error),
         })
     }
+    fn is_default_location(&self) -> bool {
+        same(&self.active, &self.bootstrap)
+            || self
+                .active
+                .parent()
+                .is_some_and(|parent| same(parent, &self.bootstrap))
+    }
     pub fn info(&self) -> Result<Value, String> {
         let location = locator(&self.bootstrap)?;
         Ok(
             json!({"success":true,"active":native_path(&self.active),"pending":location.pending.map(|c|native_path(&c.target)),"defaultDirectory":native_path(&self.bootstrap),
-        "isDefault":same(&self.active,&self.bootstrap)||self.active.parent().is_some_and(|p|same(p,&self.bootstrap)),"error":*self.error.lock().unwrap_or_else(|e|e.into_inner())}),
+        "isDefault":self.is_default_location(),"error":*self.error.lock().unwrap_or_else(|e|e.into_inner())}),
         )
     }
     fn prepare(&self, parent: PathBuf, reset: bool) -> Result<Value, String> {
@@ -354,14 +376,12 @@ impl Storage {
             return Err("请选择文件夹".into());
         }
         let token = token();
-        let container = if reset {
-            parent.clone()
+        let stem = if reset {
+            "data".into()
         } else {
-            parent
-                .join("SpeedIpMsgRust")
-                .join(format!("port-{}", self.port))
+            layout::directory_name(self.port)
         };
-        let target = container.join(format!("data-{token}"));
+        let target = layout::unused_directory(&parent, &stem)?;
         if inside(&target, &self.active) {
             return Err("目标不能位于当前数据目录内".into());
         }
@@ -432,7 +452,7 @@ pub async fn select(
             .dialog()
             .file()
             .set_parent(window)
-            .set_title("选择Rust数据存储位置")
+            .set_title("选择数据存储位置")
             .pick_folder(move |p| {
                 let _ = tx.send(p);
             });
@@ -452,12 +472,12 @@ pub async fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> PathBuf {
+    pub(super) fn fixture() -> PathBuf {
         let path = std::env::temp_dir().join(format!("ipmsg-storage-test-{}", token()));
         fs::create_dir(&path).unwrap();
         path
     }
-    fn dataset(path: &Path) {
+    pub(super) fn dataset(path: &Path) {
         ipmsg_core::config::ConfigStore::open(path.join("config.json")).unwrap();
         let db = rusqlite::Connection::open(path.join("messages.db")).unwrap();
         db.execute_batch(
