@@ -19,6 +19,7 @@ use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
 struct Fixture {
     network: Arc<Network>,
+    config: Arc<ConfigStore>,
     db: Database,
     events: mpsc::Receiver<Event>,
     root: PathBuf,
@@ -28,6 +29,7 @@ impl Fixture {
     async fn restart(self) -> Self {
         let Self {
             network,
+            config: _,
             db,
             events,
             root,
@@ -43,10 +45,20 @@ impl Fixture {
         let config = Arc::new(ConfigStore::open(root.join("config.json")).unwrap());
         let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
         let (tx, events) = mpsc::channel(256);
-        let network = Network::new(socket, local, config, db.clone(), tx, vec![], vec![]).unwrap();
+        let network = Network::new(
+            socket,
+            local,
+            config.clone(),
+            db.clone(),
+            tx,
+            vec![],
+            vec![],
+        )
+        .unwrap();
         network.start().await;
         Self {
             network,
+            config,
             db,
             events,
             root,
@@ -97,10 +109,20 @@ impl Fixture {
             version: "1".into(),
         };
         // Tests use loopback only: no LAN broadcast, production port or user database.
-        let network = Network::new(socket, local, config, db.clone(), tx, direct, vec![]).unwrap();
+        let network = Network::new(
+            socket,
+            local,
+            config.clone(),
+            db.clone(),
+            tx,
+            direct,
+            vec![],
+        )
+        .unwrap();
         network.start().await;
         Self {
             network,
+            config,
             db,
             events,
             root,
@@ -162,6 +184,206 @@ async fn send(
         .send_to(&bytes, (Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
+}
+
+async fn quiet(peer: &UdpSocket, duration: Duration) {
+    let mut bytes = [0; 4096];
+    assert!(
+        timeout(duration, peer.recv(&mut bytes)).await.is_err(),
+        "unexpected UDP packet"
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_switches_only_control_startup_and_exit_announcements() {
+    for startup in [false, true] {
+        for exit in [false, true] {
+            let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer.local_addr().unwrap().port());
+            let mut test = Fixture::start_with_direct(vec![address]).await;
+            test.config
+                .save(serde_json::json!({"announceOnStartup":startup,"announceOnExit":exit}))
+                .await
+                .unwrap();
+            test.network.ui_ready().await.unwrap();
+            if startup {
+                assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_ENTRY);
+            } else {
+                quiet(&peer, Duration::from_millis(100)).await;
+            }
+            test.network.ui_ready().await.unwrap();
+            quiet(&peer, Duration::from_millis(100)).await;
+            // Explicit refresh and replies remain available with startup notices off.
+            test.network.discover().await.unwrap();
+            assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_ENTRY);
+            send(&peer, test.port, 6000, IPMSG_BR_ENTRY, "peer", Some("")).await;
+            assert_eq!(mode(packet(&peer).await.command), IPMSG_ANSENTRY);
+            test.next("user.discovered").await;
+            let config = test.config.save(serde_json::json!({"nickname":"Rust测试","group":"测试组","knockEffects":false})).await.unwrap();
+            test.network.apply_config(&config).await.unwrap();
+            quiet(&peer, Duration::from_millis(100)).await;
+            let config = test
+                .config
+                .save(serde_json::json!({"avatarId":12}))
+                .await
+                .unwrap();
+            test.network.apply_config(&config).await.unwrap();
+            assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_ABSENCE);
+            test.stop().await;
+            if exit {
+                assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_EXIT);
+            } else {
+                quiet(&peer, Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_startup_notice_keeps_periodic_discovery_running() {
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer.local_addr().unwrap().port());
+    let test = Fixture::start_with_direct(vec![address]).await;
+    test.config
+        .save(serde_json::json!({"announceOnStartup":false}))
+        .await
+        .unwrap();
+    test.network.ui_ready().await.unwrap();
+    quiet(&peer, Duration::from_millis(100)).await;
+    // Exercise the actual 60-second maintenance interval without changing production timing.
+    let mut bytes = [0; 4096];
+    let n = timeout(Duration::from_secs(63), peer.recv(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        mode(parse_packet(&bytes[..n]).unwrap().command),
+        IPMSG_BR_ENTRY
+    );
+    test.stop().await;
+}
+
+#[tokio::test]
+async fn knock_uses_empty_single_datagram_and_independent_endpoint_cooldowns() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let other = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    for socket in [&peer, &other] {
+        send(socket, test.port, 6100, IPMSG_BR_ENTRY, "peer", Some("")).await;
+        packet(socket).await;
+        test.next("user.discovered").await;
+    }
+    let target = peer_id(&peer);
+    let (one, two) = tokio::join!(
+        test.network.send_knock(&target),
+        test.network.send_knock(&target)
+    );
+    assert_ne!(one.is_ok(), two.is_ok());
+    let sent = one.or(two).unwrap();
+    assert_eq!(sent.kind, 3);
+    assert_eq!(sent.status, 1);
+    let wire = packet(&peer).await;
+    assert_eq!(wire.command, IPMSG_KNOCK);
+    assert_eq!(wire.body, [0]);
+    test.network.send_knock(&peer_id(&other)).await.unwrap();
+    assert_eq!(packet(&other).await.command, IPMSG_KNOCK);
+    // Neither a missing receipt nor a forged text receipt resends/marks it failed.
+    send(
+        &peer,
+        test.port,
+        6101,
+        IPMSG_RECVMSG,
+        &wire.packet_no.to_string(),
+        None,
+    )
+    .await;
+    quiet(&peer, Duration::from_secs(7)).await;
+    let history = test
+        .db
+        .history(peer_id(&peer), test.network.local().id, 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, 1);
+    test = test.restart().await;
+    assert_eq!(
+        test.db
+            .history(peer_id(&peer), test.network.local().id, 50, 0)
+            .await
+            .unwrap()[0]
+            .kind,
+        3
+    );
+    test.stop().await;
+}
+
+#[tokio::test]
+async fn received_knocks_deduplicate_across_clear_and_restart_without_replaying_effects() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    send(
+        &peer,
+        test.port,
+        6200,
+        IPMSG_KNOCK | IPMSG_SENDCHECKOPT,
+        "",
+        None,
+    )
+    .await;
+    let event = test.next("message.received").await;
+    assert_eq!(event.payload["type"], "knock");
+    assert_eq!(packet(&peer).await.body, b"6200");
+    for clear in [false, true] {
+        if clear {
+            test.db.clear(None, test.network.local().id).await.unwrap();
+        }
+        send(
+            &peer,
+            test.port,
+            6200,
+            IPMSG_KNOCK | IPMSG_SENDCHECKOPT,
+            "",
+            None,
+        )
+        .await;
+        assert_eq!(packet(&peer).await.body, b"6200");
+        assert!(
+            timeout(Duration::from_millis(100), test.next("message.received"))
+                .await
+                .is_err()
+        );
+    }
+    test = test.restart().await;
+    assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_EXIT);
+    send(
+        &peer,
+        test.port,
+        6200,
+        IPMSG_KNOCK | IPMSG_SENDCHECKOPT,
+        "",
+        None,
+    )
+    .await;
+    assert_eq!(packet(&peer).await.body, b"6200");
+    assert!(
+        timeout(Duration::from_millis(100), test.next("message.received"))
+            .await
+            .is_err()
+    );
+    assert!(test
+        .db
+        .history(peer_id(&peer), test.network.local().id, 50, 0)
+        .await
+        .unwrap()
+        .is_empty());
+    send(&peer, test.port, 6201, IPMSG_KNOCK, "invalid payload", None).await;
+    quiet(&peer, Duration::from_millis(100)).await;
+    assert!(
+        timeout(Duration::from_millis(100), test.next("message.received"))
+            .await
+            .is_err()
+    );
+    test.stop().await;
 }
 
 #[tokio::test]
@@ -268,7 +490,7 @@ async fn local_avatar_save_announces_and_refreshes_pending_text_retry() {
         .unwrap();
     test.network.apply_config(&config).await.unwrap();
     let announced = packet(&peer).await;
-    assert_eq!(mode(announced.command), IPMSG_BR_ENTRY);
+    assert_eq!(mode(announced.command), IPMSG_BR_ABSENCE);
     assert_eq!(
         parse_avatar(&announced.version),
         Some(Avatar::Builtin { id: 83 })

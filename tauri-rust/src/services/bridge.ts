@@ -14,7 +14,7 @@ let disposed = false;
 export const isMockMode = !isTauri() && import.meta.env.VITE_MOCK_BRIDGE === '1';
 const supported = new Set([
   'app.info', 'config.get', 'config.set', 'config.loaded',
-  'user.local', 'user.list', 'user.discover', 'message.send',
+  'user.local', 'user.list', 'user.discover', 'message.send', 'message.knock',
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
   'screenshot.start',
@@ -99,6 +99,7 @@ const mockUsers: User[] = [
   { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '', avatar: { kind: 'custom' } },
 ];
 let mockConfig: Config = { ...DEFAULT_CONFIG };
+const mockKnockUntil = new Map<string, number>();
 const mockImageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="22" fill="#166534">图片预览</text></svg>';
 const mockImageUrl = 'data:image/svg+xml,' + encodeURIComponent(mockImageSvg);
 let mockRows: HistoryRecord[] = [{
@@ -225,6 +226,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     case 'config.set': {
       const next = { ...mockConfig, ...args } as Config;
       if (!validAvatarId(next.avatarId)) return { success: false, error: '头像编号必须在0到83之间' };
+      if (typeof next.announceOnStartup !== 'boolean' || typeof next.announceOnExit !== 'boolean' || typeof next.knockEffects !== 'boolean') return { success: false, error: '提醒开关必须是布尔值' };
       if (typeof next.notificationSound !== 'boolean') return { success: false, error: '提示音开关必须是布尔值' };
       if (!Array.isArray(next.ipScanRanges) || next.ipScanRanges.some((r) => typeof r !== 'string') || typeof next.scanOnStartup !== 'boolean') return { success: false, error: '扫描设置无效' };
       const parsed = validateScanOptions(next.ipScanRanges, next.scanPort, next.scanDelayMs);
@@ -245,6 +247,16 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
       return { success: true };
     case 'window.set_active_conversation':
     case 'frontend.error': return { success: true };
+    case 'message.knock': {
+      const target = String(args.target), peer = mockUsers.find((user) => user.id === target);
+      if (!peer || peer.status === 'offline') return { success: false, error: '对方不可用' };
+      if ((mockKnockUntil.get(target) || 0) > Date.now()) return { success: false, error: '发送窗口振动过于频繁，请等待10秒后再试' };
+      mockKnockUntil.set(target, Date.now() + 10000);
+      const message: HistoryRecord = { id: `mock_${Date.now()}_${++mockSequence}`, fromId: mockLocalId, toId: target,
+        content: '[窗口振动]', type: 3, timestamp: Date.now() / 1000, status: 1 };
+      mockRows.push(message);
+      return { success: true, message };
+    }
     case 'message.send': {
       const id = `mock_${Date.now()}_${++mockSequence}`;
       mockRows.push({ id, fromId: mockLocalId, toId: String(args.target), content: String(args.content), type: 0, timestamp: Date.now() / 1000, status: 1 });

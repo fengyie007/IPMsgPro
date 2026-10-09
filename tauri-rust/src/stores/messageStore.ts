@@ -50,9 +50,9 @@ function fromHistory(row: HistoryRecord, localId: string): Message {
     from: row.fromId === localId ? 'self' : row.fromId,
     to: row.toId === localId ? 'self' : row.toId,
     content: row.content,
-    type: row.type === 0 ? 'text' : row.type === 1 ? 'image' : 'file',
+    type: row.type === 0 ? 'text' : row.type === 1 ? 'image' : row.type === 3 ? 'knock' : 'file',
     timestamp: row.timestamp * 1000,
-    status: row.status === 0 ? 'sending' : row.status === 1 || row.status === 2 ? 'delivered' : 'failed',
+    status: row.status === 0 ? 'sending' : row.status === 1 || row.status === 2 ? (row.type === 3 && row.fromId === localId ? 'sent' : 'delivered') : 'failed',
     image: row.image,
     file: row.file,
   };
@@ -83,6 +83,9 @@ interface MessageStore {
   error: string | null;
   loadLocalUserId: () => Promise<void>;
   sendMessage: (target: string, content: string) => Promise<boolean>;
+  sendKnock: (target: string) => Promise<boolean>;
+  knockPending: Set<string>;
+  knockUntil: Map<string, number>;
   sendImage: (target: string, assetId: string) => Promise<boolean>;
   sendFile: (target: string, selectionId: string) => Promise<boolean>;
   updateFile: (event: FileEvent) => void;
@@ -147,10 +150,34 @@ export const useMessageStore = create<MessageStore>((set, get) => {
   return {
     messages: new Map(), unread: new Map(), historyPages: new Map(),
     localUserId: '', activeConversation: '', loading: false, error: null,
+    knockPending: new Set(), knockUntil: new Map(),
     loadLocalUserId: async () => {
       const result = await invoke<{ success: boolean; id: string }>('user.local');
       if (!result.id) throw new Error('后端未提供本机身份');
       set({ localUserId: result.id });
+    },
+    sendKnock: async (target) => {
+      if (get().knockPending.has(target) || (get().knockUntil.get(target) || 0) > Date.now()) {
+        set({ error: '发送窗口振动过于频繁，请稍后再试' }); return false;
+      }
+      set((state) => ({ error: null, knockPending: new Set(state.knockPending).add(target) }));
+      try {
+        const result = await invoke<{ success: boolean; message: HistoryRecord }>('message.knock', { target });
+        if (!result.message?.id || result.message.type !== 3 || ![1, 3].includes(result.message.status)) throw new Error('后端未返回有效的振动发送结果');
+        get().recvMessage(fromHistory(result.message, result.message.fromId));
+        set((state) => {
+          const until = new Map([...state.knockUntil].filter(([, value]) => value > Date.now()));
+          if (until.size >= 4096) until.delete(until.keys().next().value!);
+          until.set(target, Date.now() + 10000);
+          return { knockUntil: until };
+        });
+        if (result.message.status === 3) throw new Error('窗口振动发送失败');
+        return true;
+      } catch (error) {
+        set({ error: error instanceof Error ? error.message : String(error) }); return false;
+      } finally {
+        set((state) => { const pending = new Set(state.knockPending); pending.delete(target); return { knockPending: pending }; });
+      }
     },
     sendMessage: async (target, content) => {
       set({ error: null });
@@ -381,7 +408,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           }
           get().recvMessage({
             id: data.id, from: data.from, to: 'self',
-            content: data.content, type: data.type === 'text' ? 'text' : data.type === 'image' ? 'image' : 'file',
+            content: data.content, type: data.type === 'text' ? 'text' : data.type === 'image' ? 'image' : data.type === 'knock' ? 'knock' : 'file',
             timestamp: data.timestamp * 1000, status: 'delivered', fromUser: data.fromUser, image: data.image, file: data.file,
           });
           if (data.file) {

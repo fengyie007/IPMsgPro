@@ -22,7 +22,7 @@ fn background() -> Context<'static> {
 #[test]
 fn only_new_incoming_message_kinds_are_eligible() {
     let now = Instant::now();
-    for kind in ["text", "image", "file"] {
+    for kind in ["text", "image", "file", "knock"] {
         assert!(NotificationGate::default().should_play(&message("new", kind), background(), now));
     }
     for event in [

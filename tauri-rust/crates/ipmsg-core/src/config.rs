@@ -22,6 +22,9 @@ pub struct AppConfig {
     pub notification_sound: bool,
     pub system_notifications: bool,
     pub notification_preview: bool,
+    pub announce_on_startup: bool,
+    pub announce_on_exit: bool,
+    pub knock_effects: bool,
     pub segments: Vec<String>,
     pub ip_scan_ranges: Vec<String>,
     pub scan_port: u16,
@@ -40,6 +43,9 @@ impl Default for AppConfig {
             notification_sound: false,
             system_notifications: false,
             notification_preview: false,
+            announce_on_startup: true,
+            announce_on_exit: true,
+            knock_effects: true,
             segments: vec![],
             ip_scan_ranges: vec![],
             scan_port: 2425,
@@ -215,6 +221,45 @@ fn replace(source: &Path, destination: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn lifecycle_and_knock_switches_are_independent_durable_booleans() {
+        let root = std::env::temp_dir().join(format!(
+            "ipmsg-notice-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("config.json");
+        fs::write(&path, br#"{"nickname":"legacy"}"#).unwrap();
+        let store = ConfigStore::open(path.clone()).unwrap();
+        assert!(
+            store.get().announce_on_startup
+                && store.get().announce_on_exit
+                && store.get().knock_effects
+        );
+        for key in ["announceOnStartup", "announceOnExit", "knockEffects"] {
+            store.save(serde_json::json!({key:false})).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(ConfigStore::open(path.clone()).unwrap().get()).unwrap()[key],
+                false
+            );
+            let before = fs::read(&path).unwrap();
+            for invalid in [
+                serde_json::json!(0),
+                serde_json::json!("true"),
+                serde_json::Value::Null,
+            ] {
+                assert!(store.save(serde_json::json!({key:invalid})).await.is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+        }
+        assert!(store.get().scan_on_startup);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[tokio::test]
     async fn avatar_defaults_and_validation_preserve_saved_config() {
         let root = std::env::temp_dir().join(format!(

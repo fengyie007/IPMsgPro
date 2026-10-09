@@ -51,9 +51,9 @@ export interface Message {
   from: string;
   to: string;
   content: string;
-  type: 'text' | 'image' | 'file';
+  type: 'text' | 'image' | 'file' | 'knock';
   timestamp: number; // UI uses milliseconds; the backend returns seconds.
-  status: 'sending' | 'delivered' | 'failed';
+  status: 'sending' | 'sent' | 'delivered' | 'failed';
   fromUser?: User;
   image?: ImageMetadata;
   file?: FileMetadata;
@@ -93,6 +93,9 @@ export interface Config {
   notificationSound: boolean;
   systemNotifications: boolean;
   notificationPreview: boolean;
+  announceOnStartup: boolean;
+  announceOnExit: boolean;
+  knockEffects: boolean;
   segments: string[];
   ipScanRanges: string[];
   scanPort: number;
@@ -104,6 +107,7 @@ export const DEFAULT_CONFIG: Config = {
   nickname: '', avatarId: 0, group: '', minimizeBehavior: 'tray', directUsers: [],
   dataDir: '', notificationSound: false, segments: [], ipScanRanges: [],
   systemNotifications: false, notificationPreview: false,
+  announceOnStartup: true, announceOnExit: true, knockEffects: true,
   scanPort: 2425, scanDelayMs: 20, scanOnStartup: true,
 };
 

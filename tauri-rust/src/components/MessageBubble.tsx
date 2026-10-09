@@ -129,14 +129,14 @@ export default memo(function MessageBubble({ message }: { message: Message }) {
     <div className={`flex ${self ? 'justify-end' : 'justify-start'} message-in`}>
       <div className="max-w-[70%] min-w-0">
         <div className={`px-3 py-2 rounded-lg text-sm leading-relaxed break-words ${self ? 'bg-chat-sent text-gray-800 rounded-tr-none' : 'bg-chat-received text-gray-800 rounded-tl-none shadow-sm'}`}>
-          {message.type === 'text' ? <MessageText content={message.content} /> : message.type === 'image' ? (
+          {message.type === 'knock' ? <span className="text-gray-500">{self ? '你发送了窗口振动' : '对方发送了窗口振动'}</span> : message.type === 'text' ? <MessageText content={message.content} /> : message.type === 'image' ? (
             message.image?.assetId ? <ReceivedImage image={message.image} /> : <span className="text-gray-500">[图片信息缺失，无法预览]</span>
           ) : <FileBubble message={message} />}
         </div>
         {self && message.type === 'image' && <ImageSendState message={message} />}
         <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-0.5 ${self ? 'justify-end' : 'justify-start'}`}>
           <span>{formatTime(message.timestamp)}</span>
-          {self && message.type !== 'file' && (message.status === 'sending'
+          {self && message.type === 'knock' ? <span>{message.status === 'sent' ? '已发送' : message.status === 'sending' ? '发送中' : '发送失败'}</span> : self && message.type !== 'file' && (message.status === 'sending'
             ? <FiClock size={10} title="等待对方确认" />
             : message.status === 'delivered'
             ? <FiCheck size={10} className="text-green-500" title="对方已收到" />

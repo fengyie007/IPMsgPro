@@ -28,6 +28,7 @@ pub fn notice(event: &Event, preview: bool) -> Notice {
         match kind {
             "image" => "收到一张图片",
             "file" => "收到文件邀请",
+            "knock" => "对方发送了窗口振动",
             _ => "收到一条新消息",
         }
     };
@@ -465,12 +466,15 @@ mod tests {
     }
     #[test]
     fn file_and_image_notifications_never_expose_paths() {
-        for kind in ["image", "file"] {
+        for kind in ["image", "file", "knock"] {
             let event = Event {
                 event: "message.received".into(),
                 payload: json!({"from":"peer","type":kind,"content":"C:\\private\\secret"}),
             };
             assert!(!notice(&event, true).body.contains("private"));
+            if kind == "knock" {
+                assert_eq!(notice(&event, false).body, "对方发送了窗口振动");
+            }
         }
     }
 }

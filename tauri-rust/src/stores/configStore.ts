@@ -12,6 +12,7 @@ function parseConfig(value: Partial<Config>): Config {
   }
   const config = { ...DEFAULT_CONFIG, ...value };
   if (!validAvatarId(config.avatarId)) throw new Error('后端返回了无效头像设置');
+  if (typeof config.announceOnStartup !== 'boolean' || typeof config.announceOnExit !== 'boolean' || typeof config.knockEffects !== 'boolean') throw new Error('后端返回了无效提醒设置');
   if (typeof config.notificationSound !== 'boolean') throw new Error('后端返回了无效提示音设置');
   if (typeof config.systemNotifications !== 'boolean' || typeof config.notificationPreview !== 'boolean') throw new Error('后端返回了无效系统通知设置');
   if (!Array.isArray(config.ipScanRanges) || config.ipScanRanges.some((r) => typeof r !== 'string') ||
@@ -44,7 +45,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
   saveConfig: async (partial) => {
     const payload: Record<string, unknown> = {};
-    for (const key of ['nickname', 'avatarId', 'group', 'directUsers', 'minimizeBehavior', 'ipScanRanges', 'scanPort', 'scanDelayMs', 'scanOnStartup', 'notificationSound', 'systemNotifications', 'notificationPreview'] as const) {
+    for (const key of ['nickname', 'avatarId', 'group', 'directUsers', 'minimizeBehavior', 'ipScanRanges', 'scanPort', 'scanDelayMs', 'scanOnStartup', 'notificationSound', 'systemNotifications', 'notificationPreview', 'announceOnStartup', 'announceOnExit', 'knockEffects'] as const) {
       if (partial[key] !== undefined) payload[key] = partial[key];
     }
     const result = await invoke<{ success: boolean; config: Config }>('config.set', payload);
@@ -59,6 +60,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       ipScanRanges: [], scanPort: DEFAULT_CONFIG.scanPort, scanDelayMs: DEFAULT_CONFIG.scanDelayMs, scanOnStartup: DEFAULT_CONFIG.scanOnStartup,
       notificationSound: DEFAULT_CONFIG.notificationSound,
       systemNotifications: false, notificationPreview: false,
+      announceOnStartup: true, announceOnExit: true, knockEffects: true,
     });
   },
 }));

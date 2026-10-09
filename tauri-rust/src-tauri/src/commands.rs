@@ -199,6 +199,17 @@ async fn dispatch(
                 .apply_config(&config)
                 .await
                 .map_err(|e| format!("设置已保存，但网络公告失败：{e}"))?;
+            let added: Vec<_> = config
+                .direct_users
+                .iter()
+                .filter(|address| !previous.direct_users.contains(address))
+                .cloned()
+                .collect();
+            state
+                .network
+                .discover_addresses(&added)
+                .await
+                .map_err(|e| format!("设置已保存，但新增联系人发现失败：{e}"))?;
             Ok(json!({"success":true,"config":config}))
         }
         "config.loaded" => {
@@ -233,6 +244,10 @@ async fn dispatch(
             let content = string(&args, "content")?;
             let id = state.network.send_message(&target, &content).await?;
             Ok(json!({"success":true,"messageId":id}))
+        }
+        "message.knock" => {
+            let message = state.network.send_knock(&string(&args, "target")?).await?;
+            Ok(json!({"success":true,"message":message}))
         }
         "history.get" => {
             let local = state.network.local().id;

@@ -17,6 +17,7 @@
     "test:workspace": "node tools/test-workspace.cjs",
     "test:emoticons": "node tools/test-emoticons.cjs",
     "test:avatars": "node tools/test-avatars.cjs",
+    "test:knock": "node tools/test-knock.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

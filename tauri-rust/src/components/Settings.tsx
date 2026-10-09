@@ -116,6 +116,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </Section>}
         {category === 'notifications' && <div className="space-y-8">
           <NotificationSettings enabled={draft.notificationSound} supported={info?.capabilities.notificationSound ?? false} disabled={locked} onChange={(notificationSound) => setDraft({ ...draft, notificationSound })} />
+          <Section title="窗口振动">
+            <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" disabled={locked} checked={draft.knockEffects} onChange={(e) => setDraft({ ...draft, knockEffects: e.target.checked })} />启用振动效果</label>
+            <p className="text-xs text-gray-500">收到振动时，正在查看的会话短暂抖动并高亮。关闭后仍接收消息和保留记录，提示音与系统通知遵循各自开关。</p>
+          </Section>
           <Section title="系统通知">
             <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" disabled={locked || !info?.systemNotifications} checked={draft.systemNotifications} onChange={(e) => setDraft({ ...draft, systemNotifications: e.target.checked })} />显示 Windows 系统通知</label>
             <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" disabled={locked || !info?.systemNotifications} checked={draft.notificationPreview} onChange={(e) => setDraft({ ...draft, notificationPreview: e.target.checked })} />在通知中显示文字消息摘要</label>
@@ -125,6 +129,11 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           </Section>
         </div>}
         {category === 'network' && <div className="space-y-8">
+          <Section title="上线与下线通知">
+            <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" disabled={locked} checked={draft.announceOnStartup} onChange={(e) => setDraft({ ...draft, announceOnStartup: e.target.checked })} />启动时发送上线通知</label>
+            <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" disabled={locked} checked={draft.announceOnExit} onChange={(e) => setDraft({ ...draft, announceOnExit: e.target.checked })} />退出时发送下线通知</label>
+            <p className="text-xs text-gray-500 leading-relaxed">保存后生效。上线开关用于下次启动；自动扫描、定时探测和手动刷新仍照常运行，也可能让对方发现本机。关闭下线通知后，对方可能延后识别离线；隐藏到托盘不会发送下线通知。</p>
+          </Section>
           <Section title="直接添加用户">
             <p className="text-xs text-gray-500">填写对方的 IPv4 地址和端口，保存后发送发现请求。</p>
             <div className="flex gap-2"><input aria-label="直接用户地址" disabled={locked} className="input-field flex-1" value={newUser} onChange={(e) => changeDirect(e.target.value)} placeholder="例如 192.168.2.88:2425" onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addUser(); } }} />

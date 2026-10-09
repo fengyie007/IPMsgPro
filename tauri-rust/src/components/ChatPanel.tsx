@@ -15,6 +15,8 @@ import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
 import UserAvatar from './UserAvatar';
+import KnockButton from './KnockButton';
+import { watchKnockEffects } from '../services/knockEffects';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { copyEditorSelection, createEmojiElement, draftText, readEditor, restoreEditor, type DraftPart } from '../utils/chatEditor';
 const EMPTY_DRAFT: DraftPart[] = [];
@@ -22,6 +24,10 @@ const EMPTY_DRAFT: DraftPart[] = [];
 export default function ChatPanel() {
   const user = useUserStore((s) => s.currentUser);
   const userId = user?.id || '';
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (userId && panelRef.current) return watchKnockEffects(userId, panelRef.current);
+  }, [userId]);
   const userMessages = useMessageStore((s) => s.messages.get(userId)) || [];
   const page = useMessageStore((s) => s.historyPages.get(userId));
   const loading = useMessageStore((s) => s.loading);
@@ -268,7 +274,7 @@ export default function ChatPanel() {
   if (!user) return null;
   const status = user.status === 'online' ? '在线' : user.status === 'away' ? '离开' : '离线';
   return (
-    <section aria-label="聊天内容" className="flex-1 flex flex-col min-w-0 bg-white">
+    <section ref={panelRef} aria-label="聊天内容" className="flex-1 flex flex-col min-w-0 bg-white">
       <div className="h-16 px-5 flex items-center border-b border-gray-200 shrink-0 gap-2">
         <UserAvatar user={user} size={36} />
         <div className="min-w-0"><h2 className="font-semibold text-gray-800 truncate">{user.nickname}</h2><p className="text-xs text-gray-400 mt-0.5 truncate">{status}{user.group ? ` · ${user.group}` : ''} · {user.ip ? `${user.ip}:${user.port}` : '历史联系人'}</p></div>
@@ -300,6 +306,7 @@ export default function ChatPanel() {
           <button disabled={imageBusy || !!preview} title="发送图片" onClick={selectImage} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiImage size={18} /></button>
           <button disabled={!filesSupported || fileBusy || imageBusy || !!preview} title="发送文件" onClick={() => void useFileSelectionStore.getState().select(userId)} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiFile size={18} /></button>
           <button disabled={!filesSupported || fileBusy || imageBusy || !!preview} title="发送文件夹" onClick={() => void useFileSelectionStore.getState().select(userId, true)} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiFolder size={18} /></button>
+          <KnockButton target={userId} disabled={user.status === 'offline' || screenshotBusy || imageBusy || fileBusy || !!preview} />
           <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入文件或文件夹，确认后发送' : '支持图片收发'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">

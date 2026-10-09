@@ -280,7 +280,7 @@ async fn saved_auto_scan_runs_once_and_settings_changes_apply_to_next_scan() {
     let fixture = Fixture::new(128).await;
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let port = peer.local_addr().unwrap().port();
-    fixture.config.save(serde_json::json!({"ipScanRanges":["127.0.0.1"],"scanPort":port,"scanDelayMs":10,"scanOnStartup":true})).await.unwrap();
+    fixture.config.save(serde_json::json!({"ipScanRanges":["127.0.0.1"],"scanPort":port,"scanDelayMs":10,"scanOnStartup":true,"announceOnStartup":false})).await.unwrap();
     fixture.network.ui_ready().await.unwrap();
     fixture.network.ui_ready().await.unwrap();
     receive(&peer).await;

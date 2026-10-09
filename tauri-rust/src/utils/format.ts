@@ -35,6 +35,7 @@ export function formatListTime(timestamp: number): string {
 
 /** One-line conversation-list preview: placeholders instead of emoji XML, paths and data URLs. */
 export function formatPreview(msg: Message): string {
+  if (msg.type === 'knock') return '[窗口振动]';
   if (msg.type === 'image' || msg.content.startsWith('data:image/')) return '[图片]';
   if (msg.type === 'file') {
     return `[文件] ${msg.fileInfo?.fileName || msg.content.split(/[\\/]/).pop() || ''}`;

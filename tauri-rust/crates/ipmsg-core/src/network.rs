@@ -26,6 +26,7 @@ use tokio::{
 
 mod image_receive;
 mod image_send;
+mod knock;
 mod scan;
 use image_receive::ImageJob;
 use image_send::ImageSendJob;
@@ -59,6 +60,7 @@ pub struct Network {
     avatar_cache: RwLock<HashMap<String, Avatar>>,
     peers: Mutex<HashMap<String, Peer>>,
     pending: Mutex<HashMap<u32, Pending>>,
+    knock_sent: Mutex<HashMap<String, Instant>>,
     images: Arc<Mutex<Assembler>>,
     image_jobs: mpsc::Sender<ImageJob>,
     image_receiver: Mutex<Option<mpsc::Receiver<ImageJob>>>,
@@ -164,6 +166,7 @@ impl Network {
             avatar_cache: RwLock::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            knock_sent: Mutex::new(HashMap::new()),
             images: Arc::new(Mutex::new(Assembler::new())),
             image_jobs,
             image_receiver: Mutex::new(Some(image_receiver)),
@@ -316,11 +319,13 @@ impl Network {
     }
     pub async fn ui_ready(self: &Arc<Self>) -> Result<(), String> {
         if !self.ready.swap(true, Ordering::AcqRel) {
-            if let Err(error) = self.discover().await {
-                self.ready.store(false, Ordering::Release);
-                return Err(error);
-            }
             let config = self.config.get();
+            if config.announce_on_startup {
+                if let Err(error) = self.discover().await {
+                    self.ready.store(false, Ordering::Release);
+                    return Err(error);
+                }
+            }
             if config.scan_on_startup && !config.ip_scan_ranges.is_empty() {
                 self.start_scan_inner(
                     crate::scan::ScanOptions {
@@ -377,6 +382,7 @@ impl Network {
         Ok(())
     }
     pub async fn apply_config(&self, config: &AppConfig) -> Result<(), String> {
+        let previous = self.local();
         self.wire_version.set_avatar(config.avatar_id)?;
         {
             let mut local = self.local.write().unwrap_or_else(|e| e.into_inner());
@@ -390,8 +396,33 @@ impl Network {
             };
             local.group = config.group.clone();
         }
-        if self.ready.load(Ordering::Acquire) {
-            self.discover().await?;
+        let local = self.local();
+        if self.ready.load(Ordering::Acquire)
+            && (previous.nickname != local.nickname
+                || previous.group != local.group
+                || previous.avatar != local.avatar)
+        {
+            // A profile update must not masquerade as another login.
+            let wire = self.wire(
+                IPMSG_BR_ABSENCE | IPMSG_CAPUTF8OPT,
+                &local.nickname,
+                Some(&local.group),
+            )?;
+            for address in self.direct_addresses() {
+                self.send_to(address, &wire).await?;
+            }
+        }
+        Ok(())
+    }
+    pub async fn discover_addresses(&self, addresses: &[String]) -> Result<(), String> {
+        let local = self.local();
+        let wire = self.wire(
+            IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
+            &local.nickname,
+            Some(&local.group),
+        )?;
+        for address in addresses {
+            self.send_to(parse_address(address)?, &wire).await?;
         }
         Ok(())
     }
@@ -673,6 +704,7 @@ impl Network {
             }
         }
         match mode(packet.command) {
+            IPMSG_KNOCK => self.receive_knock(&packet, address).await?,
             IPMSG_BR_ENTRY | IPMSG_ANSENTRY | IPMSG_BR_ABSENCE => {
                 self.seen(&packet, address, true).await?;
                 self.scan_response(address);
@@ -957,9 +989,11 @@ impl Network {
             files.shutdown().await;
         }
         let local = self.local();
-        if let Ok(wire) = self.wire(IPMSG_BR_EXIT, &local.nickname, None) {
-            for address in self.direct_addresses() {
-                let _ = self.send_to(address, &wire).await;
+        if self.config.get().announce_on_exit {
+            if let Ok(wire) = self.wire(IPMSG_BR_EXIT, &local.nickname, None) {
+                for address in self.direct_addresses() {
+                    let _ = self.send_to(address, &wire).await;
+                }
             }
         }
         self.cancel.send_replace(true);

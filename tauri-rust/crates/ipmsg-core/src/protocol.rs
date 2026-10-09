@@ -27,6 +27,7 @@ pub const IPMSG_GETPUBKEY: u32 = 0x72;
 pub const IPMSG_ANSPUBKEY: u32 = 0x73;
 pub const IPMSG_SENDIMAGE: u32 = 0xc0;
 pub const IPMSG_REPORT_RECVIMAGE: u32 = 0xc1;
+pub const IPMSG_KNOCK: u32 = 0xd1;
 
 pub const IPMSG_SENDCHECKOPT: u32 = 0x0000_0100;
 pub const IPMSG_ABSENCEOPT: u32 = 0x0000_0100;

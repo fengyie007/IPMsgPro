@@ -53,7 +53,7 @@ impl NotificationGate {
             || id.len() + from.len() > 8192
             || !matches!(
                 event.payload["type"].as_str(),
-                Some("text" | "image" | "file")
+                Some("text" | "image" | "file" | "knock")
             )
         {
             return false;
