@@ -6,7 +6,6 @@ import { useConfigStore } from '../stores/configStore';
 import { useFileSelectionStore } from '../stores/fileSelectionStore';
 import { captureAndSend } from '../services/screenshot';
 import { toast } from '../stores/toastStore';
-import { emojiStyle } from '../emojiData';
 import { isSameDay, formatDateSeparator } from '../utils/format';
 import type { ImageMetadata, ImageReadResult, Message } from '../types';
 import { invoke } from '../services/bridge';
@@ -16,7 +15,7 @@ import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { draftText, readEditor, restoreEditor, type DraftPart } from '../utils/chatEditor';
+import { copyEditorSelection, createEmojiElement, draftText, readEditor, restoreEditor, type DraftPart } from '../utils/chatEditor';
 const EMPTY_DRAFT: DraftPart[] = [];
 
 export default function ChatPanel() {
@@ -185,11 +184,9 @@ export default function ChatPanel() {
       range = document.createRange(); range.selectNodeContents(el); range.collapse(false);
     }
     range.deleteContents();
-    const span = document.createElement('span');
-    span.dataset.emojiId = id; span.contentEditable = 'false';
-    Object.assign(span.style, emojiStyle(id, 18));
-    range.insertNode(span);
-    const after = document.createRange(); after.setStartAfter(span); after.collapse(true);
+    const element = createEmojiElement(id);
+    range.insertNode(element);
+    const after = document.createRange(); after.setStartAfter(element); after.collapse(true);
     selection?.removeAllRanges(); selection?.addRange(after); savedRange.current = after;
     syncHasInput();
   };
@@ -229,6 +226,13 @@ export default function ChatPanel() {
     else if (event.clipboardData.files.length || event.clipboardData.getData('text/html')) {
       toast.info('仅支持图片、纯文本和内置表情，不导入外部富文本资源');
     }
+  };
+  const copyText = (event: React.ClipboardEvent<HTMLDivElement>, cut = false) => {
+    if (cut && sendingRef.current) { event.preventDefault(); return; }
+    const range = copyEditorSelection(event.currentTarget, event.clipboardData);
+    if (!range) return;
+    event.preventDefault();
+    if (cut) { range.deleteContents(); savedRange.current = range.cloneRange(); syncHasInput(); }
   };
   const loadMore = async () => {
     const count = userMessages.length;
@@ -287,7 +291,7 @@ export default function ChatPanel() {
         </React.Fragment>)}
       </div>
       <div className="border-t border-gray-200 shrink-0 relative">
-        {emojiOpen && <EmojiPicker onSelect={insertEmoji} onClose={() => setEmojiOpen(false)} />}
+        {emojiOpen && <EmojiPicker disabled={sending} onSelect={insertEmoji} onClose={() => setEmojiOpen(false)} />}
         <div className="flex items-center gap-2 px-4 pt-2">
           <button disabled={sending} title="表情" onClick={() => setEmojiOpen(!emojiOpen)} className={`p-1.5 rounded ${emojiOpen ? 'text-primary-500 bg-gray-100' : 'text-gray-400 hover:text-gray-600'}`}><FiSmile size={18} /></button>
           <button disabled={!screenshotSupported || imageBusy || !!preview} title={screenshotSupported ? '截图与标注' : '截图需要 Windows 桌面版'} onClick={takeScreenshot} className="p-1.5 text-gray-400 hover:text-gray-600 disabled:opacity-40"><FiCamera size={18} /></button>
@@ -297,7 +301,7 @@ export default function ChatPanel() {
           <span className="text-[11px] text-gray-400 ml-1">{screenshotBusy ? '正在截图…' : filesSupported ? '可拖入文件或文件夹，确认后发送' : '支持图片收发'}</span>
         </div>
         <div className="px-4 pb-3 pt-1">
-          <div ref={editorRef} role="textbox" aria-label="消息输入框" aria-multiline="true" contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText}
+          <div ref={editorRef} role="textbox" aria-label="消息输入框" aria-multiline="true" contentEditable={!sending} suppressContentEditableWarning onKeyDown={handleKeyDown} onKeyUp={saveSelection} onMouseUp={saveSelection} onBlur={saveSelection} onInput={syncHasInput} onPaste={pasteText} onCopy={(event) => copyText(event)} onCut={(event) => copyText(event, true)}
             data-placeholder="输入消息，Enter 发送，Shift+Enter 或 Ctrl+Enter 换行"
             className="chat-editor w-full min-h-[4.5rem] max-h-40 overflow-y-auto text-sm leading-relaxed p-2 rounded border border-gray-200 focus:outline-none focus:ring-1 focus:ring-primary-400 whitespace-pre-wrap break-words" />
           <div className="flex justify-end mt-1"><button onClick={send} disabled={!hasInput || sending} className="px-4 py-1.5 text-sm text-white bg-primary-500 rounded hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed">{sending ? '发送中…' : '发送'}</button></div>

@@ -289,6 +289,70 @@ async fn malformed_image_is_reported_once_and_never_acknowledged() {
 }
 
 #[tokio::test]
+async fn feiq_emoticon_codes_remain_plain_text_on_wire_and_in_history() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    send(
+        &peer,
+        test.port,
+        2501,
+        IPMSG_BR_ENTRY,
+        "表情对端",
+        Some("测试组"),
+    )
+    .await;
+    assert_eq!(mode(packet(&peer).await.command), IPMSG_ANSENTRY);
+    test.next("user.discovered").await;
+
+    let content = "你好/:)/:D/<rotate>/:heart/:strong/:'(\n/8-)";
+    let id = test
+        .network
+        .send_message(&peer_id(&peer), content)
+        .await
+        .unwrap();
+    let wire = packet(&peer).await;
+    assert_eq!(mode(wire.command), IPMSG_SENDMSG);
+    assert_eq!(wire.command & (IPMSG_FILEATTACHOPT | IPMSG_UTF8OPT), 0);
+    assert_eq!(decode_text(&wire.body, wire.command).unwrap(), content);
+    send(
+        &peer,
+        test.port,
+        2502,
+        IPMSG_RECVMSG,
+        &wire.packet_no.to_string(),
+        None,
+    )
+    .await;
+    assert_eq!(test.next("message.ack").await.payload["messageId"], id);
+
+    let incoming = format!("{content}{{/font;-8 0 0 0 400 0 0 0 1 0 0 2 32 微软雅黑 8404992;}}");
+    send(
+        &peer,
+        test.port,
+        2503,
+        IPMSG_SENDMSG | IPMSG_SENDCHECKOPT,
+        &incoming,
+        None,
+    )
+    .await;
+    assert_eq!(packet(&peer).await.body, b"2503");
+    let received = test.next("message.received").await;
+    assert_eq!(received.payload["type"], "text");
+    assert_eq!(received.payload["content"], content);
+    let history = test
+        .db
+        .history(peer_id(&peer), "local@rust-test".into(), 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().all(|row| row.kind == 0
+        && row.content == content
+        && row.image.is_none()
+        && row.file.is_none()));
+    test.stop().await;
+}
+
+#[tokio::test]
 async fn unacknowledged_message_retries_then_fails() {
     let mut test = Fixture::start().await;
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();

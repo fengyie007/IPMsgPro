@@ -11,13 +11,14 @@
 
 **已通过离线检查：**
 
-- Rust核心79个单元测试、15个文件TCP、5个收图/存储、7个图片发送/截图导入、8个原有UDP及5个扫描集成测试通过（共119项）；桌面30个单元测试通过，包含提示音、通知内容、首次通知设置缺失、真实COM快捷方式和数据目录迁移测试。
+- Rust核心79个单元测试、15个文件TCP、5个收图/存储、7个图片发送/截图导入、9个UDP及5个扫描集成测试通过（共120项）；桌面30个单元测试通过，包含提示音、通知内容、首次通知设置缺失、真实COM快捷方式和数据目录迁移测试。
 - `tools/test-store.cjs`：18组前端消息store逻辑测试通过，包括图片/文件元数据、早到终态、续传代次、取消及清空；`tools/test-file-selection.cjs`：4组选择/拖放确认流程测试通过（IPC使用测试替身）。
 - `tools/test-screenshot.cjs`：6组截图坐标与发送流程测试通过；前端完整类型检查和生产构建通过。测试不启动截图窗口，不代表DPI/窗口实机验收。
 - `tools/test-scan.cjs`：8组范围校验、配置同步、状态乱序、取消和显式浏览器mock测试通过。
 - `tools/test-notification.cjs`：5组提示音配置、试听结果/去重、失败恢复及mock测试通过；自动测试使用播放器替身，没有打开音频设备。
 - `tools/test-clipboard.cjs`：4组剪贴板选择、格式/大小校验及原始字节IPC测试；`tools/test-system-notification.cjs`：3组通知点击串行消费、延后恢复及监听释放测试通过。
-- `tools/test-workspace.cjs`：6组工作区导航、设置离开保护、通知跳转延后、草稿/发送互斥、视图记忆和跨分类保存测试通过；前端当前合计54组。
+- `tools/test-workspace.cjs`：6组工作区导航、设置离开保护、通知跳转延后、草稿/发送互斥、视图记忆和跨分类保存测试通过。
+- `tools/test-emoticons.cjs`：8组飞秋表情映射/资源、混排与URL、旧XML兼容、React转义渲染、编辑器树/草稿、复制、摘要和文字IPC测试通过；前端当前合计62组。
 - 两个真实飞秋LZW样本已验证接收像素；本轮394×198真实样本的发送编码往返也与原始BMP所有像素一致。
 - Rust核心和Tauri桌面`cargo check --offline --locked`已通过；`npm run check`完整前端类型检查已通过（修复异步命令返回类型后）。
 
@@ -56,6 +57,15 @@
 - 设置分为个人信息、消息通知、网络发现、数据存储、通用、关于。跨分类修改统一保存；尚未点击添加的直接用户/扫描范围输入也会校验后一起保存。离开时有未保存更改会提示，包括系统通知带来的跳转；保存失败不会丢弃草稿。
 - 数据目录仍单独确认、重启生效。设置页返回进入前的聊天或通讯录；窄于840px时设置分类改为顶部排列，列表缩至240px，正常窗口列表280px、设置分类176px。
 - 用户已确认本轮界面验证通过，并授权提交。已有浏览器演示回归覆盖导航、草稿、未读、保存及720px布局边界，完整故障场景仍按清单回归。
+
+### 飞秋内置表情
+
+- 表情面板采用96个飞秋内置GIF及原始符号映射，来源为[compilelife/feiq](https://github.com/compilelife/feiq)的`emoji.cpp`和`res/face/`。例如微笑`/:)`、得意`/8-)`、转圈`/<rotate>`、爱心`/:heart`。
+- 选择表情在输入框插入不可编辑的表情元素，发送时还原成原始符号，与文字、换行一起通过`message.send`发送。GIF只是本地显示资源，不经图片或文件传输通道发送；收发历史继续保存原文。
+- 聊天气泡识别已知符号并显示GIF，区分大小写；HTTP(S)地址保持原样，未识别内容保留文字。会话列表显示`[微笑]`等摘要，旧XML表情历史继续使用原精灵图显示。
+- 草稿按稳定编号保存；输入框与单条文字消息的表情复制为符号文本，剪切后同步草稿。直接输入或粘贴符号也可正常发送。任意外部GIF图片发送不属于内置表情功能。
+- GIF作为独立静态资源随程序打包，不依赖飞秋安装位置。重新导入资源可执行`node tools/import-feiq-emojis.cjs D:\sources\feiq`；生成的`feiqEmojiData.ts`与`feiqEmojiAssets.ts`应一起更新，原`emojiData.ts`保留作历史兼容。
+- 用户已确认表情功能验证通过，并授权提交；头像支持作为后续功能单独开发。
 
 ### 2A 图片接收
 
@@ -181,6 +191,7 @@ npm run test:notification
 npm run test:clipboard
 npm run test:system-notification
 npm run test:workspace
+npm run test:emoticons
 cargo test --offline --locked --manifest-path src-tauri/Cargo.toml -j 1 --lib -- --test-threads=1
 
 # 可选原生诊断：在桌面登录账户下执行；默认只查询已有应用通知身份

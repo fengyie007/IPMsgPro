@@ -2,10 +2,9 @@ import React, { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FiAlertCircle, FiCheck, FiClock, FiImage, FiX } from 'react-icons/fi';
 import type { ImageMetadata, ImageReadResult, Message } from '../types';
-import { parseEmojiId, EMOJI_TOKEN_RE } from '../emojiData';
 import { formatTime, formatFileSize } from '../utils/format';
 import { invoke } from '../services/bridge';
-import EmojiSprite from './EmojiSprite';
+import MessageText from './MessageText';
 import { useMessageStore } from '../stores/messageStore';
 import { toast } from '../stores/toastStore';
 import FileBubble from './FileBubble';
@@ -28,21 +27,6 @@ function ImageSendState({ message }: { message: Message }) {
   </div>;
 }
 
-
-function renderText(content: string) {
-  const emojiId = parseEmojiId(content);
-  if (emojiId) return <EmojiSprite id={emojiId} size={18} />;
-  const parts: React.ReactNode[] = [];
-  let last = 0, match: RegExpExecArray | null;
-  EMOJI_TOKEN_RE.lastIndex = 0;
-  while ((match = EMOJI_TOKEN_RE.exec(content))) {
-    if (match.index > last) parts.push(content.slice(last, match.index));
-    parts.push(<EmojiSprite key={`${match.index}:${match[1]}`} id={match[1]} size={18} />);
-    last = match.index + match[0].length;
-  }
-  if (last < content.length) parts.push(content.slice(last));
-  return <span className="whitespace-pre-wrap break-words">{parts}</span>;
-}
 
 // Fetch only an application-owned asset URL. Do not cache failures or arbitrary
 // peer paths; retries and switching messages must be able to load a fresh URL.
@@ -145,7 +129,7 @@ export default memo(function MessageBubble({ message }: { message: Message }) {
     <div className={`flex ${self ? 'justify-end' : 'justify-start'} message-in`}>
       <div className="max-w-[70%] min-w-0">
         <div className={`px-3 py-2 rounded-lg text-sm leading-relaxed break-words ${self ? 'bg-chat-sent text-gray-800 rounded-tr-none' : 'bg-chat-received text-gray-800 rounded-tl-none shadow-sm'}`}>
-          {message.type === 'text' ? renderText(message.content) : message.type === 'image' ? (
+          {message.type === 'text' ? <MessageText content={message.content} /> : message.type === 'image' ? (
             message.image?.assetId ? <ReceivedImage image={message.image} /> : <span className="text-gray-500">[图片信息缺失，无法预览]</span>
           ) : <FileBubble message={message} />}
         </div>

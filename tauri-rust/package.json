@@ -15,6 +15,7 @@
     "test:clipboard": "node tools/test-clipboard.cjs",
     "test:system-notification": "node tools/test-system-notification.cjs",
     "test:workspace": "node tools/test-workspace.cjs",
+    "test:emoticons": "node tools/test-emoticons.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

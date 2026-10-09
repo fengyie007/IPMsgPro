@@ -3,7 +3,7 @@
 // ============================================================================
 
 import type { Message } from '../types';
-import { EMOJI_TOKEN_RE } from '../emojiData';
+import { emoticonPreview } from './emoticons';
 
 /** "HH:MM" for today, "MM/DD HH:MM" otherwise (zh-CN locale). */
 export function formatTime(timestamp: number): string {
@@ -39,7 +39,7 @@ export function formatPreview(msg: Message): string {
   if (msg.type === 'file') {
     return `[文件] ${msg.fileInfo?.fileName || msg.content.split(/[\\/]/).pop() || ''}`;
   }
-  return msg.content.replace(EMOJI_TOKEN_RE, '[表情]').replace(/\s*\n\s*/g, ' ');
+  return emoticonPreview(msg.content).replace(/\s*\n\s*/g, ' ');
 }
 
 /** "1.5 MB" style, 1024-based. */
