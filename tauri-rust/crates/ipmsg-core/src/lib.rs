@@ -27,4 +27,19 @@ pub struct User {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<avatar::Avatar>,
+    /// Normalized MAC field advertised by the peer (may be virtual).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::User;
+    #[test]
+    fn old_user_snapshots_without_mac_still_deserialize() {
+        let user: User = serde_json::from_value(serde_json::json!({"id":"old","nickname":"peer","username":"peer",
+            "hostname":"host","group":"","ip":"127.0.0.1","port":2425,"status":"offline","version":"1"})).unwrap();
+        assert!(user.mac.is_none());
+        assert!(serde_json::to_value(user).unwrap().get("mac").is_none());
+    }
 }

@@ -96,6 +96,7 @@ impl Fixture {
         let port = socket.local_addr().unwrap().port();
         let user = User {
             avatar: None,
+            mac: None,
             id: format!("rust-{port}@fixture"),
             username: format!("rust-{port}"),
             hostname: "fixture".into(),

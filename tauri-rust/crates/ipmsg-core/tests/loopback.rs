@@ -98,6 +98,7 @@ impl Fixture {
         let (tx, events) = mpsc::channel(256);
         let local = User {
             avatar: None,
+            mac: None,
             id: "local@rust-test".into(),
             nickname: "Rust测试".into(),
             username: "local".into(),
@@ -184,6 +185,118 @@ async fn send(
         .send_to(&bytes, (Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn peer_mac_is_endpoint_specific_and_retained_without_fresh_profile_metadata() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let other = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    for (socket, raw, expected) in [
+        (&peer, "a0b1c2d3e4f5", "A0-B1-C2-D3-E4-F5"),
+        (&other, "021122334455", "02-11-22-33-44-55"),
+    ] {
+        let wire = encode_packet_with_version(
+            &format!("1_lbt6_0#128#{raw}#0#0"),
+            7000,
+            "peer",
+            "fixture",
+            IPMSG_BR_ENTRY,
+            "Peer",
+            Some(""),
+        )
+        .unwrap();
+        socket
+            .send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        let user = test.next("user.discovered").await;
+        assert_eq!(user.payload["mac"], expected);
+        let answer = packet(socket).await;
+        assert_eq!(feiq_mac(&answer.version), test.network.local().mac);
+    }
+    for (n, version) in [(7001, "1"), (7002, "1_lbt6_0#128#029999999999#0#0")] {
+        let wire =
+            encode_packet_with_version(version, n, "peer", "fixture", IPMSG_SENDMSG, "text", None)
+                .unwrap();
+        peer.send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        assert_eq!(
+            test.next("message.received").await.payload["fromUser"]["mac"],
+            "A0-B1-C2-D3-E4-F5"
+        );
+    }
+    for (n, raw) in [(7003, "0a-bb-cc-dd-ee-ff"), (7004, "bad")] {
+        let wire = encode_packet_with_version(
+            &format!("1_lbt4_0#128#{raw}#0#0"),
+            n,
+            "peer",
+            "fixture",
+            IPMSG_BR_ABSENCE,
+            "Peer",
+            Some(""),
+        )
+        .unwrap();
+        peer.send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        assert_eq!(
+            test.next("user.discovered").await.payload["mac"],
+            "0A-BB-CC-DD-EE-FF"
+        );
+    }
+    send(&peer, test.port, 7005, IPMSG_BR_EXIT, "", None).await;
+    assert_eq!(
+        test.next("user.status_changed").await.payload["user"]["mac"],
+        "0A-BB-CC-DD-EE-FF"
+    );
+    assert_eq!(
+        test.network
+            .users()
+            .iter()
+            .find(|user| user.id == peer_id(&other))
+            .unwrap()
+            .mac
+            .as_deref(),
+        Some("02-11-22-33-44-55")
+    );
+    let unknown = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    send(
+        &unknown,
+        test.port,
+        7006,
+        IPMSG_BR_ENTRY,
+        "Unknown",
+        Some(""),
+    )
+    .await;
+    assert!(test
+        .next("user.discovered")
+        .await
+        .payload
+        .get("mac")
+        .is_none());
+    packet(&unknown).await;
+    let wire = encode_packet_with_version(
+        "1_lbt6_0#128#021234567890#0#0",
+        7007,
+        "peer",
+        "fixture",
+        IPMSG_SENDMSG,
+        "text",
+        None,
+    )
+    .unwrap();
+    unknown
+        .send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+        .await
+        .unwrap();
+    assert_eq!(
+        test.next("message.received").await.payload["fromUser"]["mac"],
+        "02-12-34-56-78-90"
+    );
+    test.stop().await;
 }
 
 async fn quiet(peer: &UdpSocket, duration: Duration) {

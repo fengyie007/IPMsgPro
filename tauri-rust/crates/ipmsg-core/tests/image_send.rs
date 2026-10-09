@@ -53,6 +53,7 @@ impl Fixture {
         let username = format!("test-{port}");
         let local = User {
             avatar: None,
+            mac: None,
             id: format!("{username}@fixture"),
             username,
             hostname: "fixture".into(),

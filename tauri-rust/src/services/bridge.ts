@@ -95,7 +95,7 @@ if (import.meta.hot) {
 // Explicit browser-only demonstration; never masks a missing Tauri runtime.
 const mockLocalId = 'me-rust-2427@mock';
 const mockUsers: User[] = [
-  { id: 'demo@localhost', nickname: '演示联系人', username: 'demo', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '', avatar: { kind: 'builtin', id: 5 } },
+  { id: 'demo@localhost', nickname: '演示联系人', username: 'demo', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '', avatar: { kind: 'builtin', id: 5 }, mac: '02-11-22-33-44-55' },
   { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '', avatar: { kind: 'custom' } },
 ];
 let mockConfig: Config = { ...DEFAULT_CONFIG };
@@ -145,7 +145,7 @@ function startMockScan(args: Record<string, unknown>) {
 
 function mockResponse(command: string, args: Record<string, unknown>): unknown {
   const localUser = {
-    id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me-rust-2427',
+    id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me-2427',
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
     avatar: { kind: 'builtin', id: mockConfig.avatarId },
   };

@@ -214,6 +214,50 @@ pub fn feiq_compat_version(instance_id: &str, port: u16) -> String {
     format!("1_lbt6_0#128#02{:010X}#0#0#0#4001#9", hash & 0xff_ffff_ffff)
 }
 
+/// Read the peer-advertised field, not an ARP lookup or a verified hardware ID.
+pub fn feiq_mac(version: &str) -> Option<String> {
+    if version.len() > MAX_VERSION_BYTES {
+        return None;
+    }
+    let mut fields = version.split('#');
+    let prefix = fields.next()?.strip_prefix("1_lbt")?;
+    let (dialect, avatar) = prefix.split_once('_')?;
+    if !matches!(dialect, "4" | "6")
+        || avatar.is_empty()
+        || !avatar.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    fields.next()?;
+    let raw = fields.next()?;
+    let compact = if raw.len() == 12 && raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        raw.to_owned()
+    } else if raw.len() == 17 {
+        let parts: Vec<_> = raw.split('-').collect();
+        if parts.len() != 6
+            || parts
+                .iter()
+                .any(|part| part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return None;
+        }
+        parts.concat()
+    } else {
+        return None;
+    };
+    let first = u8::from_str_radix(&compact[..2], 16).ok()?;
+    if first & 1 != 0 || compact.bytes().all(|b| b == b'0') {
+        return None;
+    }
+    let uppercase = compact.to_ascii_uppercase();
+    Some(
+        (0..6)
+            .map(|index| &uppercase[index * 2..index * 2 + 2])
+            .collect::<Vec<_>>()
+            .join("-"),
+    )
+}
+
 /// Encode a textual IPMsg packet. `Some(extra)` emits body-NUL-extra-NUL;
 /// `None` emits body-NUL. Binary images need their own future transport API.
 pub fn encode_packet(
@@ -322,6 +366,44 @@ pub fn subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn feiq_mac_normalizes_valid_fields_and_rejects_missing_or_invalid_addresses() {
+        for dialect in [4, 6] {
+            for raw in ["a0b1c2d3e4f5", "A0-B1-C2-D3-E4-F5"] {
+                assert_eq!(
+                    feiq_mac(&format!("1_lbt{dialect}_0#128#{raw}#0#0#0#4001#9")),
+                    Some("A0-B1-C2-D3-E4-F5".into())
+                );
+            }
+        }
+        assert!(feiq_mac(&feiq_compat_version("local", 2425))
+            .unwrap()
+            .starts_with("02-"));
+        for raw in [
+            "",
+            "000000000000",
+            "FFFFFFFFFFFF",
+            "01005E000001",
+            "aabbccddeef",
+            "A0-B1C2-D3-E4-F5",
+            "<script>",
+            "not-a-mac-id",
+        ] {
+            assert_eq!(feiq_mac(&format!("1_lbt6_0#128#{raw}#0#0")), None, "{raw}");
+        }
+        for version in [
+            "1",
+            "1_lbt6_0#128",
+            "1_lbt9_0#128#a0b1c2d3e4f5",
+            "1_lbt6_bad#128#a0b1c2d3e4f5",
+        ] {
+            assert_eq!(feiq_mac(version), None);
+        }
+        assert_eq!(
+            feiq_mac(&format!("1_lbt6_0#128#a0b1c2d3e4f5#{}", "0".repeat(128))),
+            None
+        );
+    }
 
     #[test]
     fn outgoing_image_packet_preserves_every_binary_byte() {

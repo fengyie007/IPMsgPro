@@ -15,8 +15,8 @@ export default function ContactDetails() {
   </section>;
   const status = { online: '在线', away: '离开', offline: '离线' }[user.status];
   const address = user.ip ? `${user.ip}:${user.port}` : '';
-  const copyAddress = async () => {
-    try { await navigator.clipboard.writeText(address); toast.success('已复制联系地址'); }
+  const copy = async (value: string, label: string) => {
+    try { await navigator.clipboard.writeText(value); toast.success(`已复制${label}`); }
     catch { toast.error('复制失败，请选择地址后手动复制'); }
   };
   return <section className="flex-1 min-w-0 flex flex-col bg-white" aria-label="联系人资料">
@@ -31,7 +31,8 @@ export default function ContactDetails() {
           <dt className="text-gray-500">分组</dt><dd className="text-gray-800 break-words">{user.group || '未分组'}</dd>
           <dt className="text-gray-500">用户名</dt><dd className="text-gray-800 break-all">{user.username || '—'}</dd>
           <dt className="text-gray-500">计算机</dt><dd className="text-gray-800 break-all">{user.hostname || '—'}</dd>
-          <dt className="text-gray-500">联系地址</dt><dd className="text-gray-800 flex items-start gap-2 min-w-0"><span className="break-all select-text">{address || '暂无地址'}</span>{address && <button className="p-1 shrink-0 text-gray-400 hover:text-primary-700" title="复制联系地址" onClick={() => void copyAddress()}><FiCopy size={14} /></button>}</dd>
+          <dt className="text-gray-500">联系地址</dt><dd className="text-gray-800 flex items-start gap-2 min-w-0"><span className="break-all select-text">{address || '暂无地址'}</span>{address && <button className="p-1 shrink-0 text-gray-400 hover:text-primary-700" title="复制联系地址" onClick={() => void copy(address, '联系地址')}><FiCopy size={14} /></button>}</dd>
+          <dt className="text-gray-500">MAC地址</dt><dd className="text-gray-800 flex items-start gap-2 min-w-0" title="对端上报的地址，可能是虚拟地址"><span className="break-all select-text">{user.mac || '未提供'}</span>{user.mac && <button className="p-1 shrink-0 text-gray-400 hover:text-primary-700" title="复制MAC地址" onClick={() => void copy(user.mac!, 'MAC地址')}><FiCopy size={14} /></button>}</dd>
         </dl>
         {user.status === 'offline' && <p className="mb-4 text-xs text-gray-500">联系人当前离线，发送前请确认对方已启动应用。</p>}
         <button className="inline-flex items-center gap-2 px-6 py-2.5 rounded-md bg-primary-600 hover:bg-primary-700 text-white text-sm" onClick={() => useWorkspaceStore.getState().openChat(user)}><FiMessageSquare size={17} />发消息</button>

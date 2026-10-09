@@ -14,6 +14,7 @@ export interface User {
   status: 'online' | 'away' | 'offline';
   version: string;
   avatar?: Avatar;
+  mac?: string;
 }
 
 export interface ImageMetadata {

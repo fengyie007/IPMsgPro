@@ -18,6 +18,7 @@
     "test:emoticons": "node tools/test-emoticons.cjs",
     "test:avatars": "node tools/test-avatars.cjs",
     "test:knock": "node tools/test-knock.cjs",
+    "test:contacts": "node tools/test-contact-details.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

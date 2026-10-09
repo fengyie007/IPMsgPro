@@ -159,6 +159,7 @@ impl Network {
         let avatar_id = config.get().avatar_id;
         let wire_version = Arc::new(LocalIdentity::new(&local.id, local.port, avatar_id)?);
         local.avatar = Some(Avatar::Builtin { id: avatar_id });
+        local.mac = feiq_mac(&wire_version.snapshot());
         Ok(Arc::new(Self {
             socket: Arc::new(socket),
             local: RwLock::new(local),
@@ -560,6 +561,8 @@ impl Network {
         } else {
             None
         };
+        let reported_mac = feiq_mac(&packet.version);
+        let previous_mac = previous.as_ref().and_then(|user| user.mac.clone());
         let cached_avatar = self
             .avatar_cache
             .read()
@@ -587,6 +590,11 @@ impl Network {
             }
             .into(),
             version: packet.version.clone(),
+            mac: if is_profile {
+                reported_mac.clone().or(previous_mac)
+            } else {
+                previous_mac.or(reported_mac.clone())
+            },
             avatar: announced_avatar
                 .clone()
                 .or_else(|| previous.as_ref().and_then(|user| user.avatar.clone()))
@@ -602,6 +610,12 @@ impl Network {
                     .get(&id)
                     .and_then(|peer| peer.user.avatar.clone())
                     .or(user.avatar);
+            }
+            if !is_profile || reported_mac.is_none() {
+                user.mac = peers
+                    .get(&id)
+                    .and_then(|peer| peer.user.mac.clone())
+                    .or(user.mac);
             }
             let changed = peers.get(&id).map(|peer| &peer.user) != Some(&user);
             let peer = peers.entry(id.clone()).or_insert(Peer {

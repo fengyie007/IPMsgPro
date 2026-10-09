@@ -117,6 +117,7 @@ impl Fixture {
         let port = socket.local_addr().unwrap().port();
         let local = User {
             avatar: None,
+            mac: None,
             id: "local@fixture".into(),
             username: "local".into(),
             hostname: "fixture".into(),

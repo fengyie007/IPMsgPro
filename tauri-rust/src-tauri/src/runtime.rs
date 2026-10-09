@@ -42,6 +42,52 @@ pub struct Runtime {
     log_file: Mutex<fs::File>,
     verbose: bool,
 }
+
+/// Keep the historical database/compatibility identity stable while presenting
+/// an unbranded login on the wire. Only nonstandard ports need a visible suffix.
+fn local_names(account: &str, hostname: &str, port: u16) -> (String, String) {
+    let id = format!("{account}-rust-{port}@{hostname}");
+    let username = if port == ipmsg_core::protocol::IPMSG_DEFAULT_PORT {
+        account.to_owned()
+    } else {
+        format!("{account}-{port}")
+    };
+    (id, username)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::local_names;
+
+    #[test]
+    fn unbranded_logins_keep_existing_history_identity() {
+        for (port, expected) in [(2425, "feng"), (2427, "feng-2427"), (3500, "feng-3500")] {
+            let (id, username) = local_names("feng", "PC", port);
+            assert_eq!(username, expected);
+            assert_eq!(id, format!("feng-rust-{port}@PC"));
+            let version = ipmsg_core::protocol::feiq_compat_version(&id, port);
+            let packet = ipmsg_core::protocol::encode_packet_with_version(
+                &version,
+                1,
+                &username,
+                "PC",
+                ipmsg_core::protocol::IPMSG_BR_ENTRY,
+                &username,
+                None,
+            )
+            .unwrap();
+            let parsed = ipmsg_core::protocol::parse_packet(&packet).unwrap();
+            assert_eq!(parsed.username, expected);
+            assert_eq!(
+                ipmsg_core::protocol::decode_text(&parsed.body, parsed.command).unwrap(),
+                expected
+            );
+        }
+        // Real account names are not globally scrubbed for this substring.
+        assert_eq!(local_names("rusty", "PC", 2425).1, "rusty");
+    }
+}
+
 impl Runtime {
     pub async fn create(app: &AppHandle, options: Options) -> Result<Arc<Self>, String> {
         // Acquire the listening port before opening any writable per-instance files.
@@ -76,16 +122,14 @@ impl Runtime {
             .append(true)
             .open(data_dir.join("speedipmsg.log"))
             .map_err(|e| e.to_string())?;
-        let username = format!(
-            "{}-rust-{}",
-            std::env::var("USERNAME").unwrap_or_else(|_| "user".into()),
-            options.port
-        );
+        let account = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
         let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".into());
+        let (id, username) = local_names(&account, &hostname, options.port);
         let (ip, broadcasts) = local_networks();
         let local = User {
             avatar: None,
-            id: format!("{username}@{hostname}"),
+            mac: None,
+            id,
             nickname: if values.nickname.is_empty() {
                 username.clone()
             } else {
@@ -173,7 +217,7 @@ impl Runtime {
             &format!(
                 "SpeedIpMsg started on port {} as {}",
                 state.port,
-                state.network.local().id
+                state.network.local().username
             ),
         );
         if let Some(error) = sound_error {

@@ -54,6 +54,7 @@ impl Fixture {
         let db = Database::open(&root.join("messages.db")).unwrap();
         let local = User {
             avatar: None,
+            mac: None,
             id: "local@scan-test".into(),
             username: "local".into(),
             hostname: "scan-test".into(),
