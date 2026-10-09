@@ -1,5 +1,7 @@
 export const APP_VERSION = '0.1.0';
 export const APP_NAME = '迅秋';
+export const AVATAR_COUNT = 84;
+export type Avatar = { kind: 'builtin'; id: number } | { kind: 'custom' } | { kind: 'unknown' };
 
 export interface User {
   id: string;
@@ -11,6 +13,7 @@ export interface User {
   port: number;
   status: 'online' | 'away' | 'offline';
   version: string;
+  avatar?: Avatar;
 }
 
 export interface ImageMetadata {
@@ -82,6 +85,7 @@ export interface HistoryResult {
 // shape for migration, but are not editable or replayed as active features.
 export interface Config {
   nickname: string;
+  avatarId: number;
   group: string;
   minimizeBehavior: 'taskbar' | 'tray';
   directUsers: string[];
@@ -97,7 +101,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  nickname: '', group: '', minimizeBehavior: 'tray', directUsers: [],
+  nickname: '', avatarId: 0, group: '', minimizeBehavior: 'tray', directUsers: [],
   dataDir: '', notificationSound: false, segments: [], ipScanRanges: [],
   systemNotifications: false, notificationPreview: false,
   scanPort: 2425, scanDelayMs: 20, scanOnStartup: true,

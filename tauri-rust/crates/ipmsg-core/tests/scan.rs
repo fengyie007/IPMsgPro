@@ -53,6 +53,7 @@ impl Fixture {
         let config = Arc::new(ConfigStore::open(root.join("config.json")).unwrap());
         let db = Database::open(&root.join("messages.db")).unwrap();
         let local = User {
+            avatar: None,
             id: "local@scan-test".into(),
             username: "local".into(),
             hostname: "scan-test".into(),

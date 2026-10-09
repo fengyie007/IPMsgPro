@@ -1,8 +1,9 @@
 import React from 'react';
 import { FiMessageSquare, FiUsers, FiSettings } from 'react-icons/fi';
 import { useMessageStore } from '../stores/messageStore';
+import { useConfigStore } from '../stores/configStore';
 import { APP_NAME, APP_VERSION } from '../types';
-import appIcon from '../assets/app-icon.png';
+import UserAvatar from './UserAvatar';
 import type { ViewMode } from '../stores/workspaceStore';
 
 export type { ViewMode } from '../stores/workspaceStore';
@@ -14,20 +15,16 @@ interface LeftSidebarProps {
 }
 
 export default function LeftSidebar({ viewMode, onViewChange, disabled = false }: LeftSidebarProps) {
+  const avatarId = useConfigStore((s) => s.config.avatarId);
   const unread = useMessageStore((s) => s.unread);
   let totalUnread = 0;
   for (const n of unread.values()) totalUnread += n;
 
   return (
     <nav aria-label="主导航" className="w-sidebar bg-sidebar-bg flex flex-col items-center py-4 shrink-0">
-      {/* Logo: the application icon (same image as the exe / tray icon) */}
-      <img
-        src={appIcon}
-        alt="迅秋"
-        title={APP_NAME}
-        className="w-10 h-10 rounded-lg mb-8 select-none"
-        draggable={false}
-      />
+      <div className="mb-8 flex" title="我的头像">
+        <UserAvatar avatar={{ kind: 'builtin', id: avatarId }} className="select-none" />
+      </div>
 
       {/* Navigation buttons */}
       <div className="flex flex-col items-center gap-4 flex-1">

@@ -503,7 +503,7 @@ impl Network {
                     body.extend_from_slice(&payload[offset..offset + length]);
                     let local = self.local();
                     let packet = encode_image_packet(
-                        &self.wire_version,
+                        &self.wire_version.snapshot(),
                         self.next_packet(),
                         &local.username,
                         &local.hostname,
@@ -547,7 +547,7 @@ impl Network {
             job.result.image_id
         );
         let packet = encode_packet_with_version(
-            &self.wire_version,
+            &self.wire_version.snapshot(),
             number,
             &local.username,
             &local.hostname,

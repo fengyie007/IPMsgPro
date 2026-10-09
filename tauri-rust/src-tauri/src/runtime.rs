@@ -84,6 +84,7 @@ impl Runtime {
         let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".into());
         let (ip, broadcasts) = local_networks();
         let local = User {
+            avatar: None,
             id: format!("{username}@{hostname}"),
             nickname: if values.nickname.is_empty() {
                 username.clone()

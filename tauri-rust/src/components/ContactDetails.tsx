@@ -4,6 +4,7 @@ import { useUserStore } from '../stores/userStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { toast } from '../stores/toastStore';
 import { useScrollMemory } from '../utils/useScrollMemory';
+import UserAvatar from './UserAvatar';
 
 export default function ContactDetails() {
   const contactId = useWorkspaceStore((state) => state.contactId);
@@ -23,7 +24,7 @@ export default function ContactDetails() {
     <div {...scroll} className="flex-1 overflow-y-auto px-6 py-8 min-[840px]:px-10">
       <div className="max-w-lg mx-auto">
         <div className="flex items-center gap-4 pb-7 border-b border-gray-100">
-          <div className="w-16 h-16 shrink-0 rounded-xl bg-primary-100 text-primary-700 flex items-center justify-center text-2xl font-medium">{(user.nickname || user.username).slice(0, 1).toUpperCase()}</div>
+          <UserAvatar user={user} size={64} className="rounded-xl" />
           <div className="min-w-0"><h3 className="text-xl font-semibold text-gray-800 break-words">{user.nickname || user.username}</h3><p className="flex items-center gap-2 mt-2 text-sm text-gray-500"><span className={`h-2 w-2 rounded-full ${user.status === 'online' ? 'bg-primary-500' : user.status === 'away' ? 'bg-amber-400' : 'bg-gray-400'}`} />{status}</p></div>
         </div>
         <dl className="grid grid-cols-[5rem_minmax(0,1fr)] gap-y-5 gap-x-4 py-7 text-sm">

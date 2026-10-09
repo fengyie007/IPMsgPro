@@ -1,3 +1,4 @@
+use crate::avatar::{Avatar, AVATAR_CACHE_LIMIT};
 use crate::image::{
     assets::{valid_asset_id, PendingAsset},
     fragments::{Assembler, TransferKey},
@@ -6,6 +7,7 @@ use crate::image::{
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -159,7 +161,7 @@ impl Database {
                     db.busy_timeout(std::time::Duration::from_secs(1))?;
                     db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
                     let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                    if version > 5 { return Err(rusqlite::Error::InvalidQuery); }
+                    if version > 6 { return Err(rusqlite::Error::InvalidQuery); }
                     let transaction = db.transaction()?;
                     transaction.execute_batch(
                         "CREATE TABLE IF NOT EXISTS messages (
@@ -188,7 +190,10 @@ impl Database {
                         CREATE TABLE IF NOT EXISTS file_receives(message_id TEXT PRIMARY KEY, checkpoint TEXT NOT NULL);
                         UPDATE message_files SET metadata=json_set(metadata,'$.state',CASE WHEN json_extract(metadata,'$.canResume')=1 THEN 'paused' ELSE 'failed' END,'$.attempt',COALESCE(json_extract(metadata,'$.attempt'),0)+1,'$.error','程序重启，传输已中断')
                         WHERE json_extract(metadata,'$.state') IN ('offered','transferring','finalizing');")?;
-                    transaction.pragma_update(None, "user_version", 5)?;
+                    transaction.execute_batch("CREATE TABLE IF NOT EXISTS peer_avatars (
+                        peer_id TEXT PRIMARY KEY, avatar TEXT NOT NULL, updated_at INTEGER NOT NULL);
+                        CREATE INDEX IF NOT EXISTS peer_avatars_updated ON peer_avatars(updated_at);")?;
+                    transaction.pragma_update(None, "user_version", 6)?;
                     transaction.commit()?;
                     Ok(db)
                 })();
@@ -233,6 +238,41 @@ impl Database {
     }
     pub fn images_dir(&self) -> &Path {
         self.images_dir.as_path()
+    }
+
+    pub async fn avatars(&self) -> Result<HashMap<String, Avatar>, String> {
+        self.call(|db| {
+            let mut query = db.prepare("SELECT peer_id,avatar FROM peer_avatars ORDER BY updated_at DESC,peer_id LIMIT ?")
+                .map_err(|e| e.to_string())?;
+            let rows = query.query_map([AVATAR_CACHE_LIMIT], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?;
+            let mut avatars = HashMap::new();
+            for row in rows {
+                let (peer, value) = row.map_err(|e| e.to_string())?;
+                if value.len() <= 128 {
+                    if let Ok(avatar) = serde_json::from_str::<Avatar>(&value) {
+                        if avatar.valid() { avatars.insert(peer, avatar); }
+                    }
+                }
+            }
+            Ok(avatars)
+        }).await
+    }
+
+    pub async fn save_avatar(&self, peer: String, avatar: Avatar) -> Result<(), String> {
+        if peer.is_empty() || peer.len() > 2048 || !avatar.valid() {
+            return Err("无效联系人头像".into());
+        }
+        let value = serde_json::to_string(&avatar).map_err(|e| e.to_string())?;
+        self.call(move |db| {
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO peer_avatars(peer_id,avatar,updated_at) VALUES (?,?,(SELECT COALESCE(MAX(updated_at),0)+1 FROM peer_avatars))
+                ON CONFLICT(peer_id) DO UPDATE SET avatar=excluded.avatar,updated_at=excluded.updated_at", params![peer,value])
+                .map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM peer_avatars WHERE peer_id IN (SELECT peer_id FROM peer_avatars ORDER BY updated_at DESC,peer_id LIMIT -1 OFFSET ?)", [AVATAR_CACHE_LIMIT])
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
+        }).await
     }
 
     pub async fn image_asset(&self, asset_id: String) -> Result<Option<ImageMetadata>, String> {
@@ -749,6 +789,95 @@ mod tests {
         assert!(!db.insert(wanted).await.unwrap());
         db.shutdown().await;
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn avatar_cache_is_durable_endpoint_specific_and_independent_of_history() {
+        let (root, db, _, _) = image_fixture();
+        let first = "peer@host#127.0.0.1:2425".to_string();
+        let second = "peer@host#127.0.0.1:2426".to_string();
+        db.save_avatar(first.clone(), Avatar::Builtin { id: 83 })
+            .await
+            .unwrap();
+        db.save_avatar(second.clone(), Avatar::Builtin { id: 5 })
+            .await
+            .unwrap();
+        assert!(db
+            .save_avatar(first.clone(), Avatar::Builtin { id: 84 })
+            .await
+            .is_err());
+        assert!(db.save_avatar(String::new(), Avatar::Custom).await.is_err());
+        db.clear(None, "local".into()).await.unwrap();
+        db.shutdown().await;
+        let db = Database::open(&root.join("messages.db")).unwrap();
+        let avatars = db.avatars().await.unwrap();
+        assert_eq!(avatars.get(&first), Some(&Avatar::Builtin { id: 83 }));
+        assert_eq!(avatars.get(&second), Some(&Avatar::Builtin { id: 5 }));
+        for marker in [Avatar::Custom, Avatar::Unknown] {
+            db.save_avatar(first.clone(), marker.clone()).await.unwrap();
+            assert_eq!(db.avatars().await.unwrap().get(&first), Some(&marker));
+        }
+        db.call(|db| {
+            for (n, invalid) in [
+                "broken",
+                r#"{"kind":"builtin","id":84}"#,
+                r#"{"kind":"remote","url":"https://example.test/a"}"#,
+            ]
+            .iter()
+            .enumerate()
+            {
+                db.execute(
+                    "INSERT INTO peer_avatars VALUES (?,?,0)",
+                    params![format!("bad{n}"), invalid],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(db.avatars().await.unwrap().len(), 2);
+        clean_image_fixture(root, db).await;
+    }
+
+    #[tokio::test]
+    async fn avatar_cache_prunes_oldest_without_dropping_recent_updates() {
+        let (root, db, _, _) = image_fixture();
+        db.call(|db| {
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            for id in 0..AVATAR_CACHE_LIMIT {
+                tx.execute(
+                    "INSERT INTO peer_avatars VALUES (?,?,?)",
+                    params![
+                        format!("peer{id}"),
+                        r#"{"kind":"builtin","id":0}"#,
+                        id as i64
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        db.save_avatar("peer0".into(), Avatar::Builtin { id: 83 })
+            .await
+            .unwrap();
+        db.save_avatar("new".into(), Avatar::Custom).await.unwrap();
+        let cache = db.avatars().await.unwrap();
+        assert_eq!(cache.len(), AVATAR_CACHE_LIMIT);
+        assert_eq!(cache.get("peer0"), Some(&Avatar::Builtin { id: 83 }));
+        assert_eq!(cache.get("new"), Some(&Avatar::Custom));
+        assert!(!cache.contains_key("peer1"));
+        let count: i64 = db
+            .call(|db| {
+                db.query_row("SELECT COUNT(*) FROM peer_avatars", [], |r| r.get(0))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, AVATAR_CACHE_LIMIT as i64);
+        clean_image_fixture(root, db).await;
     }
 
     fn image_fixture() -> (

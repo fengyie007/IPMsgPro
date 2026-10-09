@@ -8,6 +8,7 @@ function load(relative, dependencies = {}, transform = (source) => source) {
   }).outputText;
   vm.runInNewContext(compiled, { exports, console, setTimeout, clearTimeout, setInterval, clearInterval, require(name) {
     if (name in dependencies) return dependencies[name];
+    if (name === '../utils/avatar') return load('src/utils/avatar.ts', { '../types': load('src/types/index.ts') });
     throw new Error(`Unexpected import ${name}`);
   } }, { filename });
   return exports;

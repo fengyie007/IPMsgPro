@@ -2,6 +2,7 @@ import { invoke as nativeInvoke, isTauri } from '@tauri-apps/api/core';
 import { listen as nativeListen, type UnlistenFn } from '@tauri-apps/api/event';
 import { APP_VERSION, DEFAULT_CONFIG, MVP_CAPABILITIES, EMPTY_SCAN, type Config, type HistoryRecord, type User, type ScanStatus } from '../types';
 import { validateScanOptions } from '../utils/netValidation';
+import { validAvatarId } from '../utils/avatar';
 
 type Callback = (payload: any) => void;
 interface Envelope { event: string; payload: unknown }
@@ -94,8 +95,8 @@ if (import.meta.hot) {
 // Explicit browser-only demonstration; never masks a missing Tauri runtime.
 const mockLocalId = 'me-rust-2427@mock';
 const mockUsers: User[] = [
-  { id: 'demo@localhost', nickname: '演示联系人', username: 'demo', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '' },
-  { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '' },
+  { id: 'demo@localhost', nickname: '演示联系人', username: 'demo', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '', avatar: { kind: 'builtin', id: 5 } },
+  { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '', avatar: { kind: 'custom' } },
 ];
 let mockConfig: Config = { ...DEFAULT_CONFIG };
 const mockImageSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#dcfce7"/><text x="160" y="95" text-anchor="middle" font-size="22" fill="#166534">图片预览</text></svg>';
@@ -145,6 +146,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
   const localUser = {
     id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me-rust-2427',
     hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
+    avatar: { kind: 'builtin', id: mockConfig.avatarId },
   };
   switch (command) {
     case 'storage.info': return { success: true, active: '浏览器演示，不写磁盘', pending: null, defaultDirectory: '', isDefault: true, error: null };
@@ -222,6 +224,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     }
     case 'config.set': {
       const next = { ...mockConfig, ...args } as Config;
+      if (!validAvatarId(next.avatarId)) return { success: false, error: '头像编号必须在0到83之间' };
       if (typeof next.notificationSound !== 'boolean') return { success: false, error: '提示音开关必须是布尔值' };
       if (!Array.isArray(next.ipScanRanges) || next.ipScanRanges.some((r) => typeof r !== 'string') || typeof next.scanOnStartup !== 'boolean') return { success: false, error: '扫描设置无效' };
       const parsed = validateScanOptions(next.ipScanRanges, next.scanPort, next.scanDelayMs);
@@ -230,7 +233,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
       return { success: true, config: mockConfig };
     }
     case 'user.local': return { success: true, ...localUser };
-    case 'user.list': return { success: true, users: mockUsers, count: mockUsers.length };
+    case 'user.list': return { success: true, users: mockUsers, count: mockUsers.length, avatars: Object.fromEntries(mockUsers.map((user) => [user.id, user.avatar])) };
     case 'user.discover':
       for (const user of mockUsers) dispatch({ event: 'user.discovered', payload: user });
       return { success: true };

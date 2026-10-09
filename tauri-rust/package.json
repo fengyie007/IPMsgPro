@@ -16,6 +16,7 @@
     "test:system-notification": "node tools/test-system-notification.cjs",
     "test:workspace": "node tools/test-workspace.cjs",
     "test:emoticons": "node tools/test-emoticons.cjs",
+    "test:avatars": "node tools/test-avatars.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

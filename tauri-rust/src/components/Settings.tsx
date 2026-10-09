@@ -12,6 +12,7 @@ import ConfirmDialog from './ConfirmDialog';
 import ScanSettings from './ScanSettings';
 import NotificationSettings from './NotificationSettings';
 import StorageSettings from './StorageSettings';
+import AvatarPicker from './AvatarPicker';
 
 const categories: { id: SettingsCategory; label: string; description: string; icon: React.ReactNode }[] = [
   { id: 'profile', label: '个人信息', description: '让局域网中的联系人认出你', icon: <FiUser /> },
@@ -108,9 +109,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       <SettingsBody key={category} category={category}>
         <p className="text-sm text-gray-500 mb-7">{selected.description}</p>
         {category === 'profile' && <Section title="在通讯录中显示的信息">
+          <AvatarPicker value={draft.avatarId} onChange={(avatarId) => setDraft({ ...draft, avatarId })} disabled={locked} />
           <Field label="昵称"><input aria-label="昵称" disabled={locked} className="input-field" value={draft.nickname} maxLength={128} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })} placeholder="留空使用默认昵称" /></Field>
           <Field label="分组"><input aria-label="分组" disabled={locked} className="input-field" value={draft.group} maxLength={128} onChange={(e) => setDraft({ ...draft, group: e.target.value })} placeholder="例如：研发部" /></Field>
-          <p className="text-xs text-gray-500">保存后，其他联系人将看到更新后的昵称和分组。</p>
+          <p className="text-xs text-gray-500">保存后，其他联系人将看到更新后的头像、昵称和分组。</p>
         </Section>}
         {category === 'notifications' && <div className="space-y-8">
           <NotificationSettings enabled={draft.notificationSound} supported={info?.capabilities.notificationSound ?? false} disabled={locked} onChange={(notificationSound) => setDraft({ ...draft, notificationSound })} />

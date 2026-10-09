@@ -1,5 +1,6 @@
 //! Tauri-independent protocol, text messaging, configuration and persistence.
 
+pub mod avatar;
 pub mod config;
 pub mod database;
 pub mod file;
@@ -24,4 +25,6 @@ pub struct User {
     pub port: u16,
     pub status: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<avatar::Avatar>,
 }

@@ -133,8 +133,7 @@ impl FileTransfers {
     }
     async fn connection(&self, t: &Transfer, offset: u64) -> Result<TcpStream, String> {
         let ack = self.wire(self.next(), IPMSG_RECVMSG, &t.packet.to_string(), None)?;
-        self.socket
-            .send_to(&ack, Self::address(&t.peer)?)
+        self.send_udp(&ack, Self::address(&t.peer)?)
             .await
             .map_err(|e| e.to_string())?;
         let mut socket = self

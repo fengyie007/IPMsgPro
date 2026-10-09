@@ -14,6 +14,7 @@ import { clipboardImage, importClipboardImage } from '../services/clipboard';
 import ConfirmDialog from './ConfirmDialog';
 import MessageBubble from './MessageBubble';
 import EmojiPicker from './EmojiPicker';
+import UserAvatar from './UserAvatar';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { copyEditorSelection, createEmojiElement, draftText, readEditor, restoreEditor, type DraftPart } from '../utils/chatEditor';
 const EMPTY_DRAFT: DraftPart[] = [];
@@ -269,6 +270,7 @@ export default function ChatPanel() {
   return (
     <section aria-label="聊天内容" className="flex-1 flex flex-col min-w-0 bg-white">
       <div className="h-16 px-5 flex items-center border-b border-gray-200 shrink-0 gap-2">
+        <UserAvatar user={user} size={36} />
         <div className="min-w-0"><h2 className="font-semibold text-gray-800 truncate">{user.nickname}</h2><p className="text-xs text-gray-400 mt-0.5 truncate">{status}{user.group ? ` · ${user.group}` : ''} · {user.ip ? `${user.ip}:${user.port}` : '历史联系人'}</p></div>
         <button className="ml-auto p-2 text-gray-500 rounded hover:bg-gray-100" title="搜索本会话历史" onClick={() => setSearchOpen(true)}><FiSearch size={17} /></button>
         <div className="relative">

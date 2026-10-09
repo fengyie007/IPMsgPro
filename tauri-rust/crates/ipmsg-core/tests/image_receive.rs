@@ -116,6 +116,7 @@ impl Fixture {
         let socket: std::net::UdpSocket = raw.into();
         let port = socket.local_addr().unwrap().port();
         let local = User {
+            avatar: None,
             id: "local@fixture".into(),
             username: "local".into(),
             hostname: "fixture".into(),
@@ -404,7 +405,7 @@ async fn legacy_schema_migrates_and_image_clear_does_not_resurrect() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     drop(connection);
     std::fs::remove_dir_all(root).unwrap();
 }

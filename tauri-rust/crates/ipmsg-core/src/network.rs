@@ -1,4 +1,5 @@
 use crate::{
+    avatar::{parse_avatar, Avatar, LocalIdentity, AVATAR_CACHE_LIMIT},
     config::{parse_address, AppConfig, ConfigStore},
     database::{Database, Record},
     image::{assets::AssetStore, fragments::Assembler},
@@ -54,7 +55,8 @@ struct Pending {
 pub struct Network {
     socket: Arc<UdpSocket>,
     local: RwLock<User>,
-    wire_version: String,
+    wire_version: Arc<LocalIdentity>,
+    avatar_cache: RwLock<HashMap<String, Avatar>>,
     peers: Mutex<HashMap<String, Peer>>,
     pending: Mutex<HashMap<u32, Pending>>,
     images: Arc<Mutex<Assembler>>,
@@ -137,7 +139,7 @@ impl Network {
 
     pub fn new(
         socket: std::net::UdpSocket,
-        local: User,
+        mut local: User,
         config: Arc<ConfigStore>,
         db: Database,
         events: mpsc::Sender<Event>,
@@ -152,11 +154,14 @@ impl Network {
         let mut seed = [0u8; 4];
         getrandom::fill(&mut seed).map_err(|e| e.to_string())?;
         let assets = AssetStore::new(db.images_dir())?;
-        let wire_version = feiq_compat_version(&local.id, local.port);
+        let avatar_id = config.get().avatar_id;
+        let wire_version = Arc::new(LocalIdentity::new(&local.id, local.port, avatar_id)?);
+        local.avatar = Some(Avatar::Builtin { id: avatar_id });
         Ok(Arc::new(Self {
             socket: Arc::new(socket),
             local: RwLock::new(local),
             wire_version,
+            avatar_cache: RwLock::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             images: Arc::new(Mutex::new(Assembler::new())),
@@ -258,7 +263,7 @@ impl Network {
             command
         };
         encode_packet_with_version(
-            &self.wire_version,
+            &self.wire_version.snapshot(),
             self.next_packet(),
             &local.username,
             &local.hostname,
@@ -268,8 +273,9 @@ impl Network {
         )
     }
     async fn send_to(&self, address: SocketAddrV4, wire: &[u8]) -> Result<(), String> {
+        let wire = self.wire_version.refresh(wire)?;
         self.socket
-            .send_to(wire, address)
+            .send_to(&wire, address)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -293,6 +299,10 @@ impl Network {
         let mut tasks = self.tasks.lock().await;
         if !tasks.is_empty() {
             return;
+        }
+        match self.db.avatars().await {
+            Ok(avatars) => *self.avatar_cache.write().unwrap_or_else(|e| e.into_inner()) = avatars,
+            Err(error) => self.diagnostic("WARN", format!("加载头像缓存失败：{error}")),
         }
         self.clean_image_imports(true).await;
         let me = self.clone();
@@ -332,7 +342,7 @@ impl Network {
         let local = self.local();
         self.diagnostic(
             "DEBUG",
-            format!("Discovery wire version={}", self.wire_version),
+            format!("Discovery wire version={}", self.wire_version.snapshot()),
         );
         let wire = self.wire(
             IPMSG_BR_ENTRY | IPMSG_CAPUTF8OPT,
@@ -367,8 +377,12 @@ impl Network {
         Ok(())
     }
     pub async fn apply_config(&self, config: &AppConfig) -> Result<(), String> {
+        self.wire_version.set_avatar(config.avatar_id)?;
         {
             let mut local = self.local.write().unwrap_or_else(|e| e.into_inner());
+            local.avatar = Some(Avatar::Builtin {
+                id: config.avatar_id,
+            });
             local.nickname = if config.nickname.is_empty() {
                 local.username.clone()
             } else {
@@ -406,7 +420,7 @@ impl Network {
             command |= IPMSG_UTF8OPT;
         }
         let wire = encode_packet_with_version(
-            &self.wire_version,
+            &self.wire_version.snapshot(),
             packet,
             &local.username,
             &local.hostname,
@@ -510,7 +524,18 @@ impl Network {
         } else {
             address.port()
         };
-        let user = User {
+        let announced_avatar = if is_profile {
+            parse_avatar(&packet.version)
+        } else {
+            None
+        };
+        let cached_avatar = self
+            .avatar_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned();
+        let mut user = User {
             id: id.clone(),
             nickname: if nickname.is_empty() {
                 packet.username.clone()
@@ -531,14 +556,24 @@ impl Network {
             }
             .into(),
             version: packet.version.clone(),
+            avatar: announced_avatar
+                .clone()
+                .or_else(|| previous.as_ref().and_then(|user| user.avatar.clone()))
+                .or(cached_avatar.clone()),
         };
-        let changed = previous.as_ref() != Some(&user);
-        {
+        let changed = {
             let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
             if !peers.contains_key(&id) && peers.len() >= 4096 {
                 return Err("通讯录已达本版本上限".into());
             }
-            let peer = peers.entry(id).or_insert(Peer {
+            if announced_avatar.is_none() {
+                user.avatar = peers
+                    .get(&id)
+                    .and_then(|peer| peer.user.avatar.clone())
+                    .or(user.avatar);
+            }
+            let changed = peers.get(&id).map(|peer| &peer.user) != Some(&user);
+            let peer = peers.entry(id.clone()).or_insert(Peer {
                 user: user.clone(),
                 flags: packet.command,
                 profile_seen: is_profile,
@@ -551,6 +586,23 @@ impl Network {
             peer.seen = Instant::now();
             peer.misses = 0;
             peer.flags |= packet.command & (IPMSG_CAPUTF8OPT | IPMSG_UTF8OPT);
+            changed
+        };
+        if let Some(avatar) =
+            announced_avatar.filter(|avatar| Some(avatar) != cached_avatar.as_ref())
+        {
+            match self.db.save_avatar(id.clone(), avatar.clone()).await {
+                Ok(()) => {
+                    let mut cache = self.avatar_cache.write().unwrap_or_else(|e| e.into_inner());
+                    if cache.len() >= AVATAR_CACHE_LIMIT && !cache.contains_key(&id) {
+                        if let Some(old) = cache.keys().next().cloned() {
+                            cache.remove(&old);
+                        }
+                    }
+                    cache.insert(id, avatar);
+                }
+                Err(error) => self.diagnostic("WARN", format!("保存头像缓存失败：{error}")),
+            }
         }
         if is_profile {
             self.diagnostic(

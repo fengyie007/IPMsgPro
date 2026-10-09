@@ -4,6 +4,7 @@ use super::{
     FileMetadata,
 };
 use crate::{
+    avatar::LocalIdentity,
     database::{Database, Record},
     network::{unix_seconds, Event},
     protocol::*,
@@ -84,7 +85,7 @@ impl Drop for Busy {
 pub struct FileTransfers {
     socket: Arc<UdpSocket>,
     local: User,
-    version: String,
+    version: Arc<LocalIdentity>,
     packet: Arc<AtomicU32>,
     db: Database,
     events: mpsc::Sender<Event>,
@@ -103,7 +104,7 @@ impl FileTransfers {
     pub async fn start(
         socket: Arc<UdpSocket>,
         local: User,
-        version: String,
+        version: Arc<LocalIdentity>,
         packet: Arc<AtomicU32>,
         db: Database,
         events: mpsc::Sender<Event>,
@@ -171,7 +172,7 @@ impl FileTransfers {
         extra: Option<&str>,
     ) -> Result<Vec<u8>, String> {
         encode_packet_with_version(
-            &self.version,
+            &self.version.snapshot(),
             packet,
             &self.local.username,
             &self.local.hostname,
@@ -184,6 +185,10 @@ impl FileTransfers {
         format!("{}:{}", peer.ip, peer.port)
             .parse()
             .map_err(|_| "无效文件对端".into())
+    }
+    async fn send_udp(&self, wire: &[u8], address: SocketAddrV4) -> Result<usize, std::io::Error> {
+        let wire = self.version.refresh(wire).map_err(std::io::Error::other)?;
+        self.socket.send_to(&wire, address).await
     }
     async fn emit(&self, event: &str, payload: serde_json::Value) {
         let _ = self
@@ -376,11 +381,7 @@ impl FileTransfers {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, transfer.clone());
-        if let Err(error) = self
-            .socket
-            .send_to(&wire, Self::address(&transfer.peer)?)
-            .await
-        {
+        if let Err(error) = self.send_udp(&wire, Self::address(&transfer.peer)?).await {
             self.finish(&transfer, "failed", Some(error.to_string()), None)
                 .await?;
         }
@@ -465,8 +466,7 @@ impl FileTransfers {
             &packet.packet_no.to_string(),
             None,
         )?;
-        self.socket
-            .send_to(&ack, Self::address(&peer)?)
+        self.send_udp(&ack, Self::address(&peer)?)
             .await
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -575,7 +575,7 @@ impl FileTransfers {
             if let Ok(wire) =
                 self.wire(self.next(), IPMSG_RELEASEFILES, &t.packet.to_string(), None)
             {
-                let _ = self.socket.send_to(&wire, Self::address(&t.peer)?).await;
+                let _ = self.send_udp(&wire, Self::address(&t.peer)?).await;
             }
         }
         Ok(true)
@@ -712,7 +712,7 @@ impl FileTransfers {
             match action {
                 Some(true) => {
                     if let Ok(address) = Self::address(&t.peer) {
-                        let _ = self.socket.send_to(&t.wire, address).await;
+                        let _ = self.send_udp(&t.wire, address).await;
                     }
                 }
                 Some(false) => {

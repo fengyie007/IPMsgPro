@@ -1,4 +1,5 @@
 use ipmsg_core::{
+    avatar::{parse_avatar, Avatar},
     config::ConfigStore,
     database::Database,
     network::{Event, Network},
@@ -24,6 +25,34 @@ struct Fixture {
     port: u16,
 }
 impl Fixture {
+    async fn restart(self) -> Self {
+        let Self {
+            network,
+            db,
+            events,
+            root,
+            port,
+        } = self;
+        let local = network.local();
+        network.shutdown().await;
+        db.shutdown().await;
+        drop(network);
+        drop(db);
+        drop(events);
+        let db = Database::open(&root.join("messages.db")).unwrap();
+        let config = Arc::new(ConfigStore::open(root.join("config.json")).unwrap());
+        let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let (tx, events) = mpsc::channel(256);
+        let network = Network::new(socket, local, config, db.clone(), tx, vec![], vec![]).unwrap();
+        network.start().await;
+        Self {
+            network,
+            db,
+            events,
+            root,
+            port,
+        }
+    }
     async fn start() -> Self {
         Self::start_with_direct(vec![]).await
     }
@@ -56,6 +85,7 @@ impl Fixture {
         let db = Database::open(&root.join("messages.db")).unwrap();
         let (tx, events) = mpsc::channel(256);
         let local = User {
+            avatar: None,
             id: "local@rust-test".into(),
             nickname: "Rust测试".into(),
             username: "local".into(),
@@ -132,6 +162,158 @@ async fn send(
         .send_to(&bytes, (Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn feiq_avatar_profiles_are_cached_without_stale_text_overrides() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let other = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    for (socket, id) in [(&peer, 83), (&other, 5)] {
+        let wire = encode_packet_with_version(
+            &format!("1_lbt4_{id}#128#mac#0#0#0#4001#9"),
+            5000,
+            "peer",
+            "fixture",
+            IPMSG_BR_ENTRY,
+            "Avatar",
+            Some(""),
+        )
+        .unwrap();
+        socket
+            .send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        assert_eq!(
+            test.next("user.discovered").await.payload["avatar"],
+            serde_json::json!({"kind":"builtin","id":id})
+        );
+        assert_eq!(mode(packet(socket).await.command), IPMSG_ANSENTRY);
+    }
+    assert_eq!(test.db.avatars().await.unwrap().len(), 2);
+    test = test.restart().await;
+    // Cached metadata must not create online peers or discovery targets.
+    assert!(test.network.users().is_empty());
+    assert_eq!(
+        test.db.avatars().await.unwrap().get(&peer_id(&peer)),
+        Some(&Avatar::Builtin { id: 83 })
+    );
+    // Shutdown announced exit to the old endpoints; discard those packets.
+    assert_eq!(mode(packet(&peer).await.command), IPMSG_BR_EXIT);
+    assert_eq!(mode(packet(&other).await.command), IPMSG_BR_EXIT);
+    for (n, version) in [(5001, "1"), (5002, "1_lbt6_0#128#mac#0#0")] {
+        let wire =
+            encode_packet_with_version(version, n, "peer", "fixture", IPMSG_SENDMSG, "text", None)
+                .unwrap();
+        peer.send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        test.next("message.received").await;
+        assert_eq!(
+            test.network.users()[0].avatar,
+            Some(Avatar::Builtin { id: 83 })
+        );
+    }
+    for (n, version, expected) in [
+        (5003, "1_lbt6_0#128#mac#123#0", Avatar::Custom),
+        (5004, "1_lbt6_84#128#mac#0#0", Avatar::Unknown),
+        (5005, "1_lbt6_7#128#mac#0#0", Avatar::Builtin { id: 7 }),
+    ] {
+        let wire = encode_packet_with_version(
+            version,
+            n,
+            "peer",
+            "fixture",
+            IPMSG_BR_ABSENCE,
+            "Avatar",
+            Some(""),
+        )
+        .unwrap();
+        peer.send_to(&wire, (Ipv4Addr::LOCALHOST, test.port))
+            .await
+            .unwrap();
+        test.next("user.discovered").await;
+        assert_eq!(test.network.users()[0].avatar, Some(expected.clone()));
+        assert_eq!(
+            test.db.avatars().await.unwrap().get(&peer_id(&peer)),
+            Some(&expected)
+        );
+    }
+    assert_eq!(
+        test.db.avatars().await.unwrap().get(&peer_id(&other)),
+        Some(&Avatar::Builtin { id: 5 })
+    );
+    test.stop().await;
+}
+
+#[tokio::test]
+async fn local_avatar_save_announces_and_refreshes_pending_text_retry() {
+    let mut test = Fixture::start().await;
+    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    send(&peer, test.port, 5100, IPMSG_BR_ENTRY, "peer", Some("")).await;
+    packet(&peer).await;
+    test.next("user.discovered").await;
+    test.network.ui_ready().await.unwrap();
+    packet(&peer).await;
+    let message = test
+        .network
+        .send_message(&peer_id(&peer), "hello /:)")
+        .await
+        .unwrap();
+    let before = packet(&peer).await;
+    let store = ConfigStore::open(test.root.join("config.json")).unwrap();
+    let config = store
+        .save(serde_json::json!({"avatarId":83}))
+        .await
+        .unwrap();
+    test.network.apply_config(&config).await.unwrap();
+    let announced = packet(&peer).await;
+    assert_eq!(mode(announced.command), IPMSG_BR_ENTRY);
+    assert_eq!(
+        parse_avatar(&announced.version),
+        Some(Avatar::Builtin { id: 83 })
+    );
+    assert_eq!(
+        test.network.local().avatar,
+        Some(Avatar::Builtin { id: 83 })
+    );
+    let mut bytes = [0; 4096];
+    let n = timeout(Duration::from_secs(5), peer.recv(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    let retry = parse_packet(&bytes[..n]).unwrap();
+    assert_eq!(
+        parse_avatar(&retry.version),
+        Some(Avatar::Builtin { id: 83 })
+    );
+    assert_eq!(
+        retry.version.split_once('#').unwrap().1,
+        before.version.split_once('#').unwrap().1
+    );
+    assert_eq!(
+        retry,
+        Packet {
+            version: retry.version.clone(),
+            ..before.clone()
+        }
+    );
+    send(
+        &peer,
+        test.port,
+        5101,
+        IPMSG_RECVMSG,
+        &retry.packet_no.to_string(),
+        None,
+    )
+    .await;
+    assert_eq!(test.next("message.ack").await.payload["messageId"], message);
+    test = test.restart().await;
+    assert_eq!(
+        test.network.local().avatar,
+        Some(Avatar::Builtin { id: 83 })
+    );
+    test.stop().await;
 }
 
 #[cfg(windows)]

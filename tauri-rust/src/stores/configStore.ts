@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '../services/bridge';
 import { DEFAULT_CONFIG, type AppInfo, type Config } from '../types';
 import { validateScanOptions } from '../utils/netValidation';
+import { validAvatarId } from '../utils/avatar';
 
 function parseConfig(value: Partial<Config>): Config {
   if (!value || typeof value.nickname !== 'string' || typeof value.group !== 'string' ||
@@ -10,6 +11,7 @@ function parseConfig(value: Partial<Config>): Config {
     throw new Error('后端返回了无效设置');
   }
   const config = { ...DEFAULT_CONFIG, ...value };
+  if (!validAvatarId(config.avatarId)) throw new Error('后端返回了无效头像设置');
   if (typeof config.notificationSound !== 'boolean') throw new Error('后端返回了无效提示音设置');
   if (typeof config.systemNotifications !== 'boolean' || typeof config.notificationPreview !== 'boolean') throw new Error('后端返回了无效系统通知设置');
   if (!Array.isArray(config.ipScanRanges) || config.ipScanRanges.some((r) => typeof r !== 'string') ||
@@ -42,7 +44,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
   saveConfig: async (partial) => {
     const payload: Record<string, unknown> = {};
-    for (const key of ['nickname', 'group', 'directUsers', 'minimizeBehavior', 'ipScanRanges', 'scanPort', 'scanDelayMs', 'scanOnStartup', 'notificationSound', 'systemNotifications', 'notificationPreview'] as const) {
+    for (const key of ['nickname', 'avatarId', 'group', 'directUsers', 'minimizeBehavior', 'ipScanRanges', 'scanPort', 'scanDelayMs', 'scanOnStartup', 'notificationSound', 'systemNotifications', 'notificationPreview'] as const) {
       if (partial[key] !== undefined) payload[key] = partial[key];
     }
     const result = await invoke<{ success: boolean; config: Config }>('config.set', payload);
@@ -52,6 +54,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   resetConfig: async () => {
     await get().saveConfig({
       nickname: DEFAULT_CONFIG.nickname, group: DEFAULT_CONFIG.group,
+      avatarId: DEFAULT_CONFIG.avatarId,
       directUsers: [], minimizeBehavior: DEFAULT_CONFIG.minimizeBehavior,
       ipScanRanges: [], scanPort: DEFAULT_CONFIG.scanPort, scanDelayMs: DEFAULT_CONFIG.scanDelayMs, scanOnStartup: DEFAULT_CONFIG.scanOnStartup,
       notificationSound: DEFAULT_CONFIG.notificationSound,

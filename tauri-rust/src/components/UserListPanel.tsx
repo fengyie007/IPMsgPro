@@ -7,6 +7,7 @@ import { Message, User } from '../types';
 import { formatListTime, formatPreview } from '../utils/format';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useScrollMemory } from '../utils/useScrollMemory';
+import UserAvatar from './UserAvatar';
 
 interface UserListPanelProps {
   viewMode: 'chat' | 'contacts';
@@ -267,11 +268,7 @@ function ConversationCard({ user, selected, lastMessage, unread, onClick, hasDra
       onClick={onClick}
     >
       <div className="relative shrink-0">
-        <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center">
-          <span className="text-primary-600 font-medium text-sm">
-            {user.nickname.charAt(0).toUpperCase()}
-          </span>
-        </div>
+        <UserAvatar user={user} />
         <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-list-bg ${statusColor}`} />
       </div>
       <div className="flex-1 min-w-0">
@@ -349,11 +346,7 @@ function ContactCard({ user, selected, onClick, onDoubleClick }: {
       onDoubleClick={onDoubleClick}
     >
       <div className="relative shrink-0">
-        <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center">
-          <span className="text-primary-600 font-medium text-sm">
-            {user.nickname.charAt(0).toUpperCase()}
-          </span>
-        </div>
+        <UserAvatar user={user} />
         <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-list-bg ${statusColor}`} />
       </div>
       <div className="flex-1 min-w-0">

@@ -15,6 +15,7 @@ use std::{
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppConfig {
     pub nickname: String,
+    pub avatar_id: u8,
     pub group: String,
     pub direct_users: Vec<String>,
     pub minimize_behavior: String,
@@ -32,6 +33,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nickname: String::new(),
+            avatar_id: 0,
             group: String::new(),
             direct_users: vec![],
             minimize_behavior: "tray".into(),
@@ -49,6 +51,7 @@ impl Default for AppConfig {
 }
 impl AppConfig {
     pub fn validate(&self) -> Result<(), String> {
+        crate::avatar::validate_id(self.avatar_id)?;
         for text in [&self.nickname, &self.group] {
             if text.len() > 256 || text.contains(['\0', '\r', '\n']) {
                 return Err("昵称/组名过长或包含控制字符".into());
@@ -212,6 +215,46 @@ fn replace(source: &Path, destination: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn avatar_defaults_and_validation_preserve_saved_config() {
+        let root = std::env::temp_dir().join(format!(
+            "ipmsg-avatar-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("config.json");
+        fs::write(&path, br#"{"nickname":"legacy"}"#).unwrap();
+        let store = ConfigStore::open(path.clone()).unwrap();
+        assert_eq!(store.get().avatar_id, 0);
+        for id in [83, 0] {
+            store
+                .save(serde_json::json!({"avatarId":id}))
+                .await
+                .unwrap();
+            assert_eq!(ConfigStore::open(path.clone()).unwrap().get().avatar_id, id);
+            let before = fs::read(&path).unwrap();
+            for invalid in [
+                serde_json::json!(84),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("5"),
+                serde_json::Value::Null,
+            ] {
+                assert!(store
+                    .save(serde_json::json!({"avatarId":invalid}))
+                    .await
+                    .is_err());
+                assert_eq!(store.get().avatar_id, id);
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+        }
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn patches_validate_before_changing_state() {
         let current = AppConfig::default();

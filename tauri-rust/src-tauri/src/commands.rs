@@ -212,8 +212,17 @@ async fn dispatch(
             Ok(user)
         }
         "user.list" => {
+            let mut avatars = state.database.avatars().await.unwrap_or_else(|error| {
+                state.log("WARN", &format!("加载头像缓存失败：{error}"));
+                Default::default()
+            });
             let users = state.network.users();
-            Ok(json!({"success":true,"count":users.len(),"users":users}))
+            for user in &users {
+                if let Some(avatar) = &user.avatar {
+                    avatars.insert(user.id.clone(), avatar.clone());
+                }
+            }
+            Ok(json!({"success":true,"count":users.len(),"users":users,"avatars":avatars}))
         }
         "user.discover" => {
             state.network.discover().await?;

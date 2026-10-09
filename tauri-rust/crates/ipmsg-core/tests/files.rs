@@ -95,6 +95,7 @@ impl Fixture {
         let socket = file_endpoint();
         let port = socket.local_addr().unwrap().port();
         let user = User {
+            avatar: None,
             id: format!("rust-{port}@fixture"),
             username: format!("rust-{port}"),
             hostname: "fixture".into(),
@@ -283,6 +284,28 @@ async fn legacy_offset_request_split_header_and_wrong_identity() {
     let invitation = packet(&peer).await;
     assert_eq!(invitation.command & IPMSG_UTF8OPT, 0);
     assert_ne!(invitation.command & IPMSG_FILEATTACHOPT, 0);
+    // An outstanding invitation uses the newly saved avatar on retry, while
+    // keeping its authorization packet number and file metadata unchanged.
+    fixture
+        .net
+        .apply_config(&ipmsg_core::config::AppConfig {
+            avatar_id: 83,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let retry = packet(&peer).await;
+    assert_eq!(
+        ipmsg_core::avatar::parse_avatar(&retry.version),
+        Some(ipmsg_core::avatar::Avatar::Builtin { id: 83 })
+    );
+    assert_eq!(
+        retry,
+        Packet {
+            version: retry.version.clone(),
+            ..invitation.clone()
+        }
+    );
     let mut bad = TcpStream::connect((Ipv4Addr::LOCALHOST, fixture.port))
         .await
         .unwrap();

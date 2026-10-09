@@ -203,7 +203,7 @@ impl Network {
                 let target = SocketAddrV4::new(Ipv4Addr::from(ip), plan.port);
                 let result = tokio::select! {
                     _=cancel.changed()=>{self.finish_scan(id,ScanPhase::Cancelled,None);return;},
-                    result=tokio::time::timeout(Duration::from_secs(1),self.socket.send_to(&wire,target))=>result.map_err(|_|"UDP探测发送超时".to_owned()).and_then(|result|result.map(|_|()).map_err(|e|e.to_string()))
+                    result=tokio::time::timeout(Duration::from_secs(1),self.send_to(target,&wire))=>result.map_err(|_|"UDP探测发送超时".to_owned()).and_then(|result|result)
                 };
                 if let Err(error) = result {
                     let mut data = self.scan.data.lock().unwrap_or_else(|e| e.into_inner());

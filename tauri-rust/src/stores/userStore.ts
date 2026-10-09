@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import { invoke, listen } from '../services/bridge';
 import { toast } from './toastStore';
-import type { User } from '../types';
+import type { Avatar, User } from '../types';
+import { displayAvatar, validAvatar } from '../utils/avatar';
 
 interface UserStore {
   users: User[];
+  avatars: Map<string, Avatar>;
   currentUser: User | null;
   loading: boolean;
   error: string | null;
@@ -17,20 +19,31 @@ interface UserStore {
   initListeners: () => () => void;
 }
 
+let listGeneration = 0;
 export const useUserStore = create<UserStore>((set, get) => ({
-  users: [], currentUser: null, loading: false, error: null, revision: 0, revisions: new Map(),
+  users: [], avatars: new Map(), currentUser: null, loading: false, error: null, revision: 0, revisions: new Map(),
   loadUsers: async () => {
     const startedAt = get().revision;
-    const result = await invoke<{ users: User[]; count: number }>('user.list');
+    const generation = ++listGeneration;
+    const result = await invoke<{ users: User[]; count: number; avatars?: Record<string, Avatar> }>('user.list');
     if (!Array.isArray(result.users)) throw new Error('用户列表返回格式错误');
+    if (generation !== listGeneration) return;
     set((state) => {
       const users = new Map(result.users.map((user) => [user.id, user]));
+      const avatars = new Map(state.avatars);
+      for (const [id, avatar] of Object.entries(result.avatars || {})) {
+        if (validAvatar(avatar) && (state.revisions.get(id) || 0) <= startedAt) avatars.set(id, avatar);
+      }
       // Do not lose discoveries/status changes that raced with the snapshot.
       for (const user of state.users) {
         if ((state.revisions.get(user.id) || 0) > startedAt) users.set(user.id, user);
       }
+      for (const [id, user] of users) {
+        const avatar = displayAvatar(user.avatar, avatars.get(id));
+        if (avatar) { avatars.set(id, avatar); users.set(id, { ...user, avatar }); }
+      }
       return {
-        users: [...users.values()],
+        users: [...users.values()], avatars,
         currentUser: state.currentUser ? users.get(state.currentUser.id) || state.currentUser : null,
       };
     });
@@ -51,10 +64,14 @@ export const useUserStore = create<UserStore>((set, get) => ({
   addUser: (user) => set((state) => {
     const revision = state.revision + 1;
     const users = new Map(state.users.map((u) => [u.id, u]));
+    const avatar = displayAvatar(user.avatar, state.avatars.get(user.id));
+    user = { ...user, avatar };
+    const avatars = new Map(state.avatars);
+    if (avatar) avatars.set(user.id, avatar);
     users.set(user.id, user);
     const revisions = new Map(state.revisions);
     revisions.set(user.id, revision);
-    return { users: [...users.values()], revision, revisions, currentUser: state.currentUser?.id === user.id ? user : state.currentUser };
+    return { users: [...users.values()], avatars, revision, revisions, currentUser: state.currentUser?.id === user.id ? user : state.currentUser };
   }),
   initListeners: () => {
     const unlistenUsers = listen('user.discovered', (user: User) => {
