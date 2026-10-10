@@ -1,5 +1,6 @@
 use super::*;
 use crate::platform::DEFAULT_PORT;
+const PREVIOUS_DEFAULT_PORT: u16 = 2427;
 
 pub(super) fn directory_name(port: u16) -> String {
     if port == DEFAULT_PORT {
@@ -52,6 +53,84 @@ fn publish_new(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 impl Storage {
+    /// Reserve the former port before relocating its bootstrap. A running old
+    /// instance must not continue writing after the snapshot has been copied.
+    pub fn open_default(
+        bootstrap: PathBuf,
+        legacy_root: PathBuf,
+        port: u16,
+    ) -> Result<Self, String> {
+        Self::open_default_guarded(bootstrap, legacy_root, port, || {
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )
+            .map_err(|e| e.to_string())?;
+            socket.set_reuse_address(false).map_err(|e| e.to_string())?;
+            socket
+                .bind(
+                    &std::net::SocketAddrV4::new(
+                        std::net::Ipv4Addr::UNSPECIFIED,
+                        PREVIOUS_DEFAULT_PORT,
+                    )
+                    .into(),
+                )
+                .map_err(|e| format!("需要整理旧2427数据目录，请先退出占用2427端口的程序：{e}"))?;
+            Ok(socket)
+        })
+    }
+
+    fn open_default_guarded<G>(
+        bootstrap: PathBuf,
+        mut legacy_root: PathBuf,
+        port: u16,
+        reserve_previous: impl FnOnce() -> Result<G, String>,
+    ) -> Result<Self, String> {
+        let parent = bootstrap.parent().ok_or("无效默认数据目录")?.to_owned();
+        let flat = parent.join("SpeedIpMsg");
+        if port == DEFAULT_PORT {
+            if dataset_port(&flat)? == Some(PREVIOUS_DEFAULT_PORT) {
+                let _guard = reserve_previous()?;
+                // The existing per-port copy, if present, is authoritative.
+                // Preserve the complete old root as a separate backup as well.
+                let previous = default_directory(&parent, PREVIOUS_DEFAULT_PORT);
+                let migrated =
+                    Self::open_compatible(previous.clone(), flat.clone(), PREVIOUS_DEFAULT_PORT)?;
+                if !same(
+                    &migrated.bootstrap,
+                    &previous.canonicalize().map_err(|e| e.to_string())?,
+                ) {
+                    return Err("旧2427数据复制未完成，原目录已保留".into());
+                }
+                let source = flat.canonicalize().map_err(|e| e.to_string())?;
+                validate_marker(&source, PREVIOUS_DEFAULT_PORT)?;
+                let backup = unused_directory(
+                    source.parent().ok_or("无效旧数据目录")?,
+                    "SpeedIpMsg-2427-backup",
+                )?;
+                publish_new(&source, &backup)?;
+            }
+            // Before 2425 became the default, its data lived in a suffixed
+            // directory. Reuse it rather than importing the other port's data.
+            if dataset_port(&bootstrap)?.is_none() {
+                let suffixed = parent.join(format!("SpeedIpMsg-{DEFAULT_PORT}"));
+                if suffixed.try_exists().map_err(|e| e.to_string())? {
+                    if dataset_port(&suffixed)? != Some(DEFAULT_PORT) {
+                        return Err("原2425数据目录身份无效，未创建空白替代目录".into());
+                    }
+                    legacy_root = suffixed;
+                }
+            }
+        } else if port == PREVIOUS_DEFAULT_PORT
+            && !bootstrap.try_exists().map_err(|e| e.to_string())?
+            && dataset_port(&flat)? == Some(PREVIOUS_DEFAULT_PORT)
+        {
+            legacy_root = flat;
+        }
+        Self::open_compatible(bootstrap, legacy_root, port)
+    }
+
     /// Upgrade only this application's former per-port directory. Runtime has
     /// exclusively bound the UDP port. C++ history is never read here.
     pub fn open_compatible(
@@ -152,15 +231,220 @@ impl Storage {
     }
 }
 
+fn dataset_port(root: &Path) -> Result<Option<u16>, String> {
+    match fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) if is_link(&metadata) || !metadata.is_dir() => {
+            return Err("默认数据目录被文件或链接占用".into())
+        }
+        Ok(_) => {}
+    }
+    if !root.join(MARKER).try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let marker: Marker = read_json(&root.join(MARKER))?;
+    validate_marker(root, marker.port)?;
+    Ok(Some(marker.port))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::{dataset, fixture};
     use super::*;
 
     #[test]
+    fn empty_flat_directory_reuses_existing_2425_data_and_does_not_reimport_it() {
+        let root = fixture();
+        let suffixed = root.join("SpeedIpMsg-2425");
+        let original =
+            Storage::open_compatible(suffixed.clone(), root.join("absent"), 2425).unwrap();
+        dataset(&original.active);
+        let flat = default_directory(&root, 2425);
+        fs::create_dir(&flat).unwrap();
+        let current =
+            Storage::open_default_guarded(flat.clone(), root.join("absent"), 2425, || {
+                Err::<(), _>("no old instance".into())
+            })
+            .unwrap();
+        assert!(same(&current.active, &flat.canonicalize().unwrap()));
+        assert_eq!(
+            fs::read(current.active.join("images/a.png")).unwrap(),
+            b"owned image"
+        );
+        fs::write(suffixed.join("images/a.png"), b"old backup changed").unwrap();
+        let current =
+            Storage::open_default_guarded(flat, root.join("absent"), 2425, || Ok(())).unwrap();
+        assert_eq!(
+            fs::read(current.active.join("images/a.png")).unwrap(),
+            b"owned image"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_2425_history_moves_to_flat_root_without_importing_2427_history() {
+        let root = fixture();
+        let flat = root.join("SpeedIpMsg");
+        let old = Storage::open_compatible(flat.clone(), root.join("absent-old"), 2427).unwrap();
+        dataset(&old.active);
+        fs::write(old.active.join("images/a.png"), b"port 2427").unwrap();
+        let suffixed = root.join("SpeedIpMsg-2425");
+        let current =
+            Storage::open_compatible(suffixed.clone(), root.join("absent-current"), 2425).unwrap();
+        dataset(&current.active);
+        fs::write(current.active.join("images/a.png"), b"port 2425").unwrap();
+        fs::write(
+            current.active.join("config.json"),
+            br#"{"nickname":"current-2425"}"#,
+        )
+        .unwrap();
+        let current =
+            Storage::open_default_guarded(flat.clone(), root.join("absent-current"), 2425, || {
+                Ok(())
+            })
+            .unwrap();
+        assert!(same(&current.active, &flat.canonicalize().unwrap()));
+        assert_eq!(
+            fs::read(current.active.join("images/a.png")).unwrap(),
+            b"port 2425"
+        );
+        assert_eq!(
+            ipmsg_core::config::ConfigStore::open(current.active.join("config.json"))
+                .unwrap()
+                .get()
+                .nickname,
+            "current-2425"
+        );
+        assert_eq!(
+            fs::read(root.join("SpeedIpMsg-2427/images/a.png")).unwrap(),
+            b"port 2427"
+        );
+        assert_eq!(
+            fs::read(root.join("SpeedIpMsg-2427-backup/images/a.png")).unwrap(),
+            b"port 2427"
+        );
+        fs::write(suffixed.join("images/a.png"), b"stale backup").unwrap();
+        let reopened =
+            Storage::open_default_guarded(flat, root.join("absent-current"), 2425, || {
+                Err::<(), _>("must not reserve again".into())
+            })
+            .unwrap();
+        assert_eq!(
+            fs::read(reopened.active.join("images/a.png")).unwrap(),
+            b"port 2425"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_instance_or_failed_copy_keeps_original_directory_available() {
+        let root = fixture();
+        let flat = root.join("SpeedIpMsg");
+        let old = Storage::open_compatible(flat.clone(), root.join("absent"), 2427).unwrap();
+        dataset(&old.active);
+        assert!(
+            Storage::open_default_guarded(
+                flat.clone(),
+                root.join("absent"),
+                2425,
+                || Err::<(), _>("port busy".into())
+            )
+            .is_err()
+        );
+        validate_marker(&flat, 2427).unwrap();
+        assert!(!root.join("SpeedIpMsg-2427").exists());
+        fs::write(flat.join("messages.db"), b"broken database").unwrap();
+        assert!(
+            Storage::open_default_guarded(flat.clone(), root.join("absent"), 2425, || Ok(()))
+                .is_err()
+        );
+        validate_marker(&flat, 2427).unwrap();
+        assert_eq!(
+            fs::read(flat.join("messages.db")).unwrap(),
+            b"broken database"
+        );
+        assert!(!root.join("SpeedIpMsg-2427-backup").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_old_port_finds_its_flat_history_before_new_default_is_started() {
+        let root = fixture();
+        let flat = root.join("SpeedIpMsg");
+        let old = Storage::open_compatible(flat.clone(), root.join("absent"), 2427).unwrap();
+        dataset(&old.active);
+        let target = default_directory(&root, 2427);
+        let old = Storage::open_default_guarded(target.clone(), root.join("absent"), 2427, || {
+            Err::<(), _>("already reserved by runtime".into())
+        })
+        .unwrap();
+        assert!(same(&old.active, &target.canonicalize().unwrap()));
+        assert_eq!(
+            fs::read(old.active.join("images/a.png")).unwrap(),
+            b"owned image"
+        );
+        assert!(flat.join("messages.db").is_file());
+        // Once the explicit instance has upgraded its directory, its newer data
+        // must win over the leftover flat backup during a later 2425 launch.
+        fs::write(old.active.join("images/a.png"), b"newer 2427 data").unwrap();
+        Storage::open_default_guarded(flat, root.join("absent"), 2425, || Ok(())).unwrap();
+        assert_eq!(
+            fs::read(target.join("images/a.png")).unwrap(),
+            b"newer 2427 data"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn default_port_change_keeps_existing_port_directories_and_locators_separate() {
+        let root = fixture();
+        let old_root = root.join("SpeedIpMsg");
+        let old =
+            Storage::open_compatible(old_root.clone(), root.join("absent-2427"), 2427).unwrap();
+        dataset(&old.active);
+        let previous_config = fs::read(old.active.join("config.json")).unwrap();
+        let current_root = default_directory(&root, crate::platform::DEFAULT_PORT);
+        assert_eq!(current_root, root.join("SpeedIpMsg"));
+        let current = Storage::open_default_guarded(
+            current_root.clone(),
+            root.join("absent-2425"),
+            2425,
+            || Ok(()),
+        )
+        .unwrap();
+        dataset(&current.active);
+        let config =
+            ipmsg_core::config::ConfigStore::open(current.active.join("config.json")).unwrap();
+        assert!(config.get().nickname.is_empty());
+        let old_root = default_directory(&root, 2427);
+        assert_eq!(old_root, root.join("SpeedIpMsg-2427"));
+        validate_marker(&old_root, 2427).unwrap();
+        validate_marker(&current_root, 2425).unwrap();
+        assert!(validate_marker(&old_root, 2425).is_err());
+        assert_eq!(
+            fs::read(old_root.join("config.json")).unwrap(),
+            previous_config
+        );
+        assert!(root.join("SpeedIpMsg-2427-backup/messages.db").is_file());
+        let reopened = Storage::open_compatible(old_root, root.join("absent-2427"), 2427).unwrap();
+        assert_eq!(
+            fs::read(reopened.active.join("images/a.png")).unwrap(),
+            b"owned image"
+        );
+        let reopened =
+            Storage::open_compatible(current_root, root.join("absent-2425"), 2425).unwrap();
+        assert_eq!(
+            fs::read(reopened.active.join("images/a.png")).unwrap(),
+            b"owned image"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn flat_default_upgrades_once_and_keeps_the_original_backup() {
         let root = fixture();
-        let legacy = root.join("com.speedipmsg.rustpreview/port-2427");
+        let legacy = root.join(format!("com.speedipmsg.rustpreview/port-{DEFAULT_PORT}"));
         let old = Storage::open(legacy.clone(), DEFAULT_PORT).unwrap();
         dataset(&old.active);
         let bootstrap = default_directory(&root, DEFAULT_PORT);
@@ -191,7 +475,7 @@ mod tests {
     #[test]
     fn custom_location_and_pending_selection_survive_the_upgrade() {
         let root = fixture();
-        let legacy = root.join("legacy/port-2427");
+        let legacy = root.join(format!("legacy/port-{DEFAULT_PORT}"));
         let custom = root.join("自选位置");
         fs::create_dir(&custom).unwrap();
         let old = Storage::open(legacy.clone(), DEFAULT_PORT).unwrap();

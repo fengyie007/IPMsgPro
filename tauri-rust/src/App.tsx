@@ -64,7 +64,7 @@ export default function App() {
         if (cancelled) return;
         await useConfigStore.getState().loadConfig();
         const storageError = useConfigStore.getState().info?.storageError;
-        if (storageError) toast.error('数据目录操作未完成：' + storageError);
+        if (storageError) toast.error('数据目录提示：' + storageError);
         if (cancelled) return;
         await useMessageStore.getState().loadLocalUserId();
         if (cancelled) return;

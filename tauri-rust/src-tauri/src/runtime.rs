@@ -109,7 +109,7 @@ impl Runtime {
         );
         let port = options.port;
         let storage = tokio::task::spawn_blocking(move || {
-            crate::storage::Storage::open_compatible(bootstrap, legacy_root, port)
+            crate::storage::Storage::open_default(bootstrap, legacy_root, port)
         })
         .await
         .map_err(|e| e.to_string())??;

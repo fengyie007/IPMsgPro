@@ -256,6 +256,79 @@ fn validate_marker(path: &Path, port: u16) -> Result<(), String> {
     }
     Ok(())
 }
+
+enum LocationError {
+    Unavailable(String),
+    Invalid(String),
+}
+
+fn configured_directory(path: &Path, port: u16) -> Result<PathBuf, LocationError> {
+    use LocationError::{Invalid, Unavailable};
+    let path = path
+        .canonicalize()
+        .map_err(|e| Unavailable(e.to_string()))?;
+    if !path.is_dir() {
+        return Err(Unavailable("路径不是文件夹".into()));
+    }
+    fs::read_dir(&path).map_err(|e| Unavailable(e.to_string()))?;
+    // A missing/unreadable marker cannot identify a usable directory. A readable
+    // but incompatible marker remains an error, never a reason to mix instances.
+    fs::File::open(path.join(MARKER)).map_err(|e| Unavailable(e.to_string()))?;
+    validate_marker(&path, port).map_err(Invalid)?;
+    for name in ["config.json", "messages.db"] {
+        let file = path.join(name);
+        if file.try_exists().map_err(|e| Unavailable(e.to_string()))? {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(file)
+                .map_err(|e| Unavailable(e.to_string()))?;
+        }
+    }
+    let probe = path.join(format!(".speedipmsg-write-{}.tmp", token()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|e| Unavailable(e.to_string()))?;
+    let result = file
+        .write_all(b"SpeedIPMsg directory probe")
+        .and_then(|_| file.sync_all());
+    drop(file);
+    let cleanup = fs::remove_file(&probe);
+    result
+        .and(cleanup)
+        .map_err(|e| Unavailable(e.to_string()))?;
+    Ok(path)
+}
+
+fn fresh_default(bootstrap: &Path, port: u16, previous: &Locator) -> Result<PathBuf, String> {
+    let token = token();
+    let target = layout::unused_directory(bootstrap, "data")?;
+    let mut fresh = create_dataset(&target, port, &token)?;
+    // Never reuse a historical copy left in the bootstrap after relocation.
+    ipmsg_core::config::ConfigStore::open(fresh.path.join("config.json"))?;
+    let db =
+        rusqlite::Connection::open(fresh.path.join("messages.db")).map_err(|e| e.to_string())?;
+    db.pragma_update(None, "user_version", 0)
+        .map_err(|e| e.to_string())?;
+    drop(db);
+    complete_dataset(&fresh)?;
+    atomic_json(
+        &bootstrap.join(format!("data-location-unavailable-{token}.json")),
+        previous,
+    )?;
+    atomic_json(
+        &bootstrap.join("data-location.json"),
+        &Locator {
+            active: Some(fresh.path.clone()),
+            pending: None,
+        },
+    )?;
+    fresh.keep = true;
+    Ok(fresh.path.clone())
+}
+
 fn complete_dataset(owned: &OwnedDataset) -> Result<(), String> {
     atomic_json(
         &owned.path.join(MARKER),
@@ -314,14 +387,29 @@ impl Storage {
         fs::create_dir_all(&bootstrap).map_err(|e| e.to_string())?;
         let bootstrap = bootstrap.canonicalize().map_err(|e| e.to_string())?;
         let mut located = locator(&bootstrap)?;
-        let mut active = located.active.clone().unwrap_or_else(|| bootstrap.clone());
-        active = active
-            .canonicalize()
-            .map_err(|e| format!("当前数据目录不可用，未切换为空目录：{e}"))?;
+        let configured = located.active.clone().unwrap_or_else(|| bootstrap.clone());
+        let mut error = None;
+        let mut active = if same(&configured, &bootstrap) {
+            bootstrap.clone()
+        } else {
+            match configured_directory(&configured, port) {
+                Ok(path) => path,
+                Err(LocationError::Invalid(message)) => return Err(message),
+                Err(LocationError::Unavailable(message)) => {
+                    let path = fresh_default(&bootstrap, port, &located)
+                        .map_err(|e| format!("原数据目录不可用，创建默认配置失败：{e}"))?;
+                    error = Some(format!("原数据目录不可用（{}：{message}），已在默认位置创建新配置；原定位记录已备份，原数据未作修改。", native_path(&configured).display()));
+                    located = Locator {
+                        active: Some(path.clone()),
+                        pending: None,
+                    };
+                    path
+                }
+            }
+        };
         if !same(&active, &bootstrap) || active.join(MARKER).exists() {
             validate_marker(&active, port)?;
         }
-        let mut error = None;
         if let Some(choice) = located.pending.take() {
             if !same(&choice.target, &active) {
                 match migrate(&active, &choice, port) {
@@ -487,6 +575,177 @@ mod tests {
         fs::create_dir(path.join("images")).unwrap();
         fs::write(path.join("images/a.png"), b"owned image").unwrap();
     }
+
+    fn configured_fixture() -> (PathBuf, PathBuf, Storage) {
+        let root = fixture().canonicalize().unwrap();
+        let bootstrap = root.join("SpeedIpMsg");
+        let parent = root.join("custom");
+        fs::create_dir(&parent).unwrap();
+        let initial = Storage::open(bootstrap.clone(), 2425).unwrap();
+        dataset(&initial.active);
+        fs::write(
+            initial.active.join("config.json"),
+            br#"{"nickname":"old-custom"}"#,
+        )
+        .unwrap();
+        let choice = initial.prepare(parent, false).unwrap();
+        initial
+            .apply(choice["selectionId"].as_str().unwrap())
+            .unwrap();
+        let configured = Storage::open(bootstrap.clone(), 2425).unwrap();
+        (root, bootstrap, configured)
+    }
+
+    #[test]
+    fn unavailable_configured_directory_creates_fresh_default_and_preserves_recovery_record() {
+        let (root, bootstrap, configured) = configured_fixture();
+        let original = configured.active.clone();
+        let disconnected = root.join("disconnected");
+        assert!(inside(&original, &root) && inside(&disconnected, &root));
+        let pending = root.join("pending");
+        atomic_json(
+            &bootstrap.join("data-location.json"),
+            &Locator {
+                active: Some(original.clone()),
+                pending: Some(Choice {
+                    token: token(),
+                    target: pending.clone(),
+                }),
+            },
+        )
+        .unwrap();
+        fs::rename(&original, &disconnected).unwrap();
+        let fallback = Storage::open(bootstrap.clone(), 2425).unwrap();
+        assert!(fallback.is_default_location());
+        assert_ne!(fallback.active, bootstrap);
+        assert_eq!(fallback.active.parent(), Some(bootstrap.as_path()));
+        assert!(fallback.info().unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("已在默认位置创建新配置"));
+        assert!(fallback.info().unwrap()["pending"].is_null());
+        assert!(!pending.exists());
+        assert_eq!(
+            ipmsg_core::config::ConfigStore::open(fallback.active.join("config.json"))
+                .unwrap()
+                .get(),
+            ipmsg_core::config::AppConfig::default()
+        );
+        let db = rusqlite::Connection::open(fallback.active.join("messages.db")).unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='sample'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        drop(db);
+        assert_eq!(
+            fs::read(bootstrap.join("config.json")).unwrap(),
+            br#"{"nickname":"old-custom"}"#
+        );
+        let backups: Vec<_> = fs::read_dir(&bootstrap)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("data-location-unavailable-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        let saved: Locator = read_json(&backups[0]).unwrap();
+        assert_eq!(saved.active.as_ref(), Some(&original));
+        assert!(saved.pending.is_some());
+        fs::rename(&disconnected, &original).unwrap();
+        let reopened = Storage::open(bootstrap, 2425).unwrap();
+        assert_eq!(reopened.active, fallback.active);
+        assert!(reopened.info().unwrap()["error"].is_null());
+        assert_eq!(
+            fs::read(original.join("config.json")).unwrap(),
+            br#"{"nickname":"old-custom"}"#
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_path_replaced_by_a_file_falls_back_without_overwriting_it() {
+        let (root, bootstrap, _) = configured_fixture();
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"unrelated file").unwrap();
+        atomic_json(
+            &bootstrap.join("data-location.json"),
+            &Locator {
+                active: Some(blocked.clone()),
+                pending: None,
+            },
+        )
+        .unwrap();
+        let fallback = Storage::open(bootstrap, 2425).unwrap();
+        assert!(fallback.is_default_location());
+        assert_eq!(fs::read(blocked).unwrap(), b"unrelated file");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incompatible_directory_identity_is_not_silently_reset() {
+        let (root, bootstrap, configured) = configured_fixture();
+        let before = fs::read(bootstrap.join("data-location.json")).unwrap();
+        let mut marker: Marker = read_json(&configured.active.join(MARKER)).unwrap();
+        marker.port = 2427;
+        atomic_json(&configured.active.join(MARKER), &marker).unwrap();
+        assert!(Storage::open(bootstrap.clone(), 2425).is_err());
+        assert_eq!(
+            fs::read(bootstrap.join("data-location.json")).unwrap(),
+            before
+        );
+        assert!(!bootstrap.join("data").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readonly_configured_data_uses_fresh_default_without_changing_the_source() {
+        let (root, bootstrap, configured) = configured_fixture();
+        let config = configured.active.join("config.json");
+        let before = fs::read(&config).unwrap();
+        let permissions = fs::metadata(&config).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&config, readonly).unwrap();
+        let result = Storage::open(bootstrap, 2425);
+        fs::set_permissions(&config, permissions).unwrap();
+        let fallback = result.unwrap();
+        assert!(fallback.is_default_location());
+        assert_ne!(fallback.active, configured.active);
+        assert_eq!(fs::read(config).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_fallback_publication_preserves_locator_and_reclaims_only_fresh_files() {
+        let (root, bootstrap, configured) = configured_fixture();
+        let disconnected = root.join("disconnected");
+        assert!(inside(&configured.active, &root) && inside(&disconnected, &root));
+        fs::rename(&configured.active, &disconnected).unwrap();
+        let location = bootstrap.join("data-location.json");
+        let before = fs::read(&location).unwrap();
+        let permissions = fs::metadata(&location).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&location, readonly).unwrap();
+        let result = Storage::open(bootstrap.clone(), 2425);
+        fs::set_permissions(&location, permissions).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(location).unwrap(), before);
+        assert!(!bootstrap.join("data").exists());
+        assert!(disconnected.join("messages.db").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn relocation_is_restart_only_preserves_source_and_roundtrips_default() {
         let root = fixture();

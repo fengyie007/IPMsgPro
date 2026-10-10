@@ -93,7 +93,8 @@ if (import.meta.hot) {
 }
 
 // Explicit browser-only demonstration; never masks a missing Tauri runtime.
-const mockLocalId = 'me-rust-2427@mock';
+const mockPort = 2425;
+const mockLocalId = `me-rust-${mockPort}@mock`;
 const mockUsers: User[] = [
   { id: 'demo@localhost', nickname: '演示联系人', username: 'demo', hostname: 'localhost', group: '测试组', ip: '127.0.0.1', port: 2425, status: 'online', version: '', avatar: { kind: 'builtin', id: 5 }, mac: '02-11-22-33-44-55' },
   { id: 'guest@localhost', nickname: '访客', username: 'guest', hostname: 'localhost', group: '', ip: '127.0.0.1', port: 2426, status: 'away', version: '', avatar: { kind: 'custom' } },
@@ -145,8 +146,8 @@ function startMockScan(args: Record<string, unknown>) {
 
 function mockResponse(command: string, args: Record<string, unknown>): unknown {
   const localUser = {
-    id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me-2427',
-    hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: 2427, status: 'online', version: APP_VERSION,
+    id: mockLocalId, nickname: mockConfig.nickname || '演示用户', username: 'me',
+    hostname: 'mock', group: mockConfig.group, ip: '127.0.0.1', port: mockPort, status: 'online', version: APP_VERSION,
     avatar: { kind: 'builtin', id: mockConfig.avatarId },
   };
   switch (command) {
@@ -177,7 +178,7 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
     case 'file.open_folder': return { success: false, error: '文件传输需要桌面版，浏览器演示未连接文件服务' };
     case 'file.discard': return { success: true };
     case 'screenshot.start': return { success: false, error: '截图需要在 Windows 桌面版中使用' };
-    case 'app.info': return { success: true, version: APP_VERSION, dataDir: '浏览器演示：不写入磁盘', port: 2427, capabilities: MVP_CAPABILITIES };
+    case 'app.info': return { success: true, version: APP_VERSION, dataDir: '浏览器演示：不写入磁盘', port: mockPort, capabilities: MVP_CAPABILITIES };
     case 'config.get': return { success: true, config: mockConfig };
     case 'image.read':
       return mockAssets.has(String(args.assetId))

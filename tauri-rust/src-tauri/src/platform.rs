@@ -4,7 +4,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-pub const DEFAULT_PORT: u16 = 2427;
+pub const DEFAULT_PORT: u16 = ipmsg_core::protocol::IPMSG_DEFAULT_PORT;
 
 #[derive(Clone)]
 pub struct Options {
@@ -14,12 +14,16 @@ pub struct Options {
 }
 impl Options {
     pub fn parse() -> Result<Self, String> {
+        Self::from_args(std::env::args().skip(1))
+    }
+
+    fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut options = Self {
             port: DEFAULT_PORT,
             direct: vec![],
             verbose: false,
         };
-        let mut args = std::env::args().skip(1);
+        let mut args = args.into_iter();
         while let Some(argument) = args.next() {
             let (key, value) = argument
                 .split_once('=')
@@ -54,6 +58,42 @@ impl Options {
             }
         }
         Ok(options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_defaults_to_2425_and_explicit_ports_still_override_it() {
+        assert_eq!(Options::from_args(Vec::new()).unwrap().port, 2425);
+        for (args, expected) in [(vec!["--port=2427"], 2427), (vec!["--port", "3500"], 3500)] {
+            assert_eq!(
+                Options::from_args(args.into_iter().map(str::to_owned))
+                    .unwrap()
+                    .port,
+                expected
+            );
+        }
+        let options =
+            Options::from_args(["--verbose", "--adduser=127.0.0.1:2426"].map(str::to_owned))
+                .unwrap();
+        assert_eq!(options.port, 2425);
+        assert!(options.verbose);
+        assert_eq!(options.direct[0].port(), 2426);
+    }
+
+    #[test]
+    fn invalid_explicit_ports_do_not_silently_fall_back_to_the_default() {
+        for args in [
+            vec!["--port"],
+            vec!["--port=0"],
+            vec!["--port=65536"],
+            vec!["--port=bad"],
+        ] {
+            assert!(Options::from_args(args.into_iter().map(str::to_owned)).is_err());
+        }
     }
 }
 

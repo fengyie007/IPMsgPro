@@ -61,7 +61,9 @@ const click = async title => {
 
   const bridge = load(path.join(root, 'services/bridge.ts'));
   const local = await bridge.invoke('user.local');
-  assert.equal(local.username, 'me-2427');
+  assert.equal(local.username, 'me');
+  assert.equal(local.port, 2425);
+  assert.equal((await bridge.invoke('app.info')).port, local.port);
   const contacts = await bridge.invoke('user.list');
   assert.equal(contacts.users[0].mac, '02-11-22-33-44-55'); assert.equal(contacts.users[1].mac, undefined);
   console.log('PASS explicit browser mock uses the unbranded login and includes supplied/missing MAC examples');
