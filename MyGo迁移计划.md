@@ -147,6 +147,7 @@
 | 2026-10-29 | M2-3 | 分片状态机（19 项对拍）+ 资产库（独占目录/显式 Keep/Release 生命周期）+ 收图链路（单并发解码工作协程、提交闸门持重组器锁、引用先行/后行均一条历史、重放去重）；`ipmsg-image` 自定义协议用 `mygo.Protocol.Handle` 原样替代；回环集成测试通过 | ✅ |
 | 2026-10-29 | M2-4 | 发图链路（先落库再入队、32 片窗口 4 轮/末窗 15 轮 30s、全部确认后发引用、引用 4 次重试同包号、120s 总期限、取消/超时/队列上限 4）+ `image.select`（mygo Dialog）/`send`/`cancel`/`discard`/`import_clipboard`（base64 参数）命令 + 进度/完成/失败事件 + 能力位放开；发送全链路回环测试通过（A→B 落库、A 置已送达） | ✅ |
 | — | M2 验收 | 实机验收：与真实飞秋互发 PNG/JPEG/BMP 图片核对像素与缩略图；M2 已知限制（缩略图算法、EXIF）记录在案 | ⏳ 待用户验收（已授权继续 M3） |
+| 2026-10-29 | M3 | 截图与标注：GDI 捕获移植（`internal/platform/capture`，纯标准库 syscall：SetThreadDpiAwarenessContext/DwmFlush/BitBlt+CAPTUREBLT/GetDIBits，句柄显式释放，显示器枚举走 MonitorFromWindow）+ 截图会话（单一会话额度、5 分钟硬超时、确认/取消/关窗幂等结束、主窗口隐藏恢复）+ 独立无边框置顶编辑器窗口（`/?capture=<id>`）+ `ipmsg-capture` 协议仅服务活动会话 + `screenshot.start`（阻塞至会话结束返回导入资产）/`screenshot.confirm`（base64→`ImportScreenshot`→发图链路）/`screenshot_command`（read/ready/cancel）命令；前端编辑器组件原样复用；**已知限制**：编辑器窗口按 DIP 定位（100% 缩放与 Rust 物理像素一致，多屏混合 DPI 待实机验收核对）；GDI/边界测试对拍通过，全量构建全绿 | ✅ |
 
 ### M1 实机验收清单（对齐 Rust 阶段一）
 

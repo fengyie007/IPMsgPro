@@ -18,7 +18,7 @@ const supported = new Set([
   'user.local', 'user.list', 'user.discover', 'message.send', 'message.knock',
   'history.get', 'history.get_recent', 'history.search', 'history.clear', 'image.read',
   'image.select', 'image.send', 'image.cancel', 'image.discard',
-  'screenshot.start', 'screenshot.confirm', 'image.import_clipboard',
+  'screenshot.start', 'screenshot.confirm', 'screenshot_command', 'image.import_clipboard',
   'notification.test_sound',
   'notification.test_system', 'notification.take_activation',
   'storage.info', 'storage.select', 'storage.default', 'storage.apply', 'storage.cancel',

@@ -37,10 +37,18 @@ type Runtime struct {
 	mu                 sync.Mutex
 	activeConversation string
 	knownStatus        map[string]bool
+
+	shotMu     sync.Mutex
+	shot       *screenshotSession
+	shotBudget chan struct{}
+	mainWin    *mygo.Window
 }
 
 func New(hub *network.Hub, db *store.Database, config *store.ConfigStore, version, dataDir string) *Runtime {
-	return &Runtime{Hub: hub, DB: db, Config: config, Version: version, DataDir: dataDir, Port: hub.Port()}
+	return &Runtime{
+		Hub: hub, DB: db, Config: config, Version: version, DataDir: dataDir, Port: hub.Port(),
+		shotBudget: make(chan struct{}, 1),
+	}
 }
 
 func (r *Runtime) SetEmit(fn func(Envelope)) { r.emit = fn }
@@ -181,7 +189,7 @@ func marshal(v any) string {
 func (r *Runtime) capabilities() map[string]any {
 	return map[string]any{
 		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": r.Hub.ImagesEnabled(),
-		"files": false, "screenshot": false, "scan": false, "notificationSound": false,
+		"files": false, "screenshot": true, "scan": false, "notificationSound": false,
 	}
 }
 
@@ -410,8 +418,17 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 			return fail(err.Error())
 		}
 		return ok(map[string]any{"image": image})
-	case "screenshot.start",
-		"notification.test_sound", "notification.test_system", "notification.take_activation",
+	case "screenshot.start":
+		return r.StartScreenshot()
+	case "screenshot.confirm":
+		sessionID, _ := args["sessionId"].(string)
+		base64Data, _ := args["base64"].(string)
+		return r.ConfirmScreenshot(sessionID, base64Data)
+	case "screenshot_command":
+		sessionID, _ := args["sessionId"].(string)
+		command, _ := args["command"].(string)
+		return r.screenshotEditorCommand(sessionID, command)
+	case "notification.test_sound", "notification.test_system", "notification.take_activation",
 		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel",
 		"network.scan_range", "network.scan_cancel",
 		"file.select", "file.send", "file.discard", "file.accept", "file.reject",

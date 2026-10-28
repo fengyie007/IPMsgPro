@@ -167,6 +167,17 @@ func main() {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(data)
 	})
+	// 截图原图协议：仅服务当前活动会话，仅编辑器窗口可读取。
+	mygo.Protocol.HandleFunc("ipmsg-capture", func(w http.ResponseWriter, req *http.Request) {
+		sessionID := strings.TrimPrefix(req.URL.Path, "/")
+		data, err := backend.ServeScreenshotPNG(sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	})
 
 	log.Printf("迅秋 MyGo 启动: port=%d dataDir=%s wire=%s", hub.Port(), dataDir, hub.WireVersion())
 
@@ -177,6 +188,7 @@ func main() {
 			Height: 680,
 			URL:    "/",
 		})
+		backend.SetMainWindow(win)
 		win.OnClose(func(e *mygo.CloseEvent) {
 			e.PreventDefault()
 			win.Hide()
