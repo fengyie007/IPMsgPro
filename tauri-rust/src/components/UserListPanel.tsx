@@ -5,6 +5,7 @@ import { useMessageStore } from '../stores/messageStore';
 import { useConfigStore } from '../stores/configStore';
 import { Message, User } from '../types';
 import { formatListTime, formatPreview } from '../utils/format';
+import { pinyinInitials } from '../utils/pinyin';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useScrollMemory } from '../utils/useScrollMemory';
 import UserAvatar from './UserAvatar';
@@ -117,15 +118,18 @@ export default function UserListPanel({ viewMode }: UserListPanelProps) {
     const query = searchText.toLowerCase();
     const matched = users.filter((u) =>
       u.nickname.toLowerCase().includes(query) ||
+      pinyinInitials(u.nickname).includes(query) ||
       u.username.toLowerCase().includes(query) ||
       u.ip.includes(searchText) ||
-      (u.group || '').toLowerCase().includes(query)
+      (u.group || '').toLowerCase().includes(query) ||
+      pinyinInitials(u.group || '').includes(query)
     );
     return groupContacts(matched, ownGroup);
   }, [users, searchText, ownGroup]);
 
   const filteredConversations = conversationUsers.filter(({ user }) =>
     user.nickname.toLowerCase().includes(searchText.toLowerCase()) ||
+    pinyinInitials(user.nickname).includes(searchText.toLowerCase()) ||
     user.username.toLowerCase().includes(searchText.toLowerCase()) ||
     (user.ip && user.ip.includes(searchText))
   );
@@ -190,7 +194,7 @@ export default function UserListPanel({ viewMode }: UserListPanelProps) {
             <div className="text-center text-gray-400 py-10">
               <FiUsers size={32} className="mx-auto mb-2 opacity-50" />
               <p className="text-sm">{searching ? '没有匹配的联系人' : '尚未发现联系人'}</p>
-              <p className="text-xs mt-1">{searching ? '试试姓名、分组或 IP 地址' : '点击刷新按钮发现局域网用户'}</p>
+              <p className="text-xs mt-1">{searching ? '试试姓名、拼音首字母、分组或 IP 地址' : '点击刷新按钮发现局域网用户'}</p>
             </div>
           ) : (
             contactGroups.map((group) => {
