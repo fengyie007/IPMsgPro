@@ -22,6 +22,8 @@ const (
 	CmdBrAbsence   = 0x04
 	CmdSendMsg     = 0x20
 	CmdRecvMsg     = 0x21
+	CmdGetFileData = 0x60
+	CmdGetDirFiles = 0x62
 	CmdSendImage   = 0xc0
 	CmdReportImage = 0xc1
 	OptSendCheck   = 0x00000100
@@ -52,6 +54,9 @@ var textFramedCommands = map[uint32]bool{
 	0x32:           true, // ANSREADMSG
 	0x40:           true, // GETINFO
 	0x41:           true, // SENDINFO
+	0x60:           true, // GETFILEDATA
+	0x61:           true, // RELEASEFILES
+	0x62:           true, // GETDIRFILES
 	0x72:           true, // GETPUBKEY
 	0x73:           true, // ANSPUBKEY
 	0xc1:           true, // REPORT_RECVIMAGE
@@ -326,3 +331,8 @@ func AllDigitsASCII(s string) bool {
 	}
 	return true
 }
+
+// 以下补充常量供文件传输层使用（对照 protocol.rs 顶部常量表）。
+const (
+	CmdReleaseFiles = 0x61
+)
