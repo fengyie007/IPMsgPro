@@ -16,6 +16,9 @@ import (
 	"os"
 	"time"
 
+	"my-app/internal/ipmsg"
+	"my-app/internal/network"
+
 	"github.com/egoist/mygo"
 )
 
@@ -26,7 +29,7 @@ var (
 )
 
 var (
-	hub      *Hub
+	hub      *network.Hub
 	mainWin  *mygo.Window
 	trayIcon *mygo.Tray
 )
@@ -46,15 +49,15 @@ type Chat struct{}
 func (Chat) Info() RunInfo {
 	return RunInfo{
 		Port:        hub.Port(),
-		Nick:        hub.nick,
-		Group:       hub.group,
-		Hostname:    hub.hostname,
+		Nick:        hub.Nick(),
+		Group:       hub.Group(),
+		Hostname:    hub.Hostname(),
 		WireVersion: hub.WireVersion(),
 		TotalUnread: hub.TotalUnread(),
 	}
 }
 
-func (Chat) ListUsers() []User { return hub.ListUsers() }
+func (Chat) ListUsers() []network.User { return hub.ListUsers() }
 
 func (Chat) Unread() map[string]int {
 	out := map[string]int{}
@@ -66,7 +69,7 @@ func (Chat) Unread() map[string]int {
 	return out
 }
 
-func (Chat) History(key string) []Message { return hub.History(key) }
+func (Chat) History(key string) []network.Message { return hub.History(key) }
 
 func (Chat) Send(key, text string) error { return hub.SendText(key, text) }
 
@@ -130,7 +133,7 @@ func runBlink(win *mygo.Window, tray *mygo.Tray) {
 }
 
 func main() {
-	port := flag.Uint("port", ipmsgDefaultPort, "UDP 端口（默认 2425，与飞秋一致）")
+	port := flag.Uint("port", ipmsg.DefaultPort, "UDP 端口（默认 2425，与飞秋一致）")
 	name := flag.String("name", "MyGoDemo", "对外昵称")
 	group := flag.String("group", "MyGo", "分组名")
 	flag.Parse()
@@ -139,12 +142,12 @@ func main() {
 	if err != nil {
 		hostname = "mygo"
 	}
-	hub, err = NewHub(uint16(*port), *name, *group, fmt.Sprintf("mygo-demo@%s", hostname))
+	hub, err = network.NewHub(uint16(*port), *name, *group, fmt.Sprintf("mygo-demo@%s", hostname))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer hub.Close()
-	log.Printf("MyGo demo 启动: port=%d nick=%q wire=%s", hub.Port(), hub.nick, hub.WireVersion())
+	log.Printf("MyGo demo 启动: port=%d nick=%q wire=%s", hub.Port(), hub.Nick(), hub.WireVersion())
 
 	mygo.Bind(Chat{})
 
@@ -165,7 +168,7 @@ func main() {
 		tray, err := mygo.NewTray(mygo.TrayOptions{
 			ID:      "mygo-demo",
 			Icon:    trayIconPNG(color.RGBA{R: 59, G: 130, B: 246, A: 255}),
-			ToolTip: fmt.Sprintf("MyGo Demo · %s", hub.nick),
+			ToolTip: fmt.Sprintf("MyGo Demo · %s", hub.Nick()),
 			Menu: mygo.NewMenu([]*mygo.MenuItem{
 				{Label: "打开主窗口", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show() }},
 				mygo.Separator(),

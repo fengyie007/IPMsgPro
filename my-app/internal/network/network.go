@@ -1,7 +1,6 @@
-package main
-
-// 最小闭环网络层：UDP 发现（BR_ENTRY/ANSENTRY）、文本收发（SENDMSG/RECVMSG 回执）、
-// 用户表与未读统计。消息历史只存内存；用户以 来源IP:端口 为键，同机多实例互不合并。
+// Package network 实现最小闭环网络层：UDP 发现（BR_ENTRY/ANSENTRY）、文本收发
+// （SENDMSG/RECVMSG 回执）、用户表与未读统计。用户以 来源IP:端口 为键，同机多实例互不合并。
+package network
 
 import (
 	"bytes"
@@ -17,24 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"my-app/internal/ipmsg"
+
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
-
-// setBroadcast 打开 SO_BROADCAST；Go 的 net 包不会自动设置，直接 WriteToUDP 广播地址会 EACCES。
-func setBroadcast(conn *net.UDPConn) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-	var sockErr error
-	ctrlErr := raw.Control(func(fd uintptr) {
-		sockErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
-	})
-	if ctrlErr != nil {
-		return ctrlErr
-	}
-	return sockErr
-}
 
 type User struct {
 	Key      string `json:"key"` // ip:port
@@ -54,23 +39,23 @@ type Message struct {
 	Acked bool   `json:"acked"` // 对端 RECVMSG 回执（仅出站方向有意义）
 }
 
-// chooseWireFormat：对端公告了 UTF-8 能力就用 UTF-8，否则回退 GBK（飞秋默认）。
-func chooseWireFormat(command uint32) WireFormat {
-	if command&optCapUTF8 != 0 {
-		return wireUTF8
-	}
-	return wireGBK
-}
-
 type WireFormat int
 
 const (
-	wireGBK WireFormat = iota
-	wireUTF8
+	WireGBK WireFormat = iota
+	WireUTF8
 )
 
+// ChooseWireFormat：对端公告了 UTF-8 能力就用 UTF-8，否则回退 GBK（飞秋默认）。
+func ChooseWireFormat(command uint32) WireFormat {
+	if command&ipmsg.OptCapUTF8 != 0 {
+		return WireUTF8
+	}
+	return WireGBK
+}
+
 func encodeFor(command uint32, text string) ([]byte, error) {
-	if chooseWireFormat(command) == wireUTF8 {
+	if ChooseWireFormat(command) == WireUTF8 {
 		return []byte(text), nil
 	}
 	return simplifiedchinese.GBK.NewEncoder().Bytes([]byte(text))
@@ -97,6 +82,22 @@ type Hub struct {
 	ReceivedMessage func(peerKey string)
 }
 
+// setBroadcast 打开 SO_BROADCAST；Go 的 net 包不会自动设置，直接 WriteToUDP 广播地址会 EACCES。
+func setBroadcast(conn *net.UDPConn) error {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var sockErr error
+	ctrlErr := raw.Control(func(fd uintptr) {
+		sockErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+	})
+	if ctrlErr != nil {
+		return ctrlErr
+	}
+	return sockErr
+}
+
 func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 	host, err := os.Hostname()
 	if err != nil {
@@ -107,7 +108,7 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 		nick:     nick,
 		group:    group,
 		hostname: host,
-		wireVer:  feiqCompatVersion(instanceID, port),
+		wireVer:  ipmsg.FeiqCompatVersion(instanceID, port),
 		users:    map[string]*User{},
 		history:  map[string][]Message{},
 		unread:   map[string]int{},
@@ -129,6 +130,9 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 }
 
 func (h *Hub) Port() uint16        { return h.port }
+func (h *Hub) Nick() string        { return h.nick }
+func (h *Hub) Group() string       { return h.group }
+func (h *Hub) Hostname() string    { return h.hostname }
 func (h *Hub) WireVersion() string { return h.wireVer }
 
 func (h *Hub) Close() {
@@ -181,11 +185,11 @@ func (h *Hub) announce(command uint32, extra *string) {
 }
 
 // Refresh 重新广播 BR_ENTRY，请求已知用户回应 ANSENTRY。
-func (h *Hub) Refresh() { h.announce(cmdBrEntry, &h.group) }
+func (h *Hub) Refresh() { h.announce(ipmsg.CmdBrEntry, &h.group) }
 
-func (h *Hub) AnnounceEntry() { h.announce(cmdBrEntry, &h.group) }
+func (h *Hub) AnnounceEntry() { h.announce(ipmsg.CmdBrEntry, &h.group) }
 
-func (h *Hub) AnnounceExit() { h.announce(cmdBrExit, nil) }
+func (h *Hub) AnnounceExit() { h.announce(ipmsg.CmdBrExit, nil) }
 
 func broadcastTargets(port uint16) []*net.UDPAddr {
 	targets := []*net.UDPAddr{{IP: net.IPv4bcast, Port: int(port)}} // 受限广播兜底
@@ -238,7 +242,7 @@ func (h *Hub) SendText(key, text string) error {
 	if err != nil {
 		return err
 	}
-	var command uint32 = cmdSendMsg | optSendCheck
+	var command uint32 = ipmsg.CmdSendMsg | ipmsg.OptSendCheck
 	msg := Message{ID: h.nextMsgID.Add(1), Out: true, Text: text, Time: time.Now().UnixMilli()}
 
 	h.mu.Lock()
@@ -311,7 +315,7 @@ func (h *Hub) ListUsers() []User {
 
 func (h *Hub) Run() {
 	go func() {
-		buf := make([]byte, maxPacketBytes)
+		buf := make([]byte, ipmsg.MaxPacketBytes)
 		for {
 			n, src, err := h.conn.ReadFromUDP(buf)
 			if err != nil {
@@ -364,21 +368,21 @@ func (h *Hub) isSelf(src *net.UDPAddr) bool {
 }
 
 func (h *Hub) handle(data []byte, src *net.UDPAddr) {
-	pkt, err := parsePacket(data)
+	pkt, err := ipmsg.ParsePacket(data)
 	if err != nil {
 		log.Printf("丢弃来自 %s 的报文: %v", src, err)
 		return
 	}
 	key := src.String()
-	switch commandMode(pkt.command) {
-	case cmdBrEntry:
+	switch ipmsg.CommandMode(pkt.Command) {
+	case ipmsg.CmdBrEntry:
 		h.upsertUser(key, pkt, src)
-		if _, err := h.writePacket(src, cmdAnsEntry, h.nick, &h.group); err != nil {
+		if _, err := h.writePacket(src, ipmsg.CmdAnsEntry, h.nick, &h.group); err != nil {
 			log.Printf("ANSENTRY 发送失败: %v", err)
 		}
-	case cmdAnsEntry:
+	case ipmsg.CmdAnsEntry:
 		h.upsertUser(key, pkt, src)
-	case cmdBrExit:
+	case ipmsg.CmdBrExit:
 		h.mu.Lock()
 		if u, ok := h.users[key]; ok {
 			u.Online = false
@@ -386,22 +390,22 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		}
 		h.mu.Unlock()
 		h.notifyUsersChanged()
-	case cmdSendMsg:
+	case ipmsg.CmdSendMsg:
 		h.upsertUser(key, pkt, src)
-		msg := Message{ID: h.nextMsgID.Add(1), Out: false, Text: pkt.body, Time: time.Now().UnixMilli()}
+		msg := Message{ID: h.nextMsgID.Add(1), Out: false, Text: pkt.Body, Time: time.Now().UnixMilli()}
 		h.mu.Lock()
 		h.history[key] = append(h.history[key], msg)
 		h.unread[key]++
 		h.mu.Unlock()
 		// 回 RECVMSG，body 为对方包号十进制文本
-		if _, err := h.writePacket(src, cmdRecvMsg, strconv.FormatUint(uint64(pkt.packetNo), 10), nil); err != nil {
+		if _, err := h.writePacket(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
 			log.Printf("RECVMSG 回执发送失败: %v", err)
 		}
 		if h.ReceivedMessage != nil {
 			h.ReceivedMessage(key)
 		}
-	case cmdRecvMsg:
-		pktNo64, err := strconv.ParseUint(strings.TrimSpace(pkt.body), 10, 32)
+	case ipmsg.CmdRecvMsg:
+		pktNo64, err := strconv.ParseUint(strings.TrimSpace(pkt.Body), 10, 32)
 		if err != nil {
 			return
 		}
@@ -417,7 +421,7 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 	}
 }
 
-func (h *Hub) upsertUser(key string, pkt packet, src *net.UDPAddr) {
+func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 	changed := false
 	h.mu.Lock()
 	u, ok := h.users[key]
@@ -426,12 +430,12 @@ func (h *Hub) upsertUser(key string, pkt packet, src *net.UDPAddr) {
 		h.users[key] = u
 		changed = true
 	}
-	if u.Nick != pkt.username || u.Group != pkt.extra || u.Host != pkt.hostname || !u.Online {
+	if u.Nick != pkt.Username || u.Group != pkt.Extra || u.Host != pkt.Hostname || !u.Online {
 		changed = true
 	}
-	u.Nick = pkt.username
-	u.Host = pkt.hostname
-	u.Group = pkt.extra
+	u.Nick = pkt.Username
+	u.Host = pkt.Hostname
+	u.Group = pkt.Extra
 	u.Addr = src.IP.String()
 	u.Online = true
 	u.LastSeen = time.Now().UnixMilli()

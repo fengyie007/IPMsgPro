@@ -9,7 +9,6 @@ export interface Message {
   out: boolean;
   text: string;
   time: number;
-  /** 对端 RECVMSG 回执（仅出站方向有意义） */
   acked: boolean;
 }
 
@@ -23,7 +22,6 @@ export interface RunInfo {
 }
 
 export interface User {
-  /** ip:port */
   key: string;
   nick: string;
   host: string;

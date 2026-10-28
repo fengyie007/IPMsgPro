@@ -139,4 +139,5 @@
 |---|---|---|---|
 | 2026-10-28 | M0 | 最小闭环 demo：报文/发现/文本/回执/托盘闪烁，黑盒验证通过，提交 `6e4633c` | ✅ |
 | 2026-10-29 | 决策 | 用户确认启动迁移，6 项决策点全部落定（数据不迁移） | ✅ |
-| 2026-10-29 | M1-1 | SQLite 对拍 + `internal/store`（配置/数据库 schema 6） | 🚧 进行中 |
+| 2026-10-29 | M1-1 | 代码重构为 `internal/ipmsg`（协议，符号导出）+ `internal/network`（Hub）+ `internal/store`；SQLite 插件对拍通过：purego 无 cgo、WAL/foreign_keys/BusyTimeout/事务可用，但 **`Execute` 不允许手动 BEGIN/COMMIT（SQLITE_AUTH）**，条件写入必须用 `INSERT...SELECT...WHERE NOT EXISTS` 在插件 `Transaction`（BEGIN IMMEDIATE）内表达；配置层（JSON 单一来源、严格类型、null 拒绝、原子替换）与数据库层（schema 6 全量建表、去重/分页/搜索/清空语义）逐条对拍 Rust 版用例；`go test ./...`（26 项）、`go vet`、`npm run build` 全部通过 | ✅ |
+| — | M1-2 | 会话持久化接入 Hub（落库/去重/重启状态迁移）+ 前端迁移（bridge.ts 重写、store/组件复制） | 待开始 |

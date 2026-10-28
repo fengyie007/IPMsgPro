@@ -1,4 +1,4 @@
-package main
+package network
 
 // 回环集成测试：两个 Hub 在 127.0.0.1 临时端口上完成 发现 → 文本 → 回执 的最小闭环。
 
@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"my-app/internal/ipmsg"
 )
 
 func localPort(h *Hub) int {
@@ -40,7 +42,7 @@ func TestLoopbackDiscoveryAndMessaging(t *testing.T) {
 
 	// A 直接向 B 单播 BR_ENTRY（测试里不走广播），B 应回 ANSENTRY 让 A 认识 Bob
 	bAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort(b)}
-	if _, err := a.writePacket(bAddr, cmdBrEntry, a.nick, &a.group); err != nil {
+	if _, err := a.writePacket(bAddr, ipmsg.CmdBrEntry, a.nick, &a.group); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 2*time.Second, func() bool {
