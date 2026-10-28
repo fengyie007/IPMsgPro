@@ -82,6 +82,9 @@ export default function ChatPanel() {
   const screenshotSupported = useConfigStore((s) => s.info?.capabilities.screenshot ?? false);
   const filesSupported = useConfigStore((s) => s.info?.capabilities.files ?? false);
   const fileBusy = useFileSelectionStore((s) => s.busy || s.files.length > 0);
+
+  // ChatPanel is keyed by conversation, so a fresh instance always starts pinned to the latest message.
+  const shouldAutoScroll = useRef(true);
   const takeScreenshot = async () => {
     if (!userId || imageBusyRef.current || previewRef.current) return;
     imageBusyRef.current = true; setImageBusy(true); setScreenshotBusy(true);
@@ -161,14 +164,25 @@ export default function ChatPanel() {
     const el = listRef.current;
     if (!el) return;
     if (restoreScroll.current) {
-      el.scrollTop = nearBottom.current ? el.scrollHeight : scrollPosition.current;
+      el.scrollTop = el.scrollHeight;
+      nearBottom.current = true;
       restoreScroll.current = false;
     } else if (prependHeight.current !== null) {
       el.scrollTop += el.scrollHeight - prependHeight.current;
       prependHeight.current = null;
-    } else if (nearBottom.current || lastMessage?.from === 'self') el.scrollTop = el.scrollHeight;
+    } else if (shouldAutoScroll.current || nearBottom.current || lastMessage?.from === 'self') {
+      el.scrollTop = el.scrollHeight;
+      shouldAutoScroll.current = false;
+    }
     scrollPosition.current = el.scrollTop;
   }, [scrollKey]);
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const pin = () => { if (nearBottom.current) el.scrollTop = el.scrollHeight; };
+    el.addEventListener('load', pin, true);
+    return () => el.removeEventListener('load', pin, true);
+  }, []);
 
   const syncHasInput = () => {
     const el = editorRef.current;

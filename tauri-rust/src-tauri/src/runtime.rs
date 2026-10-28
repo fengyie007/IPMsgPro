@@ -13,12 +13,12 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, tray::TrayIcon};
 
 pub struct Runtime {
     pub network: Arc<Network>,
@@ -30,7 +30,7 @@ pub struct Runtime {
     pub accepting: AtomicBool,
     pub quitting: AtomicBool,
     pub finished: AtomicBool,
-    pub tray_available: AtomicBool,
+    pub tray_available: Arc<AtomicBool>,
     pub image_selecting: AtomicBool,
     pub capture: crate::capture::Capture,
     pub sound: Option<crate::notification::NotificationSound>,
@@ -41,6 +41,8 @@ pub struct Runtime {
     event_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     log_file: Mutex<fs::File>,
     verbose: bool,
+    pub tray_icon: Mutex<Option<TrayIcon>>,
+    tray_blink_gen: Arc<AtomicU64>,
 }
 
 /// Keep the historical database/compatibility identity stable while presenting
@@ -190,7 +192,7 @@ impl Runtime {
             accepting: AtomicBool::new(true),
             quitting: AtomicBool::new(false),
             finished: AtomicBool::new(false),
-            tray_available: AtomicBool::new(false),
+            tray_available: Arc::new(AtomicBool::new(false)),
             image_selecting: AtomicBool::new(false),
             capture: crate::capture::Capture::default(),
             sound,
@@ -201,6 +203,8 @@ impl Runtime {
             event_task: Mutex::new(None),
             log_file: Mutex::new(log_file),
             verbose: options.verbose,
+            tray_icon: Mutex::new(None),
+            tray_blink_gen: Arc::new(AtomicU64::new(0)),
         });
         // Bind TCP to the same port as UDP; never advertise a fallback port.
         state
@@ -416,4 +420,54 @@ pub fn request_exit(app: &AppHandle) {
         state.finished.store(true, Ordering::Release);
         app.exit(0);
     });
+}
+
+impl Runtime {
+    pub fn start_tray_blink(&self) {
+        let tray = match self.tray_icon.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(tray) => tray,
+            None => return,
+        };
+        let Some(icon) = tray.app_handle().default_window_icon() else { return };
+        let normal = owned_icon(icon);
+        let gray = grayscale(icon);
+        // Bumping the generation retires any previous blink task, so restarts never stack loops.
+        let generation = self.tray_blink_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let current = Arc::clone(&self.tray_blink_gen);
+        tauri::async_runtime::spawn(async move {
+            let mut colored = true;
+            while current.load(Ordering::Acquire) == generation {
+                colored = !colored;
+                let _ = tray.set_icon(Some(if colored { normal.clone() } else { gray.clone() }));
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let _ = tray.set_icon(Some(normal));
+        });
+    }
+
+    pub fn stop_tray_blink(&self) {
+        self.tray_blink_gen.fetch_add(1, Ordering::AcqRel);
+        if let Some(tray) = self.tray_icon.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if let Some(icon) = tray.app_handle().default_window_icon() {
+                let _ = tray.set_icon(Some(owned_icon(icon)));
+            }
+        }
+    }
+}
+
+fn owned_icon(icon: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
+    tauri::image::Image::new_owned(icon.rgba().to_vec(), icon.width(), icon.height())
+}
+
+/// Greyscale keeps the shape and alpha, so the tray icon blinks in place instead of
+/// disappearing (hiding it lets Windows re-order the notification area).
+fn grayscale(icon: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
+    let mut rgba = icon.rgba().to_vec();
+    for pixel in rgba.chunks_exact_mut(4) {
+        let gray = ((77 * pixel[0] as u32 + 150 * pixel[1] as u32 + 29 * pixel[2] as u32) >> 8) as u8;
+        pixel[0] = gray;
+        pixel[1] = gray;
+        pixel[2] = gray;
+    }
+    tauri::image::Image::new_owned(rgba, icon.width(), icon.height())
 }

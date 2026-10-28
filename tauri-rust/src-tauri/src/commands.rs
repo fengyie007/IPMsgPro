@@ -303,6 +303,14 @@ async fn dispatch(
                 .unwrap_or_else(|e| e.into_inner()) = string(&args, "userId")?;
             Ok(json!({"success":true}))
         }
+        "tray.start_blink" => {
+            state.start_tray_blink();
+            Ok(json!({"success":true}))
+        }
+        "tray.stop_blink" => {
+            state.stop_tray_blink();
+            Ok(json!({"success":true}))
+        }
         "frontend.error" => {
             state.log("ERROR", &string(&args, "message")?);
             Ok(json!({"success":true}))

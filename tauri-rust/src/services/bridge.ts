@@ -24,7 +24,7 @@ const supported = new Set([
   'network.scan_range', 'network.scan_cancel', 'network.scan_status',
   'file.select', 'file.send', 'file.discard', 'file.accept', 'file.reject', 'file.cancel', 'file.open_folder',
   'file.select_folder', 'file.resume', 'file.pause',
-  'window.set_active_conversation', 'frontend.error',
+  'window.set_active_conversation', 'frontend.error', 'tray.start_blink', 'tray.stop_blink',
 ]);
 
 function dispatch(envelope: Envelope) {
@@ -247,6 +247,8 @@ function mockResponse(command: string, args: Record<string, unknown>): unknown {
       }
       return { success: true };
     case 'window.set_active_conversation':
+    case 'tray.start_blink':
+    case 'tray.stop_blink':
     case 'frontend.error': return { success: true };
     case 'message.knock': {
       const target = String(args.target), peer = mockUsers.find((user) => user.id === target);

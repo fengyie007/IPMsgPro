@@ -37,7 +37,7 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
         let _ = window.request_user_attention(None);
     }
 }
-fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn create_tray(app: &tauri::AppHandle) -> tauri::Result<tauri::tray::TrayIcon> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -65,8 +65,7 @@ fn create_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
-    builder.build(app)?;
-    Ok(())
+    builder.build(app)
 }
 
 fn startup_error(error: &str) {
@@ -120,7 +119,10 @@ pub fn run() {
                 .devtools(cfg!(debug_assertions))
                 .build()?;
             match create_tray(app.handle()) {
-                Ok(()) => state.tray_available.store(true, Ordering::Release),
+                Ok(tray) => {
+                    *state.tray_icon.lock().unwrap_or_else(|e| e.into_inner()) = Some(tray);
+                    state.tray_available.store(true, Ordering::Release);
+                }
                 Err(error) => state.log(
                     "ERROR",
                     &format!("托盘创建失败，关闭窗口将退出而非隐藏：{error}"),

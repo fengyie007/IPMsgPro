@@ -27,6 +27,17 @@ export default function App() {
   const [startupError, setStartupError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const currentUser = useUserStore((s) => s.currentUser);
+  const unreadTotal = useMessageStore((s) => {
+    let total = 0;
+    for (const count of s.unread.values()) total += count;
+    return total;
+  });
+  const hasUnread = unreadTotal > 0;
+  useEffect(() => {
+    if (!ready) return;
+    void invoke(hasUnread ? 'tray.start_blink' : 'tray.stop_blink')
+      .catch((error) => console.error('[App] Tray blink update failed', error));
+  }, [ready, hasUnread]);
   useEffect(() => {
     if (!ready) return;
     return watchNotificationActivation((user) => useWorkspaceStore.getState().openChat(user));
