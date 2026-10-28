@@ -33,18 +33,18 @@ func (p scanPhase) active() bool {
 
 // ScanStatus 对齐前端 types 的 ScanStatus（camelCase）。
 type ScanStatus struct {
-	ScanID      uint64   `json:"scanId"`
-	Revision    uint64   `json:"revision"`
+	ScanID      uint64    `json:"scanId"`
+	Revision    uint64    `json:"revision"`
 	State       scanPhase `json:"state"`
-	Current     uint32   `json:"current"`
-	Total       uint32   `json:"total"`
-	Found       uint32   `json:"found"`
-	FailedSends uint32   `json:"failedSends"`
-	Skipped     uint32   `json:"skipped"`
-	Port        uint16   `json:"port"`
-	DelayMs     uint32   `json:"delayMs"`
-	Ranges      []string `json:"ranges"`
-	Error       *string  `json:"error"`
+	Current     uint32    `json:"current"`
+	Total       uint32    `json:"total"`
+	Found       uint32    `json:"found"`
+	FailedSends uint32    `json:"failedSends"`
+	Skipped     uint32    `json:"skipped"`
+	Port        uint16    `json:"port"`
+	DelayMs     uint32    `json:"delayMs"`
+	Ranges      []string  `json:"ranges"`
+	Error       *string   `json:"error"`
 }
 
 func defaultScanStatus() ScanStatus {

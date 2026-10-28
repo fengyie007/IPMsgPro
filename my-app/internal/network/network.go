@@ -28,15 +28,15 @@ import (
 )
 
 type User struct {
-	ID       string `json:"id"` // username@hostname#ip:port，作为会话键
-	Key      string `json:"key"`
-	Nick     string `json:"nickname"`
-	Host     string `json:"hostname"`
-	Group    string `json:"group"`
-	Addr     string `json:"ip"`
-	Port     int    `json:"port"`
-	Online   bool   `json:"online"`
-	LastSeen int64  `json:"-"`
+	ID       string           `json:"id"` // username@hostname#ip:port，作为会话键
+	Key      string           `json:"key"`
+	Nick     string           `json:"nickname"`
+	Host     string           `json:"hostname"`
+	Group    string           `json:"group"`
+	Addr     string           `json:"ip"`
+	Port     int              `json:"port"`
+	Online   bool             `json:"online"`
+	LastSeen int64            `json:"-"`
 	Avatar   ipmsg.AvatarKind `json:"-"`
 	AvatarID int              `json:"-"` // 仅 AvatarBuiltin 时有效
 	MAC      string           `json:"-"` // 对端版本头自报 MAC（已归一化）
@@ -89,8 +89,8 @@ type Hub struct {
 	conn *net.UDPConn
 	db   *store.Database
 
-	files *filetransfer.Transfers
-	scan  *scanner
+	files  *filetransfer.Transfers
+	scan   *scanner
 	knocks *knockState
 
 	localID string

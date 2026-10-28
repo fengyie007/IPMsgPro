@@ -158,6 +158,10 @@
 | 2026-10-29 | M5-3 | 系统通知：**按迁移决策 4（用户已确认的降级预案）降级**——WinRT Toast（AUMID 快捷方式注册 + ToastNotifier + 激活回调）需纯 Go 手写整套 COM/WinRT 接口，成本超预期；已移植可移植部分（Notice 文案构造：默认不泄露内容、预览开关、控制字符过滤、8 类文案，2 项对拍测试），能力位 `systemNotifications:false`，前端设置页自动灰置并显示说明（前端已有该降级 UI），`notification.test_system` 返回明确错误；后续如需真系统通知只需补 `native_windows.go` 后端 | ✅（降级） |
 | 2026-10-29 | M5 收尾 | 全量 `go test ./...` 全绿；打包 exe 黑盒验证：启动正常（提示音服务初始化）、fakepeer 发现+文本回执通过 | ✅ |
 | — | M5 验收 | 实机验收：扫描设置页扫到真实飞秋、收到消息有提示音（试听按钮）、消息持续爆发只响一声、正在阅读不响 | ⏳ 待用户验收（已授权继续 M6） |
+| 2026-10-29 | M6-1/2 | 窗口振动 0xD1（knock.rs 对拍：SendKnock 10s 冷却/4096 上限/不重试、receiveKnock 空帧 0-2 NUL 兼容、message.knock 命令启用、ReceivedEvent.Type 供前端特效）；头像与 MAC（avatar.rs + feiq_mac 对拍：ParseAvatar builtin 0..83/custom/unknown、FeiqMac 12/17 位归一化与非法拒绝；User 携带头像/MAC，user.list/userToFrontend 输出真实值；登录名沿用设置页昵称热更新）；拼音搜索/表情/登录信息页为前端组件，随 M1 整树迁移已可用 | ✅ |
+| 2026-10-29 | M6-3 | 存储目录管理（storage.rs + layout.rs 对拍）：`internal/storage`（bootstrap 定位文件 data-location.json、数据集身份标记 .speedipmsg-dataset.json、写探针/权限校验、copyTree 20 万项/64 层上限拒绝链接并校验完整性、createDataset/migrate/freshDefault、重启时机迁移 pending 选择 Apply/Cancel、失效自动回退新默认位置并备份原定位记录）；storage.info/select/default/apply/cancel 命令、app.info 增加 storageError；**刻意不移植**旧版目录兼容导入（open_default/open_compatible）——"历史数据不迁移"决策的直接推论。对拍测试 5 项（bootstrap 直用/标记校验与回退/重启迁移/非法目标/命名）；修掉一处 Rust drop 语义差异导致的句柄泄漏（os.Open 未 Close 锁住标记文件）。M6 其余项（表情数据、拼音、托盘细节）随前端整树迁移已可用 | ✅ |
+| 2026-10-29 | M6 收尾 | 全量 `go test ./...` 8 个包全绿、`go vet` 干净；自动更新维持 M6 可选项待用户决定 | ✅ |
+| — | M6 验收 | 实机验收：振动特效与冷却提示、联系人头像/MAC 展示、存储设置页切换数据目录（重启生效、失败回退） | ⏳ 待用户验收 |
 
 ### M1 实机验收清单（对齐 Rust 阶段一）
 

@@ -56,9 +56,9 @@ func TestFeiqMacNormalizesValidAndRejectsInvalid(t *testing.T) {
 	}
 	for _, invalid := range []string{
 		"not-a-mac-id",
-		"03ABCDEF1234",  // 组播位
-		"000000000000",  // 全零
-		"02ABCDEF123",   // 长度不对
+		"03ABCDEF1234",   // 组播位
+		"000000000000",   // 全零
+		"02ABCDEF123",    // 长度不对
 		"02-AB-CD-EF-12", // 分段不全
 	} {
 		version := "1_lbt6_0#128#" + invalid + "#0#0#0#4001#9"

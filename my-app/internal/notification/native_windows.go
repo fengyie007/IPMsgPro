@@ -19,8 +19,8 @@ import (
 var audio []byte
 
 var (
-	modwinmm              = syscall.NewLazyDLL("winmm.dll")
-	procMciSendStringW    = modwinmm.NewProc("mciSendStringW")
+	modwinmm               = syscall.NewLazyDLL("winmm.dll")
+	procMciSendStringW     = modwinmm.NewProc("mciSendStringW")
 	procMciGetErrorStringW = modwinmm.NewProc("mciGetErrorStringW")
 )
 

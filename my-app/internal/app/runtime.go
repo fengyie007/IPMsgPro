@@ -21,6 +21,7 @@ import (
 	"my-app/internal/media"
 	"my-app/internal/network"
 	"my-app/internal/notification"
+	"my-app/internal/storage"
 	"my-app/internal/store"
 )
 
@@ -30,12 +31,14 @@ type Envelope struct {
 }
 
 type Runtime struct {
-	Hub     *network.Hub
-	DB      *store.Database
-	Config  *store.ConfigStore
-	Version string
-	DataDir string
-	Port    uint16
+	Hub          *network.Hub
+	DB           *store.Database
+	Config       *store.ConfigStore
+	Version      string
+	DataDir      string
+	Port         uint16
+	Storage      *storage.Storage
+	StorageError string // 启动期存储回退提示（对拍 Rust storage error）
 
 	emit func(Envelope)
 
@@ -45,9 +48,9 @@ type Runtime struct {
 	selecting          atomic.Bool // 文件/图片选择与截图共用互斥
 	accepting          atomic.Bool // 启动完成后置 true，等价 Rust accepting 标志
 
-	notifyMu   sync.Mutex
-	sound      *notification.NotificationSound
-	soundGate  notification.NotificationGate
+	notifyMu  sync.Mutex
+	sound     *notification.NotificationSound
+	soundGate notification.NotificationGate
 
 	shotMu     sync.Mutex
 	shot       *screenshotSession
@@ -309,6 +312,14 @@ func statusToMap(v any) map[string]any {
 	return out
 }
 
+// storageErrorPtr 空错误输出 null（前端 storageError?: string | null）。
+func storageErrorPtr(text string) any {
+	if text == "" {
+		return nil
+	}
+	return text
+}
+
 func (r *Runtime) localIP() string {
 	conn, err := net.Dial("udp4", "223.5.5.5:53")
 	if err == nil {
@@ -378,7 +389,8 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 	switch command {
 	case "app.info":
 		return ok(map[string]any{"version": r.Version, "dataDir": r.DataDir, "port": r.Port,
-			"systemNotifications": false, "capabilities": r.capabilities()})
+			"systemNotifications": false, "storageError": storageErrorPtr(r.StorageError),
+			"capabilities": r.capabilities()})
 
 	case "config.get":
 		return ok(map[string]any{"config": r.Config.Get()})
@@ -601,9 +613,66 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		return ok(nil)
 	case "notification.test_system", "notification.take_activation":
 		return fail("系统通知需要 Windows 桌面版（MyGo 版已按迁移决策降级为应用内提示）")
-	case
-		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel":
-		return fail(fmt.Sprintf("%s 将在后续阶段迁移（见 MyGo迁移计划.md）", command))
+	case "storage.info":
+		if r.Storage == nil {
+			return fail("存储管理不可用")
+		}
+		info, err := r.Storage.Info()
+		if err != nil {
+			return fail(err.Error())
+		}
+		return info
+	case "storage.select":
+		if r.Storage == nil {
+			return fail("存储管理不可用")
+		}
+		if !r.beginSelection() {
+			return fail("请先完成已有选择或截图")
+		}
+		defer r.endSelection()
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:     "选择数据存储位置",
+			Directory: true,
+		})
+		if err != nil {
+			return fail(err.Error())
+		}
+		if len(paths) == 0 {
+			return ok(map[string]any{"cancelled": true})
+		}
+		result, err := r.Storage.Prepare(paths[0], false)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return result
+	case "storage.default":
+		if r.Storage == nil {
+			return fail("存储管理不可用")
+		}
+		result, err := r.Storage.Prepare(r.Storage.Bootstrap(), true)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return result
+	case "storage.apply":
+		selectionID, _ := args["selectionId"].(string)
+		if r.Storage == nil {
+			return fail("存储管理不可用")
+		}
+		result, err := r.Storage.Apply(selectionID)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return result
+	case "storage.cancel":
+		if r.Storage == nil {
+			return fail("存储管理不可用")
+		}
+		result, err := r.Storage.CancelPending()
+		if err != nil {
+			return fail(err.Error())
+		}
+		return result
 
 	case "network.scan_status":
 		return ok(map[string]any{"scan": statusToMap(r.Hub.ScanStatus())})

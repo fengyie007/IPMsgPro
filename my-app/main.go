@@ -26,6 +26,7 @@ import (
 	"my-app/internal/ipmsg"
 	"my-app/internal/media"
 	"my-app/internal/network"
+	"my-app/internal/storage"
 	"my-app/internal/store"
 )
 
@@ -125,6 +126,14 @@ func main() {
 	flag.Parse()
 
 	dataDir := resolveDataDir(uint16(*port))
+	// 存储管理：bootstrap 记录活动数据集；迁移只发生在启动时机（对拍 storage.rs）。
+	var storageErr string
+	boot, err := storage.Open(dataDir, uint16(*port))
+	if err != nil {
+		log.Fatalf("解析数据目录失败: %v", err)
+	}
+	dataDir = boot.Active
+	storageErr = boot.OpenError()
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		log.Fatalf("创建数据目录失败: %v", err)
 	}
@@ -160,6 +169,8 @@ func main() {
 	}
 
 	backend = app.New(hub, db, configStore, appVersion, dataDir)
+	backend.Storage = boot
+	backend.StorageError = storageErr
 	backend.WireEvents()
 	mygo.Bind(Backend{})
 
