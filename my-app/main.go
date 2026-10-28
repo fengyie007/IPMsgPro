@@ -146,6 +146,19 @@ func main() {
 	defer hub.Close()
 	hub.AttachDatabase(db, "local@"+hostname)
 
+	// 文件传输：TCP 与 UDP 同端口，接收目录为 <Downloads>/SpeedIpMsgGo。
+	downloads := os.Getenv("USERPROFILE")
+	if downloads == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("定位接收目录失败: %v", err)
+		}
+		downloads = home
+	}
+	if err := hub.StartFiles(filepath.Join(downloads, "Downloads", "SpeedIpMsgGo")); err != nil {
+		log.Fatalf("启动文件服务失败: %v", err)
+	}
+
 	backend = app.New(hub, db, configStore, appVersion, dataDir)
 	backend.WireEvents()
 	mygo.Bind(Backend{})
@@ -193,6 +206,10 @@ func main() {
 			e.PreventDefault()
 			win.Hide()
 		})
+		// 原生拖放：文件/文件夹直接登记为当前会话的发送预览。
+		win.OnFileDrop(func(e *mygo.FileDropEvent) {
+			backend.HandleFileDrop(e.Paths)
+		})
 
 		tray, err := mygo.NewTray(mygo.TrayOptions{
 			ID:      "speedipmsg-mygo",
@@ -202,6 +219,9 @@ func main() {
 				{Label: "打开主窗口", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show() }},
 				mygo.Separator(),
 				{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) {
+					if transfers, err := hub.Files(); err == nil {
+						transfers.Shutdown()
+					}
 					hub.AnnounceExit()
 					time.Sleep(100 * time.Millisecond)
 					mygo.App.Quit()

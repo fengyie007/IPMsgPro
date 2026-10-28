@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"my-app/internal/filetransfer"
 	"my-app/internal/ipmsg"
 	"my-app/internal/media"
 	"my-app/internal/store"
@@ -85,6 +86,8 @@ type Hub struct {
 	conn *net.UDPConn
 	db   *store.Database
 
+	files *filetransfer.Transfers
+
 	localID string
 
 	mu      sync.Mutex
@@ -107,6 +110,7 @@ type Hub struct {
 	MessageAcked      func(peerKey, messageID string)
 	MessageFailed     func(peerKey, messageID, reason string)
 	MessageReceived   func(ReceivedEvent)
+	FileEvent         func(event string, payload any)
 	ImageFailed       func(peerID, imageID, reason string)
 	ImageReceived     func(ReceivedEvent, media.ImageMetadata)
 	ImageSendProgress func(messageID, target string, progress int, stage string, image media.ImageMetadata)
@@ -502,7 +506,15 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		return
 	}
 	key := src.String()
-	switch ipmsg.CommandMode(pkt.Command) {
+	mode := ipmsg.CommandMode(pkt.Command)
+	// RECVMSG / RELEASEFILES 先给文件引擎认领（回执确认/拒收通知），
+	// 文本发送重试仍走 pending 表。
+	if mode == ipmsg.CmdRecvMsg || mode == ipmsg.CmdReleaseFiles {
+		if h.files != nil {
+			h.files.Receipt(pkt, src)
+		}
+	}
+	switch mode {
 	case ipmsg.CmdBrEntry:
 		h.upsertUser(key, pkt, src)
 		if _, err := h.buildWireAndSend(src, ipmsg.CmdAnsEntry, h.Nick(), &h.prof.Load().group); err != nil {
@@ -519,8 +531,19 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		h.mu.Unlock()
 		h.notifyUsersChanged()
 	case ipmsg.CmdSendMsg:
+		if pkt.Command&ipmsg.OptEncrypt != 0 {
+			return
+		}
 		h.upsertUser(key, pkt, src)
-		h.receiveText(key, pkt, src)
+		if h.handleFileIncoming(key, pkt, src) {
+			return
+		}
+		// 文件服务未启动时按占位文本展示；绝不把文件邀请回执为已接受。
+		unsupportedFile := pkt.Command&ipmsg.OptFileAttach != 0
+		if unsupportedFile {
+			pkt.Body = "[收到文件：当前版本暂不支持，请使用原版接收]"
+		}
+		h.receiveText(key, pkt, src, !unsupportedFile)
 	case ipmsg.CmdSendImage:
 		if err := h.handleImageFragment(pkt, src, key); err != nil {
 			log.Printf("图片分片处理失败: %v", err)
@@ -567,7 +590,8 @@ func (h *Hub) buildWireAndSend(src *net.UDPAddr, command uint32, body string, ex
 }
 
 // receiveText 落库去重后投递事件；重复报文始终回执但不重复计数。
-func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
+// ack=false 时跳过 RECVMSG（文件邀请占位文本，见 handle 的 unsupported 分支）。
+func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr, ack bool) {
 	peerID := fmt.Sprintf("%s@%s#%s", pkt.Username, pkt.Hostname, key)
 	recordID := fmt.Sprintf("rx:%s:%d", key, pkt.PacketNo)
 	ts := time.Now().Unix()
@@ -586,8 +610,10 @@ func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 		h.unread[key]++
 		h.mu.Unlock()
 	}
-	if _, err := h.buildWireAndSend(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
-		log.Printf("RECVMSG 回执发送失败: %v", err)
+	if ack {
+		if _, err := h.buildWireAndSend(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
+			log.Printf("RECVMSG 回执发送失败: %v", err)
+		}
 	}
 	if h.MessageReceived != nil {
 		h.mu.Lock()

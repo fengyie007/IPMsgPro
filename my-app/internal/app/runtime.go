@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"encoding/base64"
 
@@ -37,6 +38,8 @@ type Runtime struct {
 	mu                 sync.Mutex
 	activeConversation string
 	knownStatus        map[string]bool
+	selecting          atomic.Bool // 文件/图片选择与截图共用互斥
+	accepting          atomic.Bool // 启动完成后置 true，等价 Rust accepting 标志
 
 	shotMu     sync.Mutex
 	shot       *screenshotSession
@@ -51,7 +54,10 @@ func New(hub *network.Hub, db *store.Database, config *store.ConfigStore, versio
 	}
 }
 
-func (r *Runtime) SetEmit(fn func(Envelope)) { r.emit = fn }
+func (r *Runtime) SetEmit(fn func(Envelope)) {
+	r.emit = fn
+	r.accepting.Store(true)
+}
 
 // WireEvents 把 Hub 回调接成前端领域事件；UsersChanged 按快照差分出
 // user.discovered / user.status_changed，避免向列表页重放全量。
@@ -89,6 +95,21 @@ func (r *Runtime) WireEvents() {
 			"image": metadata, "timestamp": evt.Timestamp,
 			"command": 0xc0 | 0x200000,
 		})
+	}
+	r.Hub.FileEvent = func(event string, payload any) {
+		m, ok := payload.(map[string]any)
+		if !ok {
+			return
+		}
+		// 文件邀请事件的 fromUser 换成前端 User 形状（version/avatar 齐全）。
+		if event == "message.received" {
+			if from, ok := m["from"].(string); ok {
+				if u := r.Hub.UserByID(from); u != nil {
+					m["fromUser"] = userToFrontend(*u, r.Version)
+				}
+			}
+		}
+		r.Emit(event, m)
 	}
 	r.Hub.ImageSendProgress = func(messageID, target string, progress int, stage string, image media.ImageMetadata) {
 		r.Emit("image.send_progress", map[string]any{
@@ -187,9 +208,10 @@ func marshal(v any) string {
 
 // capabilities 对应前端 types/index.ts Capabilities；M1 只交付文本/发现/历史。
 func (r *Runtime) capabilities() map[string]any {
+	files := r.Hub.FilesEnabled()
 	return map[string]any{
 		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": r.Hub.ImagesEnabled(),
-		"files": false, "screenshot": true, "scan": false, "notificationSound": false,
+		"files": files, "screenshot": true, "scan": false, "notificationSound": false,
 	}
 }
 
@@ -430,10 +452,63 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		return r.screenshotEditorCommand(sessionID, command)
 	case "notification.test_sound", "notification.test_system", "notification.take_activation",
 		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel",
-		"network.scan_range", "network.scan_cancel",
-		"file.select", "file.send", "file.discard", "file.accept", "file.reject",
-		"file.cancel", "file.open_folder", "file.select_folder", "file.resume", "file.pause":
+		"network.scan_range", "network.scan_cancel":
 		return fail(fmt.Sprintf("%s 将在后续阶段迁移（见 MyGo迁移计划.md）", command))
+
+	case "file.select":
+		return r.SelectFileOrFolder(false)
+	case "file.select_folder":
+		return r.SelectFileOrFolder(true)
+	case "file.send":
+		target, _ := args["target"].(string)
+		selectionID, _ := args["selectionId"].(string)
+		record, err := r.Hub.SendFile(target, selectionID)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"message": record})
+	case "file.discard":
+		selectionID, _ := args["selectionId"].(string)
+		if transfers, err := r.Hub.Files(); err != nil {
+			return fail(err.Error())
+		} else {
+			transfers.Discard(selectionID)
+		}
+		return ok(nil)
+	case "file.accept", "file.resume":
+		messageID, _ := args["messageId"].(string)
+		transfers, err := r.Hub.Files()
+		if err != nil {
+			return fail(err.Error())
+		}
+		if err := transfers.Accept(messageID); err != nil {
+			return fail(err.Error())
+		}
+		return ok(nil)
+	case "file.pause":
+		messageID, _ := args["messageId"].(string)
+		transfers, err := r.Hub.Files()
+		if err != nil {
+			return fail(err.Error())
+		}
+		if err := transfers.Pause(messageID); err != nil {
+			return fail(err.Error())
+		}
+		return ok(nil)
+	case "file.reject", "file.cancel":
+		messageID, _ := args["messageId"].(string)
+		transfers, err := r.Hub.Files()
+		if err != nil {
+			return fail(err.Error())
+		}
+		cancelled, err := transfers.Cancel(messageID, command == "file.reject")
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"cancelled": cancelled})
+	case "file.open_folder":
+		messageID, _ := args["messageId"].(string)
+		return r.OpenFileFolder(messageID)
 
 	default:
 		return fail("未实现命令：" + command)

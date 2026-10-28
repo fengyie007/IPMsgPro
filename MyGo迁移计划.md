@@ -148,6 +148,11 @@
 | 2026-10-29 | M2-4 | 发图链路（先落库再入队、32 片窗口 4 轮/末窗 15 轮 30s、全部确认后发引用、引用 4 次重试同包号、120s 总期限、取消/超时/队列上限 4）+ `image.select`（mygo Dialog）/`send`/`cancel`/`discard`/`import_clipboard`（base64 参数）命令 + 进度/完成/失败事件 + 能力位放开；发送全链路回环测试通过（A→B 落库、A 置已送达） | ✅ |
 | — | M2 验收 | 实机验收：与真实飞秋互发 PNG/JPEG/BMP 图片核对像素与缩略图；M2 已知限制（缩略图算法、EXIF）记录在案 | ⏳ 待用户验收（已授权继续 M3） |
 | 2026-10-29 | M3 | 截图与标注：GDI 捕获移植（`internal/platform/capture`，纯标准库 syscall：SetThreadDpiAwarenessContext/DwmFlush/BitBlt+CAPTUREBLT/GetDIBits，句柄显式释放，显示器枚举走 MonitorFromWindow）+ 截图会话（单一会话额度、5 分钟硬超时、确认/取消/关窗幂等结束、主窗口隐藏恢复）+ 独立无边框置顶编辑器窗口（`/?capture=<id>`）+ `ipmsg-capture` 协议仅服务活动会话 + `screenshot.start`（阻塞至会话结束返回导入资产）/`screenshot.confirm`（base64→`ImportScreenshot`→发图链路）/`screenshot_command`（read/ready/cancel）命令；前端编辑器组件原样复用；**已知限制**：编辑器窗口按 DIP 定位（100% 缩放与 Rust 物理像素一致，多屏混合 DPI 待实机验收核对）；GDI/边界测试对拍通过，全量构建全绿 | ✅ |
+| — | M3 验收 | 实机验收：截图编辑器全流程（框选/标注/确认入会话）多屏缩放核对 | ⏳ 待用户验收（已授权继续 M4） |
+| 2026-10-29 | M4-1 | 文件协议层：`internal/filetransfer`（邀请解析 16 项上限/8GiB/特殊文件拒绝、文件名净化 180 字符/保留名、TCP 请求解析 hex original:file:offset），`0x60/0x61/0x62` 补进文本帧命令表；对拍测试全绿 | ✅ |
+| 2026-10-29 | M4-2 | 传输引擎移植（transfer.rs 795 行 + streams.rs 686 行 + directory.rs + storage.rs）：TCP 与 UDP 同端口、来源身份五元组校验、发送邀请重试（2s×3）与 600s 过期、接受→下载队列（4 并发）、≥4MiB 并行分块按序回填、断点续传（file_receives 检查点 + 重启恢复）、暂停/取消/拒绝 + RELEASEFILES 通知、发送端 60s 空闲判失败、不覆盖发布（MoveFileExW flags=0）/重名绕行、目录流（4096 项/32 层/GBK 头/防穿越）；Go 结构差异：tokio→goroutine、watch→可重置取消通道、RAII Busy→显式 defer；store 层补 `FileMetadata`/message_files/file_receives 读写与 kind==2 历史水合；回环集成测试 5 项（普通/空文件/5MiB 并行/断点续传/拒绝通知）全绿 | ✅ |
+| 2026-10-29 | M4-3 | 应用接线：Hub 实现 `filetransfer.Link`（复用 UDP socket/包号/线缆编码），`SENDMSG|FILEATTACH` 路由进引擎（服务未启动时占位文本且不回执）、RECVMSG/RELEASEFILES 先给引擎认领；`file.select/select_folder`（Dialog.Open，与图片选择共用互斥）/`send`/`discard`/`accept`/`resume`/`pause`/`reject`/`cancel`/`open_folder`（explorer /select + CREATE_NO_WINDOW）命令；`file.updated`/`message.received`/`file.receive_failed` 事件（fromUser 换前端 User 形状）；`Window.OnFileDrop` 拖放→当前会话预览（≤8 项，file.selected 事件）；接收目录 `<Downloads>/SpeedIpMsgGo`；退出前引擎 Shutdown；能力位 files 放开。打包 exe 黑盒验证：fakepeer 发现+文本回执通过、文件邀请落库（camelCase 元数据、incoming=true、RECVMSG 确认） | ✅ |
+| — | M4 验收 | 实机验收：与真实飞秋/双实例互发文件与文件夹（大文件并行、暂停续传、拒绝、重名发布核对） | ⏳ 待用户验收（已授权继续 M5） |
 
 ### M1 实机验收清单（对齐 Rust 阶段一）
 
