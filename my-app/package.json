@@ -11,11 +11,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "mygo-runtime": "^0.7.1"
+    "mygo-runtime": "^0.7.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.3.0",
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
     "mygo-cli": "^0.7.1",
-    "typescript": "^7",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "~5.6.2",
     "vite": "^8"
   }
 }

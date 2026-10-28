@@ -1,8 +1,9 @@
 package main
 
-// MyGo 最小闭环 demo：UDP 发现 + 单会话文本收发 + 未读托盘闪烁。
-// 构建：cd my-app && go build .（或 npm run build 走 mygo 打包）。
-// 运行：my-app.exe [--port=2425] [--name=MyGoDemo] [--group=MyGo]
+// 迅秋 MyGo 版（迁移中）：UDP 发现 + 文本会话 + 持久化 + 未读托盘闪烁。
+// 构建：cd my-app && npm run build；运行：my-app.exe [--port=2425] [--name=...] [--group=...]
+// 数据目录：%LOCALAPPDATA%\SpeedIpMsgGo（非默认端口追加 _<端口>）。
+// 决策与进度见仓库根 MyGo迁移计划.md。
 
 import (
 	"bytes"
@@ -14,68 +15,50 @@ import (
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/egoist/mygo"
+
+	"my-app/internal/app"
 	"my-app/internal/ipmsg"
 	"my-app/internal/network"
-
-	"github.com/egoist/mygo"
+	"my-app/internal/store"
 )
 
-// 绑定到前端的事件：`mygo generate` 会生成类型安全的 events.usersChanged / events.messageChanged。
-var (
-	UsersChanged   = mygo.NewEvent[bool]("users-changed")
-	MessageChanged = mygo.NewEvent[string]("message-changed")
-)
+// EnvelopeEvent 是唯一的前端事件通道：{event, payload}，对应旧 bridge 的 ipmsg-event。
+var EnvelopeEvent = mygo.NewEvent[app.Envelope]("ipmsg-event")
+
+const appVersion = "0.1.0-m1"
 
 var (
-	hub      *network.Hub
-	mainWin  *mygo.Window
-	trayIcon *mygo.Tray
+	hub     *network.Hub
+	tray    *mygo.Tray
+	backend *app.Runtime
 )
 
-type RunInfo struct {
-	Port        uint16 `json:"port"`
-	Nick        string `json:"nick"`
-	Group       string `json:"group"`
-	Hostname    string `json:"hostname"`
-	WireVersion string `json:"wireVersion"`
-	TotalUnread int    `json:"totalUnread"`
+// Backend 是暴露给前端的绑定：统一命令分发（对应 Rust 的 ipmsg_command）。
+type Backend struct{}
+
+func (Backend) Command(command string, argsJSON string) string {
+	return backend.Handle(command, argsJSON)
 }
 
-// Chat 是暴露给前端的绑定结构：`mygo generate` 生成 Chat.* 类型化客户端。
-type Chat struct{}
-
-func (Chat) Info() RunInfo {
-	return RunInfo{
-		Port:        hub.Port(),
-		Nick:        hub.Nick(),
-		Group:       hub.Group(),
-		Hostname:    hub.Hostname(),
-		WireVersion: hub.WireVersion(),
-		TotalUnread: hub.TotalUnread(),
-	}
-}
-
-func (Chat) ListUsers() []network.User { return hub.ListUsers() }
-
-func (Chat) Unread() map[string]int {
-	out := map[string]int{}
-	for _, u := range hub.ListUsers() {
-		if n := hub.Unread(u.Key); n > 0 {
-			out[u.Key] = n
+func resolveDataDir(port uint16) string {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatal(err)
 		}
+		base = filepath.Join(home, "AppData", "Local")
 	}
-	return out
+	dir := filepath.Join(base, "SpeedIpMsgGo")
+	if port != ipmsg.DefaultPort {
+		dir = fmt.Sprintf("%s_%d", dir, port)
+	}
+	return dir
 }
-
-func (Chat) History(key string) []network.Message { return hub.History(key) }
-
-func (Chat) Send(key, text string) error { return hub.SendText(key, text) }
-
-func (Chat) MarkRead(key string) { hub.MarkRead(key) }
-
-func (Chat) Refresh() { hub.Refresh() }
 
 // trayIconPNG 生成 32x32 单色圆形 PNG（彩色/灰色两枚用于未读闪烁）。
 func trayIconPNG(c color.RGBA) []byte {
@@ -134,47 +117,59 @@ func runBlink(win *mygo.Window, tray *mygo.Tray) {
 
 func main() {
 	port := flag.Uint("port", ipmsg.DefaultPort, "UDP 端口（默认 2425，与飞秋一致）")
-	name := flag.String("name", "MyGoDemo", "对外昵称")
-	group := flag.String("group", "MyGo", "分组名")
+	name := flag.String("name", "迅秋Go", "对外昵称（可被设置覆盖）")
+	group := flag.String("group", "", "分组名")
 	flag.Parse()
 
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "mygo"
+	dataDir := resolveDataDir(uint16(*port))
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Fatalf("创建数据目录失败: %v", err)
 	}
-	hub, err = network.NewHub(uint16(*port), *name, *group, fmt.Sprintf("mygo-demo@%s", hostname))
+	db, err := store.Open(filepath.Join(dataDir, "ipmsg.db"))
+	if err != nil {
+		log.Fatalf("打开数据库失败: %v", err)
+	}
+	defer db.Close()
+	configStore, err := store.OpenConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		log.Fatalf("打开配置失败: %v", err)
+	}
+
+	hostname, _ := os.Hostname()
+	hub, err = network.NewHub(uint16(*port), *name, *group, "mygo@"+hostname)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer hub.Close()
-	log.Printf("MyGo demo 启动: port=%d nick=%q wire=%s", hub.Port(), hub.Nick(), hub.WireVersion())
+	hub.AttachDatabase(db, "local@"+hostname)
 
-	mygo.Bind(Chat{})
+	backend = app.New(hub, db, configStore, appVersion, dataDir)
+	backend.WireEvents()
+	mygo.Bind(Backend{})
+	log.Printf("迅秋 MyGo 启动: port=%d dataDir=%s wire=%s", hub.Port(), dataDir, hub.WireVersion())
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:  "MyGo IPMsg Demo",
-			Width:  860,
-			Height: 560,
+			Title:  "迅秋 (MyGo)",
+			Width:  1000,
+			Height: 680,
 			URL:    "/",
 		})
-		mainWin = win
-		// 关闭窗口 = 隐藏到托盘；退出走托盘菜单。
 		win.OnClose(func(e *mygo.CloseEvent) {
 			e.PreventDefault()
 			win.Hide()
 		})
 
 		tray, err := mygo.NewTray(mygo.TrayOptions{
-			ID:      "mygo-demo",
+			ID:      "speedipmsg-mygo",
 			Icon:    trayIconPNG(color.RGBA{R: 59, G: 130, B: 246, A: 255}),
-			ToolTip: fmt.Sprintf("MyGo Demo · %s", hub.Nick()),
+			ToolTip: fmt.Sprintf("迅秋 MyGo · %s", hub.Nick()),
 			Menu: mygo.NewMenu([]*mygo.MenuItem{
 				{Label: "打开主窗口", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show() }},
 				mygo.Separator(),
 				{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) {
 					hub.AnnounceExit()
-					time.Sleep(100 * time.Millisecond) // 让下线公告发出
+					time.Sleep(100 * time.Millisecond)
 					mygo.App.Quit()
 				}},
 			}),
@@ -182,21 +177,13 @@ func main() {
 		if err != nil {
 			log.Printf("创建托盘失败: %v", err)
 		} else {
-			trayIcon = tray
 			tray.OnClick(func() { win.Show() })
 			go runBlink(win, tray)
 		}
 
-		hub.UsersChanged = func() {
-			if mainWin != nil {
-				UsersChanged.Emit(mainWin, true)
-			}
-		}
-		hub.ReceivedMessage = func(peer string) {
-			if mainWin != nil {
-				MessageChanged.Emit(mainWin, peer)
-			}
-		}
+		backend.SetEmit(func(env app.Envelope) {
+			_ = EnvelopeEvent.Emit(win, env)
+		})
 
 		hub.Run()
 		hub.AnnounceEntry()

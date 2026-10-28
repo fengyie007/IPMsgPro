@@ -47,13 +47,16 @@ func TestParseAcceptsFeiqExtendedVersion(t *testing.T) {
 }
 
 func TestFeiqCompatVersionShapeAndStability(t *testing.T) {
-	a := FeiqCompatVersion("mygo-demo@host", 2425)
-	b := FeiqCompatVersion("mygo-demo@host", 2425)
+	a := FeiqCompatVersion("mygo-demo@host", 2425, 0)
+	b := FeiqCompatVersion("mygo-demo@host", 2425, 0)
 	if a != b {
 		t.Fatal("同实例版本头应稳定")
 	}
-	if FeiqCompatVersion("mygo-demo@host", 2426) == a {
+	if FeiqCompatVersion("mygo-demo@host", 2426, 0) == a {
 		t.Fatal("不同端口版本头应不同")
+	}
+	if !strings.HasPrefix(FeiqCompatVersion("mygo-demo@host", 2425, 83), "1_lbt6_83#") {
+		t.Fatal("头像编号应嵌入版本头")
 	}
 	fields := strings.Split(a, "#")
 	if len(fields) != 8 || fields[0] != "1_lbt6_0" || fields[1] != "128" {

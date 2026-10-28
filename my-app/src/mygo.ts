@@ -4,57 +4,17 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
-export interface Message {
-  id: number;
-  out: boolean;
-  text: string;
-  time: number;
-  acked: boolean;
-}
-
-export interface RunInfo {
-  port: number;
-  nick: string;
-  group: string;
-  hostname: string;
-  wireVersion: string;
-  totalUnread: number;
-}
-
-export interface User {
-  key: string;
-  nick: string;
-  host: string;
-  group: string;
-  addr: string;
-  online: boolean;
-  lastSeen: number;
+export interface Envelope {
+  event: string;
+  payload: Record<string, unknown>;
 }
 
 // ---- Services ----
 
-/** Chat 是暴露给前端的绑定结构：`mygo generate` 生成 Chat.* 类型化客户端。 */
-export const Chat = {
-  history(key: string): Promise<Message[]> {
-    return call("Chat.History", key);
-  },
-  info(): Promise<RunInfo> {
-    return call("Chat.Info");
-  },
-  listUsers(): Promise<User[]> {
-    return call("Chat.ListUsers");
-  },
-  markRead(key: string): Promise<void> {
-    return call("Chat.MarkRead", key);
-  },
-  refresh(): Promise<void> {
-    return call("Chat.Refresh");
-  },
-  send(key: string, text: string): Promise<void> {
-    return call("Chat.Send", key, text);
-  },
-  unread(): Promise<Record<string, number>> {
-    return call("Chat.Unread");
+/** Backend 是暴露给前端的绑定：统一命令分发（对应 Rust 的 ipmsg_command）。 */
+export const Backend = {
+  command(command: string, argsJSON: string): Promise<string> {
+    return call("Backend.Command", command, argsJSON);
   },
 } as const;
 
@@ -62,6 +22,6 @@ export const Chat = {
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
-  usersChanged: event<boolean>("users-changed"),
-  messageChanged: event<string>("message-changed"),
+  /** EnvelopeEvent 是唯一的前端事件通道：{event, payload}，对应旧 bridge 的 ipmsg-event。 */
+  ipmsgEvent: event<Envelope>("ipmsg-event"),
 } as const;

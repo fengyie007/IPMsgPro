@@ -1,13 +1,17 @@
 package network
 
-// 回环集成测试：两个 Hub 在 127.0.0.1 临时端口上完成 发现 → 文本 → 回执 的最小闭环。
+// 回环集成测试：发现 → 文本 → 回执 → 落库 → 去重，覆盖带库与不带库两种形态。
 
 import (
 	"net"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"my-app/internal/ipmsg"
+	"my-app/internal/store"
 )
 
 func localPort(h *Hub) int {
@@ -26,7 +30,50 @@ func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("等待条件超时")
 }
 
-func TestLoopbackDiscoveryAndMessaging(t *testing.T) {
+type collected struct {
+	mu       sync.Mutex
+	received []ReceivedEvent
+	acked    []string
+	failed   []string
+}
+
+func (c *collected) wire(h *Hub) {
+	h.MessageReceived = func(evt ReceivedEvent) {
+		c.mu.Lock()
+		c.received = append(c.received, evt)
+		c.mu.Unlock()
+	}
+	h.MessageAcked = func(_, messageID string) {
+		c.mu.Lock()
+		c.acked = append(c.acked, messageID)
+		c.mu.Unlock()
+	}
+	h.MessageFailed = func(_, messageID, _ string) {
+		c.mu.Lock()
+		c.failed = append(c.failed, messageID)
+		c.mu.Unlock()
+	}
+}
+
+func (c *collected) receivedCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.received)
+}
+
+func TestLoopbackDiscoveryMessagingPersistence(t *testing.T) {
+	dir := t.TempDir()
+	dbA, err := store.Open(filepath.Join(dir, "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbA.Close()
+	dbB, err := store.Open(filepath.Join(dir, "b.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbB.Close()
+
 	a, err := NewHub(0, "Alice", "组A", "inst-a")
 	if err != nil {
 		t.Fatal(err)
@@ -37,60 +84,133 @@ func TestLoopbackDiscoveryAndMessaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
+	var eventsA, eventsB collected
+	eventsA.wire(a)
+	eventsB.wire(b)
+	a.AttachDatabase(dbA, "local@a")
+	b.AttachDatabase(dbB, "local@b")
 	a.Run()
 	b.Run()
 
-	// A 直接向 B 单播 BR_ENTRY（测试里不走广播），B 应回 ANSENTRY 让 A 认识 Bob
+	// A 直接向 B 单播 BR_ENTRY，B 回 ANSENTRY 让 A 认识 Bob
 	bAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort(b)}
-	if _, err := a.writePacket(bAddr, ipmsg.CmdBrEntry, a.nick, &a.group); err != nil {
+	if _, err := a.buildWireAndSend(bAddr, ipmsg.CmdBrEntry, a.Nick(), &a.prof.Load().group); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 2*time.Second, func() bool {
-		users := a.ListUsers()
-		return len(users) == 1 && users[0].Nick == "Bob" && users[0].Online
+		for _, u := range a.ListUsers() {
+			if u.Nick == "Bob" && u.Online {
+				return true
+			}
+		}
+		return false
 	})
 
-	// 同一联系人在两侧视角键不同：A 眼里是 keyB（B 的地址），B 眼里是 keyA（A 的地址）
-	keyB := "127.0.0.1:" + itoa(localPort(b))
-	keyA := "127.0.0.1:" + itoa(localPort(a))
-	if err := a.SendText(keyB, "你好Bob"); err != nil {
+	var bobID string
+	for _, u := range a.ListUsers() {
+		if u.Nick == "Bob" {
+			bobID = u.ID
+		}
+	}
+	if bobID == "" {
+		t.Fatal("未取得 Bob 的联系人 ID")
+	}
+	messageID, err := a.SendText(bobID, "你好Bob")
+	if err != nil {
 		t.Fatal(err)
 	}
-	// B 收到消息且未读+1，并自动回复 RECVMSG
-	waitUntil(t, 2*time.Second, func() bool {
-		hist := b.History(keyA)
-		return len(hist) == 1 && hist[0].Text == "你好Bob" && !hist[0].Out
-	})
-	if got := b.Unread(keyA); got != 1 {
+	// B 收到消息（未读+1），A 收到回执
+	waitUntil(t, 2*time.Second, func() bool { return eventsB.receivedCount() == 1 })
+	if got := b.Unread("127.0.0.1:" + itoa(localPort(a))); got != 1 {
 		t.Fatalf("B 未读 = %d, want 1", got)
 	}
-	waitUntil(t, 2*time.Second, func() bool {
-		hist := a.History(keyB)
-		return len(hist) == 1 && hist[0].Acked
-	})
+	waitUntil(t, 2*time.Second, func() bool { return len(eventsA.acked) == 1 })
+	if eventsA.acked[0] != messageID {
+		t.Fatalf("回执消息 ID 不匹配: %s != %s", eventsA.acked[0], messageID)
+	}
+	// A 的库：已发送且已送达；B 的库：已接收
+	histA, err := dbA.History(bobID, "local@a", 10, 0)
+	if err != nil || len(histA) != 1 || histA[0].Status != 1 {
+		t.Fatalf("A 库应为已送达: %+v %v", histA, err)
+	}
+	eventsB.mu.Lock()
+	peerID := eventsB.received[0].PeerID
+	eventsB.mu.Unlock()
+	histB, err := dbB.History(peerID, "local@b", 10, 0)
+	if err != nil || len(histB) != 1 || histB[0].Content != "你好Bob" || histB[0].Kind != 0 {
+		t.Fatalf("B 库接收记录异常: %+v %v", histB, err)
+	}
 
-	// B 也应通过 BR_ENTRY 认识 Alice，可以反向发送
+	// B 反向发送
 	waitUntil(t, 2*time.Second, func() bool {
-		users := b.ListUsers()
-		return len(users) == 1 && users[0].Nick == "Alice"
+		for _, u := range b.ListUsers() {
+			if u.Nick == "Alice" {
+				return true
+			}
+		}
+		return false
 	})
-	if err := b.SendText(keyA, "你好Alice"); err != nil {
+	var aliceID string
+	for _, u := range b.ListUsers() {
+		if u.Nick == "Alice" {
+			aliceID = u.ID
+		}
+	}
+	if _, err := b.SendText(aliceID, "你好Alice"); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, 2*time.Second, func() bool {
-		hist := a.History(keyB)
-		return len(hist) == 2 && hist[1].Text == "你好Alice" && !hist[1].Out
-	})
-	// A 收到 B 的消息后未读+1
-	if got := a.Unread(keyB); got != 1 {
-		t.Fatalf("A 未读 = %d, want 1", got)
+	waitUntil(t, 2*time.Second, func() bool { return eventsA.receivedCount() == 1 })
+
+	// 去重：同一条线上报文重放给 B，事件 Duplicate=true 且未读不再增加
+	var command uint32 = ipmsg.CmdSendMsg | ipmsg.OptSendCheck
+	wire, err := ipmsg.EncodePacket("1_lbt6_0#128#001122334455#0#0#0#4001#9", 424242, "Carol", "carolhost", command, "重复消息", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 标记已读后清零
-	if n := a.MarkRead(keyB); n != 1 {
+	carolAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 55555}
+	b.handle(wire, carolAddr)
+	b.handle(wire, carolAddr)
+	time.Sleep(100 * time.Millisecond)
+	eventsB.mu.Lock()
+	dupCount := 0
+	last := eventsB.received[len(eventsB.received)-1]
+	for _, evt := range eventsB.received {
+		if evt.ID == last.ID {
+			dupCount++
+		}
+	}
+	eventsB.mu.Unlock()
+	if dupCount != 2 || !last.Duplicate {
+		t.Fatalf("重放应产生两次事件且第二次为 duplicate: %d %v", dupCount, last.Duplicate)
+	}
+	if got := b.Unread("127.0.0.1:55555"); got != 1 {
+		t.Fatalf("重复报文不应累计未读: %d", got)
+	}
+
+	// MarkRead 清零
+	if n := a.MarkRead("127.0.0.1:" + itoa(localPort(b))); n != 1 {
 		t.Fatalf("MarkRead 返回 %d, want 1", n)
 	}
-	if a.Unread(keyB) != 0 || a.TotalUnread() != 0 {
+	if a.TotalUnread() != 0 {
 		t.Fatal("已读后未读应为 0")
+	}
+}
+
+func TestSetProfileUpdatesWireVersion(t *testing.T) {
+	h, err := NewHub(0, "Alice", "组A", "inst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if !strings.HasPrefix(h.WireVersion(), "1_lbt6_0#128#") {
+		t.Fatalf("初始版本头异常: %s", h.WireVersion())
+	}
+	h.SetProfile("Alice2", "新组", 83)
+	if h.Nick() != "Alice2" || h.Group() != "新组" {
+		t.Fatal("资料热更新未生效")
+	}
+	if want := ipmsg.FeiqCompatVersion("inst", h.Port(), 83); h.WireVersion() != want {
+		t.Fatalf("版本头应随头像刷新: %s != %s", h.WireVersion(), want)
 	}
 }
 

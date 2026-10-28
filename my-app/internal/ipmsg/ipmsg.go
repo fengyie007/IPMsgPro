@@ -212,8 +212,9 @@ func ParsePacket(data []byte) (Packet, error) {
 }
 
 // FeiqCompatVersion 复刻 Rust 版的飞秋兼容头；没有它飞秋会把我们当成普通 IPMsg。
+// 头像编号嵌在 "1_lbt6_<avatar>" 字段（对照 Rust avatar.rs 的解析格式）；
 // MAC 形状的 ID 由实例名+端口派生，仅作互通标识，不是认证凭据。
-func FeiqCompatVersion(instanceID string, port uint16) string {
+func FeiqCompatVersion(instanceID string, port uint16, avatar int) string {
 	var hash uint64 = 0xcbf29ce484222325
 	for _, b := range []byte(instanceID) {
 		hash = (hash ^ uint64(b)) * 0x100000001b3
@@ -221,7 +222,7 @@ func FeiqCompatVersion(instanceID string, port uint16) string {
 	hash = (hash ^ 0xff) * 0x100000001b3
 	hash = (hash ^ uint64(port>>8)) * 0x100000001b3
 	hash = (hash ^ uint64(port&0xff)) * 0x100000001b3
-	return fmt.Sprintf("1_lbt6_0#128#02%010X#0#0#0#4001#9", hash&0xffffffffff)
+	return fmt.Sprintf("1_lbt6_%d#128#02%010X#0#0#0#4001#9", avatar, hash&0xffffffffff)
 }
 
 // EncodePacket 按 wireVersion 编码文本报文；extra 为 nil 时只有 body-NUL，非 nil 时是 body-NUL-extra-NUL。

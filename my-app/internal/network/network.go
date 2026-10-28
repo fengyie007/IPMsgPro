@@ -1,9 +1,12 @@
-// Package network 实现最小闭环网络层：UDP 发现（BR_ENTRY/ANSENTRY）、文本收发
-// （SENDMSG/RECVMSG 回执）、用户表与未读统计。用户以 来源IP:端口 为键，同机多实例互不合并。
+// Package network 实现网络层：UDP 发现（BR_ENTRY/ANSENTRY）、文本收发（SENDMSG/RECVMSG
+// 回执 + 有限重试）、用户表与未读统计。消息持久化通过可选的 store.Database；
+// 用户以 来源IP:端口 为键，前端联系人 ID 为 username@hostname#ip:port。
 package network
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -17,26 +20,21 @@ import (
 	"time"
 
 	"my-app/internal/ipmsg"
+	"my-app/internal/store"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 type User struct {
-	Key      string `json:"key"` // ip:port
-	Nick     string `json:"nick"`
-	Host     string `json:"host"`
+	ID       string `json:"id"` // username@hostname#ip:port，作为会话键
+	Key      string `json:"key"`
+	Nick     string `json:"nickname"`
+	Host     string `json:"hostname"`
 	Group    string `json:"group"`
-	Addr     string `json:"addr"`
+	Addr     string `json:"ip"`
+	Port     int    `json:"port"`
 	Online   bool   `json:"online"`
-	LastSeen int64  `json:"lastSeen"`
-}
-
-type Message struct {
-	ID    uint64 `json:"id"`
-	Out   bool   `json:"out"`
-	Text  string `json:"text"`
-	Time  int64  `json:"time"`
-	Acked bool   `json:"acked"` // 对端 RECVMSG 回执（仅出站方向有意义）
+	LastSeen int64  `json:"-"`
 }
 
 type WireFormat int
@@ -61,25 +59,83 @@ func encodeFor(command uint32, text string) ([]byte, error) {
 	return simplifiedchinese.GBK.NewEncoder().Bytes([]byte(text))
 }
 
-type Hub struct {
-	port     uint16
+type profile struct {
 	nick     string
 	group    string
-	hostname string
+	avatar   int
 	wireVer  string
+	hostname string
+}
+
+type pendingSend struct {
+	key      string
+	dbID     string
+	addr     *net.UDPAddr
+	wire     []byte
+	attempts int
+	next     time.Time
+}
+
+type Hub struct {
+	port       uint16
+	instanceID string
+	prof       atomic.Pointer[profile]
 
 	conn *net.UDPConn
+	db   *store.Database
 
-	mu        sync.Mutex
-	users     map[string]*User
-	history   map[string][]Message
-	unread    map[string]int
-	pending   map[uint32]*Message // 已发送、等待 RECVMSG 回执的出站消息
-	nextMsgID atomic.Uint64
+	localID string
+
+	mu      sync.Mutex
+	users   map[string]*User
+	unread  map[string]int
+	pending map[uint32]*pendingSend
+
 	nextPktNo atomic.Uint32
 
 	UsersChanged    func()
-	ReceivedMessage func(peerKey string)
+	MessageAcked    func(peerKey, messageID string)
+	MessageFailed   func(peerKey, messageID, reason string)
+	MessageReceived func(ReceivedEvent)
+}
+
+// ReceivedEvent 是去重后的一条入站文本。
+type ReceivedEvent struct {
+	Key       string // ip:port
+	PeerID    string // username@hostname#ip:port
+	User      *User
+	ID        string // 历史记录 ID（去重键）
+	Content   string
+	Timestamp int64
+	Duplicate bool
+}
+
+func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "mygo"
+	}
+	h := &Hub{
+		port:       port,
+		instanceID: instanceID,
+		users:      map[string]*User{},
+		unread:     map[string]int{},
+		pending:    map[uint32]*pendingSend{},
+	}
+	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
+	h.prof.Store(&profile{nick: nick, group: group, avatar: 0, wireVer: ipmsg.FeiqCompatVersion(instanceID, port, 0), hostname: host})
+
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		return nil, fmt.Errorf("监听 UDP %d 失败（端口被占用？）: %w", port, err)
+	}
+	if err := setBroadcast(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	h.conn = conn
+	return h, nil
 }
 
 // setBroadcast 打开 SO_BROADCAST；Go 的 net 包不会自动设置，直接 WriteToUDP 广播地址会 EACCES。
@@ -98,42 +154,39 @@ func setBroadcast(conn *net.UDPConn) error {
 	return sockErr
 }
 
-func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
-	host, err := os.Hostname()
-	if err != nil {
-		host = "mygo"
-	}
-	h := &Hub{
-		port:     port,
-		nick:     nick,
-		group:    group,
-		hostname: host,
-		wireVer:  ipmsg.FeiqCompatVersion(instanceID, port),
-		users:    map[string]*User{},
-		history:  map[string][]Message{},
-		unread:   map[string]int{},
-		pending:  map[uint32]*Message{},
-	}
-	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
+// AttachDatabase 启用消息持久化；localID 是本机在历史记录中的用户 ID。
+func (h *Hub) AttachDatabase(db *store.Database, localID string) {
+	h.db = db
+	h.localID = localID
+}
 
-	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
-	conn, err := net.ListenUDP("udp4", addr)
-	if err != nil {
-		return nil, fmt.Errorf("监听 UDP %d 失败（端口被占用？）: %w", port, err)
+// SetProfile 热更新对外资料；wireVer 随头像编号刷新，下个报文生效。
+func (h *Hub) SetProfile(nick string, group string, avatar int) {
+	p := *h.prof.Load()
+	if nick != "" {
+		p.nick = nick
 	}
-	if err := setBroadcast(conn); err != nil {
-		conn.Close()
-		return nil, err
+	p.group = group
+	if avatar >= 0 && avatar <= 83 {
+		p.avatar = avatar
 	}
-	h.conn = conn
-	return h, nil
+	p.wireVer = ipmsg.FeiqCompatVersion(h.instanceID, h.port, p.avatar)
+	h.prof.Store(&p)
 }
 
 func (h *Hub) Port() uint16        { return h.port }
-func (h *Hub) Nick() string        { return h.nick }
-func (h *Hub) Group() string       { return h.group }
-func (h *Hub) Hostname() string    { return h.hostname }
-func (h *Hub) WireVersion() string { return h.wireVer }
+func (h *Hub) Nick() string        { return h.prof.Load().nick }
+func (h *Hub) Group() string       { return h.prof.Load().group }
+func (h *Hub) Hostname() string    { return h.prof.Load().hostname }
+func (h *Hub) WireVersion() string { return h.prof.Load().wireVer }
+
+// LocalID 返回本机历史记录用户 ID；未附加数据库时仍有合理默认。
+func (h *Hub) LocalID() string {
+	if h.localID != "" {
+		return h.localID
+	}
+	return "local@" + h.Hostname()
+}
 
 func (h *Hub) Close() {
 	if h.conn != nil {
@@ -141,30 +194,38 @@ func (h *Hub) Close() {
 	}
 }
 
-// writePacket 编码并以本次新的包号发送；返回包号供回执匹配。
-func (h *Hub) writePacket(addr *net.UDPAddr, command uint32, body string, extra *string) (uint32, error) {
-	pktNo := h.nextPktNo.Add(1)
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// buildWire 以固定包号编码报文（重试必须复用原包号与内容）。
+func (h *Hub) buildWire(command uint32, pktNo uint32, body string, extra *string) ([]byte, error) {
+	p := h.prof.Load()
 	wireBody, err := encodeFor(command, body)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var data bytes.Buffer
-	fmt.Fprintf(&data, "%s:%d:%s:%s:%d:", h.wireVer, pktNo,
-		gbkOrRaw(command, h.nick), gbkOrRaw(command, h.hostname), command)
+	fmt.Fprintf(&data, "%s:%d:%s:%s:%d:", p.wireVer, pktNo,
+		gbkOrRaw(command, p.nick), gbkOrRaw(command, p.hostname), command)
 	data.Write(wireBody)
 	data.WriteByte(0)
 	if extra != nil {
 		encExtra, err := encodeFor(command, *extra)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		data.Write(encExtra)
 		data.WriteByte(0)
 	}
-	if _, err := h.conn.WriteToUDP(data.Bytes(), addr); err != nil {
-		return 0, err
-	}
-	return pktNo, nil
+	return data.Bytes(), nil
+}
+
+func (h *Hub) sendWire(addr *net.UDPAddr, wire []byte) error {
+	_, err := h.conn.WriteToUDP(wire, addr)
+	return err
 }
 
 func gbkOrRaw(command uint32, text string) []byte {
@@ -178,16 +239,22 @@ func gbkOrRaw(command uint32, text string) []byte {
 // announce 向所有接口的定向广播地址发 BR_ENTRY / BR_EXIT。
 func (h *Hub) announce(command uint32, extra *string) {
 	for _, addr := range broadcastTargets(h.port) {
-		if _, err := h.writePacket(addr, command, h.nick, extra); err != nil {
+		pktNo := h.nextPktNo.Add(1)
+		wire, err := h.buildWire(command, pktNo, h.Nick(), extra)
+		if err != nil {
+			log.Printf("编码广播报文失败: %v", err)
+			continue
+		}
+		if err := h.sendWire(addr, wire); err != nil {
 			log.Printf("广播到 %s 失败: %v", addr, err)
 		}
 	}
 }
 
 // Refresh 重新广播 BR_ENTRY，请求已知用户回应 ANSENTRY。
-func (h *Hub) Refresh() { h.announce(ipmsg.CmdBrEntry, &h.group) }
+func (h *Hub) Refresh() { h.announce(ipmsg.CmdBrEntry, &h.prof.Load().group) }
 
-func (h *Hub) AnnounceEntry() { h.announce(ipmsg.CmdBrEntry, &h.group) }
+func (h *Hub) AnnounceEntry() { h.announce(ipmsg.CmdBrEntry, &h.prof.Load().group) }
 
 func (h *Hub) AnnounceExit() { h.announce(ipmsg.CmdBrExit, nil) }
 
@@ -229,53 +296,60 @@ func broadcastTargets(port uint16) []*net.UDPAddr {
 	return targets
 }
 
-// SendText 给联系人 key（ip:port）发送文本，立即记入历史并等待回执。
-func (h *Hub) SendText(key, text string) error {
+// SendText 给联系人 id（username@hostname#ip:port）发送文本：先落库再发送，
+// 最多三次尝试（2s/4s 间隔重发同一包号），无回执则置失败并通知。
+func (h *Hub) SendText(id, text string) (string, error) {
 	h.mu.Lock()
-	user, ok := h.users[key]
-	online := ok && user.Online
+	var target *User
+	for _, u := range h.users {
+		if u.ID == id {
+			target = u
+			break
+		}
+	}
+	online := target != nil && target.Online
+	key := ""
+	if target != nil {
+		key = target.Key
+	}
 	h.mu.Unlock()
 	if !online {
-		return errors.New("联系人不在线")
+		return "", errors.New("联系人不在线")
 	}
 	addr, err := net.ResolveUDPAddr("udp4", key)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var command uint32 = ipmsg.CmdSendMsg | ipmsg.OptSendCheck
-	msg := Message{ID: h.nextMsgID.Add(1), Out: true, Text: text, Time: time.Now().UnixMilli()}
-
-	h.mu.Lock()
-	h.history[key] = append(h.history[key], msg)
-	track := &h.history[key][len(h.history[key])-1]
-	h.mu.Unlock()
-
-	pktNo, err := h.writePacket(addr, command, text, nil)
-	if err != nil {
-		// 发送失败：从历史里移除这条记录
-		h.mu.Lock()
-		list := h.history[key]
-		for i, m := range list {
-			if m.ID == msg.ID {
-				h.history[key] = append(list[:i:i], list[i+1:]...)
-				break
-			}
+	// 先验证可编码（GBK），再落库，再发送
+	if _, err := encodeFor(command, text); err != nil {
+		return "", err
+	}
+	dbID := fmt.Sprintf("%d_%s", time.Now().UnixMilli(), randHex(4))
+	if h.db != nil {
+		record := store.Record{ID: dbID, FromID: h.LocalID(), ToID: id, Content: text, Kind: 0, Timestamp: time.Now().Unix(), Status: 0}
+		if _, err := h.db.Insert(record); err != nil {
+			return "", fmt.Errorf("保存消息失败: %w", err)
 		}
-		h.mu.Unlock()
-		return err
+	}
+	pktNo := h.nextPktNo.Add(1)
+	wire, err := h.buildWire(command, pktNo, text, nil)
+	if err != nil {
+		if h.db != nil {
+			_ = h.db.InterruptSending(dbID)
+		}
+		return "", err
+	}
+	if err := h.sendWire(addr, wire); err != nil {
+		if h.db != nil {
+			_ = h.db.InterruptSending(dbID)
+		}
+		return "", err
 	}
 	h.mu.Lock()
-	h.pending[pktNo] = track
+	h.pending[pktNo] = &pendingSend{key: key, dbID: dbID, addr: addr, wire: wire, attempts: 1, next: time.Now().Add(2 * time.Second)}
 	h.mu.Unlock()
-	return nil
-}
-
-func (h *Hub) History(key string) []Message {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := make([]Message, len(h.history[key]))
-	copy(out, h.history[key])
-	return out
+	return dbID, nil
 }
 
 func (h *Hub) Unread(key string) int {
@@ -314,6 +388,7 @@ func (h *Hub) ListUsers() []User {
 }
 
 func (h *Hub) Run() {
+	go h.retryLoop()
 	go func() {
 		buf := make([]byte, ipmsg.MaxPacketBytes)
 		for {
@@ -334,6 +409,41 @@ func (h *Hub) Run() {
 			h.handle(data, src)
 		}
 	}()
+}
+
+// retryLoop 重发未回执的发送：attempts 2、3 间隔 2s/4s，之后置失败。
+func (h *Hub) retryLoop() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		h.mu.Lock()
+		var failed []*pendingSend
+		for pktNo, entry := range h.pending {
+			if entry.next.After(now) {
+				continue
+			}
+			if entry.attempts >= 3 {
+				delete(h.pending, pktNo)
+				failed = append(failed, entry)
+				continue
+			}
+			if err := h.sendWire(entry.addr, entry.wire); err != nil {
+				log.Printf("重发到 %s 失败: %v", entry.addr, err)
+			}
+			entry.attempts++
+			entry.next = now.Add(2 * time.Duration(entry.attempts-1) * time.Second)
+		}
+		h.mu.Unlock()
+		for _, entry := range failed {
+			if h.db != nil {
+				_ = h.db.InterruptSending(entry.dbID)
+			}
+			if h.MessageFailed != nil {
+				h.MessageFailed(entry.key, entry.dbID, "对方未确认接收")
+			}
+		}
+	}
 }
 
 // isSelf 过滤自己发出的广播回环：同 IP 且同端口。
@@ -377,7 +487,7 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 	switch ipmsg.CommandMode(pkt.Command) {
 	case ipmsg.CmdBrEntry:
 		h.upsertUser(key, pkt, src)
-		if _, err := h.writePacket(src, ipmsg.CmdAnsEntry, h.nick, &h.group); err != nil {
+		if _, err := h.buildWireAndSend(src, ipmsg.CmdAnsEntry, h.Nick(), &h.prof.Load().group); err != nil {
 			log.Printf("ANSENTRY 发送失败: %v", err)
 		}
 	case ipmsg.CmdAnsEntry:
@@ -386,38 +496,78 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		h.mu.Lock()
 		if u, ok := h.users[key]; ok {
 			u.Online = false
-			u.LastSeen = time.Now().UnixMilli()
+			u.LastSeen = time.Now().Unix()
 		}
 		h.mu.Unlock()
 		h.notifyUsersChanged()
 	case ipmsg.CmdSendMsg:
 		h.upsertUser(key, pkt, src)
-		msg := Message{ID: h.nextMsgID.Add(1), Out: false, Text: pkt.Body, Time: time.Now().UnixMilli()}
-		h.mu.Lock()
-		h.history[key] = append(h.history[key], msg)
-		h.unread[key]++
-		h.mu.Unlock()
-		// 回 RECVMSG，body 为对方包号十进制文本
-		if _, err := h.writePacket(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
-			log.Printf("RECVMSG 回执发送失败: %v", err)
-		}
-		if h.ReceivedMessage != nil {
-			h.ReceivedMessage(key)
-		}
+		h.receiveText(key, pkt, src)
 	case ipmsg.CmdRecvMsg:
 		pktNo64, err := strconv.ParseUint(strings.TrimSpace(pkt.Body), 10, 32)
 		if err != nil {
 			return
 		}
 		h.mu.Lock()
-		if m, ok := h.pending[uint32(pktNo64)]; ok {
-			m.Acked = true
+		entry, ok := h.pending[uint32(pktNo64)]
+		if ok {
 			delete(h.pending, uint32(pktNo64))
 		}
 		h.mu.Unlock()
-		if h.ReceivedMessage != nil {
-			h.ReceivedMessage(key)
+		if !ok {
+			return
 		}
+		if h.db != nil {
+			if err := h.db.Status(entry.dbID, 1); err != nil {
+				log.Printf("回执状态更新失败: %v", err)
+			}
+		}
+		if h.MessageAcked != nil {
+			h.MessageAcked(key, entry.dbID)
+		}
+	}
+}
+
+func (h *Hub) buildWireAndSend(src *net.UDPAddr, command uint32, body string, extra *string) (uint32, error) {
+	pktNo := h.nextPktNo.Add(1)
+	wire, err := h.buildWire(command, pktNo, body, extra)
+	if err != nil {
+		return 0, err
+	}
+	return pktNo, h.sendWire(src, wire)
+}
+
+// receiveText 落库去重后投递事件；重复报文始终回执但不重复计数。
+func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
+	peerID := fmt.Sprintf("%s@%s#%s", pkt.Username, pkt.Hostname, key)
+	recordID := fmt.Sprintf("rx:%s:%d", key, pkt.PacketNo)
+	ts := time.Now().Unix()
+	duplicate := false
+	if h.db != nil {
+		record := store.Record{ID: recordID, FromID: peerID, ToID: h.LocalID(), Content: pkt.Body, Kind: 0, Timestamp: ts, Status: 1}
+		inserted, err := h.db.Insert(record)
+		if err != nil {
+			log.Printf("接收消息落库失败: %v", err)
+		} else {
+			duplicate = !inserted
+		}
+	}
+	if !duplicate {
+		h.mu.Lock()
+		h.unread[key]++
+		h.mu.Unlock()
+	}
+	if _, err := h.buildWireAndSend(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
+		log.Printf("RECVMSG 回执发送失败: %v", err)
+	}
+	if h.MessageReceived != nil {
+		h.mu.Lock()
+		user := h.users[key]
+		h.mu.Unlock()
+		h.MessageReceived(ReceivedEvent{
+			Key: key, PeerID: peerID, User: user, ID: recordID,
+			Content: pkt.Body, Timestamp: ts, Duplicate: duplicate,
+		})
 	}
 }
 
@@ -426,7 +576,7 @@ func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 	h.mu.Lock()
 	u, ok := h.users[key]
 	if !ok {
-		u = &User{Key: key}
+		u = &User{Key: key, Port: src.Port}
 		h.users[key] = u
 		changed = true
 	}
@@ -437,8 +587,10 @@ func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 	u.Host = pkt.Hostname
 	u.Group = pkt.Extra
 	u.Addr = src.IP.String()
+	u.Port = src.Port
+	u.ID = fmt.Sprintf("%s@%s#%s", u.Nick, u.Host, key)
 	u.Online = true
-	u.LastSeen = time.Now().UnixMilli()
+	u.LastSeen = time.Now().Unix()
 	h.mu.Unlock()
 	if changed {
 		h.notifyUsersChanged()
