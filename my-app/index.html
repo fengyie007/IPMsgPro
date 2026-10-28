@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MyGo IPMsg Demo</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <aside id="sidebar">
+        <header class="side-head">
+          <div>
+            <div id="meNick" class="me-nick">--</div>
+            <div id="meMeta" class="me-meta"></div>
+          </div>
+          <button id="refresh" type="button" title="重新广播发现">刷新</button>
+        </header>
+        <ul id="users"></ul>
+      </aside>
+      <section id="chat">
+        <header id="chatHeader" class="chat-head">选择左侧联系人开始会话</header>
+        <div id="messages"></div>
+        <div id="error" class="error" hidden></div>
+        <form id="composer">
+          <textarea id="input" rows="2" placeholder="输入消息，Enter 发送" disabled></textarea>
+          <button id="send" type="submit" disabled>发送</button>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

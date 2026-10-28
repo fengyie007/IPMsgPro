@@ -351,6 +351,50 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 用户已确认本轮功能验证通过，并授权提交。验收要点：配置目录临时不可访问后重新启动，应提示回退并使用新默认配置；原目录中的数据及原定位备份保留，恢复原位置不会自动改变当前活动目录。
 
+## 进入会话定位最新消息与未读托盘闪烁
+
+功能已提交为 `da09268`；构建方式同时切换为用户指定的 `npm run tauri -- build`（不再使用父目录 `build.ps1` 的 C++ 构建）。
+
+**问题与实现**：进入会话仍停留在上次滚动位置，托盘也没有未读闪烁。
+
+- `ChatPanel.tsx` 首次挂载时 `restoreScroll` 分支优先恢复 `chatViews` 中的旧位置，`shouldAutoScroll` 轮不到执行；组件已按 `currentUser.id` 作为 `key` 重挂载（`App.tsx:133`），随 `userId` 变化的判断是死代码。改为首次执行无条件贴底并同步 `nearBottom`，删除无效分支。
+- 图片通过 `useImageUrl` 异步加载，贴底后高度继续增长会把视口留在更早位置。列表容器增加捕获阶段的 `load` 监听（`ChatPanel.tsx:183`），仍在底部附近时重新贴底；用户已向上翻阅时不动。
+- 托盘闪烁初版存在三处缺陷：命令注册为独立 `#[tauri::command]`，与前端统一走的 `ipmsg_command` 分发不一致，前端从未调用；循环条件复用 `tray_available`（创建托盘后恒为 true），一旦开始永不停止；`stop` 用 `take()` 取走 `TrayIcon` 句柄，之后再启动永远无效。
+- 改为 `commands.rs` 的 `tray.start_blink`/`tray.stop_blink` 分发；`Runtime.tray_blink_gen`（`AtomicU64`，`runtime.rs:435`）递增代数，新任务淘汰旧任务，快速停止/重启不会叠加循环，停止后仍可再次启动。
+- 闪烁不再隐藏/显示图标（会把图标移出通知区并重排托盘位置），改为 `TrayIcon::set_icon` 交替彩色与灰度图标：灰度由 `app.default_window_icon()` 逐像素按亮度 `77R+150G+29B` 去饱和得到，尺寸与 alpha 不变；停止时立即恢复彩色，任务退出时兜底。
+- `App.tsx` 订阅消息 store 的未读总数，`>0` 启动闪烁、清零停止；`bridge.ts` 白名单与浏览器 mock 同步新增两条命令。
+
+**验证**：`npx tsc -b` 与 `npm run tauri -- build` 通过，产物 `tauri-rust/src-tauri/target/release/SpeedIpMsg.exe` 及 NSIS 安装包；用户实机验证后授权提交。
+
+## 联系人与会话搜索支持拼音首字母
+
+已提交为 `d614ca9`。
+
+**问题与实现**：通讯录与会话列表只能按昵称、账号、分组、IP 字面匹配，无法输入 `zs` 找到“张三”。
+
+- 新增 `src/utils/pinyin.ts`：利用 WebView2 的 `Intl.Collator('zh-CN')` 拼音排序，与 23 个首字母边界字（阿八嚓…帀）比较得到首字母，不引入第三方拼音库；非汉字原样保留，`Map` 缓存（超过 500 条整体清空）。
+- 多音字姓氏在首字位置覆盖：曾/覃/单/查/解/仇/区/乐/朴/尉/缪/秘/盖/种/薄/柏/长；其余多音字按 collation 常见读音近似。
+- `UserListPanel.tsx` 通讯录过滤新增昵称与分组名首字母匹配，会话列表新增昵称首字母匹配（`:121`、`:125`、`:132`）；空结果提示补充“拼音首字母”。
+- 无接口变化：`invoke`、store、后端命令均未改动，只在渲染层做匹配。
+
+**验证**：`张三→zs`、`郭敬明→gjm`、`吕良→ll`、`曾志伟→zzw`、`覃辉→qh`、`单田芳→stf`、`长沙→cs`、`Zhang San→zhang san`；`npx tsc -b` 与 `npm run tauri -- build` 通过。已知限制：非姓氏多音字按常见读音（`重庆→zq`），且只支持首字母不匹配全拼。
+
+## MyGo 框架评估（未迁移）
+
+用户要求考察 https://mygo.egoist.dev/ 并形成记录，完整评估稿在父目录 `MyGo框架评估.md`；随后按"低成本试水"路径落地最小闭环 demo，`my-app/` 已随本轮提交版本控制。
+
+- 结论：痛点若是构建链（VS Build Tools、Rust 工具链），MyGo 收益直接（纯 Go 无 cgo、可交叉编译、7 MB 级二进制、托盘 `SetIcon` 可直接平移本次闪烁方案）；但迁移本质是重写 `ipmsg-core`（Rust → Go），常规功能迭代阶段不建议中途迁移。
+- 现有 API 映射已逐项核对：剪贴板图片走 WebView2 粘贴事件 + raw IPC（`image.rs:11`）；拖拽用 `DragDropEvent::Drop { paths }`（`lib.rs:137`）→ `files::dropped`；文件/图片选择用 `tauri-plugin-dialog`；截图为 GDI `BitBlt` + `DwmFlush`（`capture/platform.rs`），MyGo 无截图 API，是最大移植缺口。
+- 迁移注意：`import_clipboard_image` 的 raw body 要改为 JSON 参数（base64 或临时文件）；自定义协议 origin 由 `http://ipmsg.localhost` 变为 `mygo.localhost` 形态，前端 IndexedDB 配置需迁移；SQLite 依赖官方插件是否满足现有查询仍需验证。
+
+### 最小闭环 demo 已落地（2026-10-28）
+
+按评估稿"低成本试水"路径，在 `my-app/` 脚手架上实现最小闭环：UDP 发现（飞秋兼容版本头与 Rust 版逐项对齐）→ 联系人列表 → 单会话文本收发（GBK 默认、UTF8OPT 可选、RECVMSG 回执）→ 未读托盘彩色/灰度交替（复用迅秋闪烁方案，改为程序内绘制 PNG）。改动全部在 `my-app/`，随本轮纳入版本控制；说明见 `my-app/README.md`，黑盒验证工具见 `my-app/tools/fakepeer`。
+
+- 结构：`ipmsg.go`（报文编解码 + `feiqCompatVersion`）、`network.go`（Hub：发现/收发/未读/回执，用户以来源IP:端口为键）、`main.go`（窗口/托盘/闪烁/`mygo.Bind`）、`src/main.ts`（聊天页面）；托盘 API 实测为 `mygo.NewTray` + `Tray.SetIcon`，与评估稿预期一致。
+- 验证：`go test` 通过（协议单测 + 双 Hub 回环"发现→文本→回执→已读"集成测试）、`go vet` 干净、`tsc --noEmit` 通过、`npm run build` 产出 `my-app.exe` 9.7 MB + NSIS 安装包 3.3 MB——证实"纯 Go 无 cgo、7 MB 级二进制、交叉编译"的评估结论；开发链路仅需 Go + Node，无需 MSVC/Rust 工具链。
+- 评估稿第 6 节"尚未验证"三项（WebView2 粘贴图片 File 对象、SQLite 插件兼容性、实际内存/多网卡行为）本 demo 未覆盖，仍待验证；demo 与真实飞秋的局域网互通由用户实机验收。
+
 ## 下一步验收
 
 1. 构建运行Rust版，点击图片按钮，分别选择PNG/JPEG/BMP发送到飞秋和原C++版；确认对方直接显示图片而不是接收文件或对象图标。
@@ -373,6 +417,7 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 ## 后续迁移约束
 
+- Rust 版统一用 `cd tauri-rust && npm run tauri -- build` 构建，不再使用父目录 `build.ps1`（旧 C++ 工程）。
 - 用户明确不需要多网段广播迁移；保留现有本地发现和IP范围扫描，不新增广播网段配置。
 - 多网卡联系人体验、旧版数据导入、自动更新按用户要求暂不开发。
 
