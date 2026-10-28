@@ -14,14 +14,17 @@ import (
 	"image/png"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 
 	"my-app/internal/app"
 	"my-app/internal/ipmsg"
+	"my-app/internal/media"
 	"my-app/internal/network"
 	"my-app/internal/store"
 )
@@ -146,6 +149,25 @@ func main() {
 	backend = app.New(hub, db, configStore, appVersion, dataDir)
 	backend.WireEvents()
 	mygo.Bind(Backend{})
+
+	// 图片资产协议：仅服务数据库已登记的资产（校验在 ImageRead 内完成）。
+	// 必须在窗口创建前注册。
+	assetStore, err := media.NewAssetStore(filepath.Join(dataDir, "images"))
+	if err != nil {
+		log.Fatalf("初始化图片目录失败: %v", err)
+	}
+	hub.AttachAssets(assetStore)
+	mygo.Protocol.HandleFunc("ipmsg-image", func(w http.ResponseWriter, req *http.Request) {
+		assetID := strings.TrimPrefix(req.URL.Path, "/")
+		_, data, err := hub.ImageRead(assetID, req.URL.Query().Get("t") == "1")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	})
+
 	log.Printf("迅秋 MyGo 启动: port=%d dataDir=%s wire=%s", hub.Port(), dataDir, hub.WireVersion())
 
 	mygo.App.WhenReady(func() {

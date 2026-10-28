@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 
+	"my-app/internal/media"
 	"my-app/internal/network"
 	"my-app/internal/store"
 )
@@ -60,6 +61,21 @@ func (r *Runtime) WireEvents() {
 			"fromUser": userToFrontend(*evt.User, r.Version),
 			"content":  evt.Content, "type": "text",
 			"timestamp": evt.Timestamp, "command": ipmsgCmdSend,
+		})
+	}
+	r.Hub.ImageFailed = func(peerID, imageID, reason string) {
+		r.Emit("image.receive_failed", map[string]any{"peerId": peerID, "imageId": imageID, "error": reason})
+	}
+	r.Hub.ImageReceived = func(evt network.ReceivedEvent, metadata media.ImageMetadata) {
+		if evt.User == nil {
+			return
+		}
+		r.Emit("message.received", map[string]any{
+			"id": evt.ID, "from": evt.PeerID,
+			"fromUser": userToFrontend(*evt.User, r.Version),
+			"content":  evt.Content, "type": "image",
+			"image": metadata, "timestamp": evt.Timestamp,
+			"command": 0xc0 | 0x200000,
 		})
 	}
 }
@@ -139,9 +155,9 @@ func marshal(v any) string {
 }
 
 // capabilities 对应前端 types/index.ts Capabilities；M1 只交付文本/发现/历史。
-func capabilities() map[string]any {
+func (r *Runtime) capabilities() map[string]any {
 	return map[string]any{
-		"images": false, "imageReceive": false, "imageSend": false,
+		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": false,
 		"files": false, "screenshot": false, "scan": false, "notificationSound": false,
 	}
 }
@@ -203,7 +219,7 @@ func userToFrontend(u network.User, version string) map[string]any {
 func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 	switch command {
 	case "app.info":
-		return ok(map[string]any{"version": r.Version, "dataDir": r.DataDir, "port": r.Port, "capabilities": capabilities()})
+		return ok(map[string]any{"version": r.Version, "dataDir": r.DataDir, "port": r.Port, "capabilities": r.capabilities()})
 
 	case "config.get":
 		return ok(map[string]any{"config": r.Config.Get()})
@@ -308,7 +324,22 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		}})
 
 	// 以下能力按阶段迁移（M2 图片 / M3 截图 / M4 文件 / M5 通知扫描存储）
-	case "image.read", "image.select", "image.send", "image.cancel", "image.discard",
+	case "image.read":
+		assetID, _ := args["assetId"].(string)
+		thumbnail := false
+		if v, ok := args["thumbnail"].(bool); ok {
+			thumbnail = v
+		}
+		if _, _, err := r.Hub.ImageRead(assetID, thumbnail); err != nil {
+			return fail(err.Error())
+		}
+		// URL 由 ipmsg-image 协议处理器服务；数据库登记校验已在 ImageRead 内完成
+		query := ""
+		if thumbnail {
+			query = "?t=1"
+		}
+		return ok(map[string]any{"url": fmt.Sprintf("ipmsg-image://localhost/%s%s", assetID, query)})
+	case "image.select", "image.send", "image.cancel", "image.discard",
 		"screenshot.start",
 		"notification.test_sound", "notification.test_system", "notification.take_activation",
 		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel",

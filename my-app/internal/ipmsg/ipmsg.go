@@ -22,6 +22,8 @@ const (
 	CmdBrAbsence   = 0x04
 	CmdSendMsg     = 0x20
 	CmdRecvMsg     = 0x21
+	CmdSendImage   = 0xc0
+	CmdReportImage = 0xc1
 	OptSendCheck   = 0x00000100
 	OptAbsence     = 0x00000100
 	OptFileAttach  = 0x00200000
@@ -272,6 +274,42 @@ func EncodePacket(wireVersion string, packetNo uint32, username, hostname string
 	}
 	if data.Len() > MaxPacketBytes {
 		return nil, errors.New("IPMsg 报文超过 UDP 大小限制")
+	}
+	return data.Bytes(), nil
+}
+
+// EncodeImagePacket 编码二进制图片报文（SENDIMAGE|FILEATTACHOPT）：
+// 头部文本走 GBK，载荷逐字节保留、不转码、无终止符。
+func EncodeImagePacket(wireVersion string, packetNo uint32, username, hostname string, body []byte) ([]byte, error) {
+	if strings.Contains(wireVersion, ":") {
+		return nil, errors.New("版本字段不能包含冒号")
+	}
+	if _, err := parseVersion([]byte(wireVersion)); err != nil {
+		return nil, err
+	}
+	if err := validateIdentity(username, "用户名"); err != nil {
+		return nil, err
+	}
+	if err := validateIdentity(hostname, "主机名"); err != nil {
+		return nil, err
+	}
+	encUser, err := EncodeWireText(username, 0)
+	if err != nil {
+		return nil, err
+	}
+	encHost, err := EncodeWireText(hostname, 0)
+	if err != nil {
+		return nil, err
+	}
+	var data bytes.Buffer
+	fmt.Fprintf(&data, "%s:%d:", wireVersion, packetNo)
+	data.Write(encUser)
+	data.WriteByte(':')
+	data.Write(encHost)
+	fmt.Fprintf(&data, ":%d:", CmdSendImage|OptFileAttach)
+	data.Write(body)
+	if data.Len() > MaxPacketBytes {
+		return nil, errors.New("图片报文超过UDP上限")
 	}
 	return data.Bytes(), nil
 }

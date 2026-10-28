@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"my-app/internal/ipmsg"
+	"my-app/internal/media"
 	"my-app/internal/store"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -93,10 +94,17 @@ type Hub struct {
 
 	nextPktNo atomic.Uint32
 
+	imagesMu  sync.Mutex
+	images    *media.Assembler
+	assets    *media.AssetStore
+	imageJobs chan imageJob
+
 	UsersChanged    func()
 	MessageAcked    func(peerKey, messageID string)
 	MessageFailed   func(peerKey, messageID, reason string)
 	MessageReceived func(ReceivedEvent)
+	ImageFailed     func(peerID, imageID, reason string)
+	ImageReceived   func(ReceivedEvent, media.ImageMetadata)
 }
 
 // ReceivedEvent 是去重后的一条入站文本。
@@ -123,6 +131,7 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 		pending:    map[uint32]*pendingSend{},
 	}
 	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
+	h.imageJobs = make(chan imageJob, 4)
 	h.prof.Store(&profile{nick: nick, group: group, avatar: 0, wireVer: ipmsg.FeiqCompatVersion(instanceID, port, 0), hostname: host})
 
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
@@ -389,6 +398,8 @@ func (h *Hub) ListUsers() []User {
 
 func (h *Hub) Run() {
 	go h.retryLoop()
+	go h.imageWorker()
+	go h.expireImageLoop()
 	go func() {
 		buf := make([]byte, ipmsg.MaxPacketBytes)
 		for {
@@ -503,6 +514,10 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 	case ipmsg.CmdSendMsg:
 		h.upsertUser(key, pkt, src)
 		h.receiveText(key, pkt, src)
+	case ipmsg.CmdSendImage:
+		if err := h.handleImageFragment(pkt, src, key); err != nil {
+			log.Printf("图片分片处理失败: %v", err)
+		}
 	case ipmsg.CmdRecvMsg:
 		pktNo64, err := strconv.ParseUint(strings.TrimSpace(pkt.Body), 10, 32)
 		if err != nil {
@@ -569,6 +584,12 @@ func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 			Content: pkt.Body, Timestamp: ts, Duplicate: duplicate,
 		})
 	}
+	// 文本中的图片引用：引用可先于/后于分片到达，只登记不产生新消息
+	if imageID := media.ParseReference(pkt.Body); imageID != "" {
+		if err := h.registerImageReference(peerID, imageID); err != nil {
+			log.Printf("图片引用登记失败: %v", err)
+		}
+	}
 }
 
 func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
@@ -602,3 +623,6 @@ func (h *Hub) notifyUsersChanged() {
 		h.UsersChanged()
 	}
 }
+
+// ImagesEnabled 报告收图链路是否已启用（AttachAssets 后为真）。
+func (h *Hub) ImagesEnabled() bool { return h.assets != nil && h.images != nil }
