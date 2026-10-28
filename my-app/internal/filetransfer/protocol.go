@@ -146,16 +146,17 @@ func Offers(pkt ipmsg.Packet) ([]Offer, error) {
 	return offers, nil
 }
 
-// Request 解析 TCP 上的 GETFILEDATA / GETDIRFILES 请求，
-// 返回原始包号、文件 ID 与偏移（目录请求偏移恒 0）。
-func Request(data []byte) (originalPacketNo uint32, fileID uint32, offset uint64, err error) {
-	pkt, err := ipmsg.ParsePacket(data)
+// RequestPacket 解析 TCP 上的 GETFILEDATA / GETDIRFILES 请求，
+// 返回完整包（发送方需用 username/hostname/command 校验请求者身份）、
+// 原始包号、文件 ID 与偏移（目录请求偏移恒 0）。
+func RequestPacket(data []byte) (pkt ipmsg.Packet, originalPacketNo uint32, fileID uint32, offset uint64, err error) {
+	pkt, err = ipmsg.ParsePacket(data)
 	if err != nil {
-		return 0, 0, 0, err
+		return
 	}
 	mode := ipmsg.CommandMode(pkt.Command)
 	if mode != ipmsg.CmdGetFileData && mode != ipmsg.CmdGetDirFiles {
-		return 0, 0, 0, fmt.Errorf("不支持的TCP命令")
+		return pkt, 0, 0, 0, fmt.Errorf("不支持的TCP命令")
 	}
 	directory := mode == ipmsg.CmdGetDirFiles
 	body := pkt.Body
@@ -166,28 +167,34 @@ func Request(data []byte) (originalPacketNo uint32, fileID uint32, offset uint64
 	valid := len(fields) == 4 && fields[3] == "" ||
 		directory && len(fields) == 3 && fields[2] == ""
 	if !valid {
-		return 0, 0, 0, fmt.Errorf("TCP请求不完整")
+		return pkt, 0, 0, 0, fmt.Errorf("TCP请求不完整")
 	}
 	original64, err := hexField(fields[0])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("包号溢出")
+		return pkt, 0, 0, 0, fmt.Errorf("包号溢出")
 	}
 	if original64 > 0xFFFFFFFF {
-		return 0, 0, 0, fmt.Errorf("包号溢出")
+		return pkt, 0, 0, 0, fmt.Errorf("包号溢出")
 	}
 	file64, err := hexField(fields[1])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("文件ID溢出")
+		return pkt, 0, 0, 0, fmt.Errorf("文件ID溢出")
 	}
 	if file64 > 0xFFFFFFFF {
-		return 0, 0, 0, fmt.Errorf("文件ID溢出")
+		return pkt, 0, 0, 0, fmt.Errorf("文件ID溢出")
 	}
 	offset = 0
 	if !directory {
 		offset, err = hexField(fields[2])
 		if err != nil {
-			return 0, 0, 0, err
+			return pkt, 0, 0, 0, err
 		}
 	}
-	return uint32(original64), uint32(file64), offset, nil
+	return pkt, uint32(original64), uint32(file64), offset, nil
+}
+
+// Request 只关心请求三元组的旧接口。
+func Request(data []byte) (originalPacketNo uint32, fileID uint32, offset uint64, err error) {
+	_, originalPacketNo, fileID, offset, err = RequestPacket(data)
+	return
 }

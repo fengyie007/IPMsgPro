@@ -14,13 +14,15 @@ import (
 
 // Record 与 Rust 版 database.rs Record 对齐（JSON 字段名一致，type 字段名保持 "type"）。
 type Record struct {
-	ID        string `json:"id"`
-	FromID    string `json:"fromId"`
-	ToID      string `json:"toId"`
-	Content   string `json:"content"`
-	Kind      int64  `json:"type"`
-	Timestamp int64  `json:"timestamp"`
-	Status    int64  `json:"status"`
+	ID        string        `json:"id"`
+	FromID    string        `json:"fromId"`
+	ToID      string        `json:"toId"`
+	Content   string        `json:"content"`
+	Kind      int64         `json:"type"`
+	Timestamp int64         `json:"timestamp"`
+	Status    int64         `json:"status"`
+	Image     any           `json:"-"`
+	File      *FileMetadata `json:"file,omitempty"`
 }
 
 // schemaVersion 与 Rust 版 schema 6 对齐；建表语义逐条照抄 database.rs open()。
@@ -118,15 +120,31 @@ func (d *Database) query(sql string, args ...any) (sqlite.Rows, error) {
 
 // Insert 去重语义与 Rust 版一致：seen_messages 只保留 7 天内的 ID，
 // 清空后的重发不能复活旧消息（含跨进程重启）。
-// 插件事务 API 不支持语句间分支，条件写入用单条 INSERT...SELECT...WHERE NOT EXISTS 表达：
-// 仅当 seen 中没有该 ID 时才写 messages，随后登记 seen；三语句在同一事务内原子提交。
+// 语句在同一事务内原子提交：1. 清理过期 seen；2. 仅当 seen 无该 ID 时插入消息；
+// 3. 仅当上一步真正插入（changes()>0）时登记文件元数据
+// （message_files 外键引用 messages，必须在消息行之后写入）；4. 登记 seen。
 func (d *Database) Insert(record Record) (bool, error) {
-	results, err := d.conn.Transaction(d.ctx, []sqlite.Statement{
+	if record.Image != nil {
+		return false, fmt.Errorf("图片必须通过完整图片事务保存")
+	}
+	statements := []sqlite.Statement{
 		{SQL: "DELETE FROM seen_messages WHERE seen_at < CAST(strftime('%s','now') AS INTEGER)-604800"},
 		{SQL: "INSERT INTO messages (id,from_id,to_id,content,type,timestamp,status) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM seen_messages WHERE id=?)",
 			Args: []any{record.ID, record.FromID, record.ToID, record.Content, record.Kind, record.Timestamp, record.Status, record.ID}},
-		{SQL: "INSERT OR IGNORE INTO seen_messages (id,seen_at) VALUES (?,CAST(strftime('%s','now') AS INTEGER))", Args: []any{record.ID}},
-	})
+	}
+	if record.File != nil {
+		metaJSON, err := json.Marshal(record.File)
+		if err != nil {
+			return false, err
+		}
+		statements = append(statements, sqlite.Statement{
+			SQL:  "INSERT INTO message_files(message_id,metadata) SELECT ?,? WHERE (SELECT changes())>0",
+			Args: []any{record.ID, string(metaJSON)}})
+	}
+	statements = append(statements, sqlite.Statement{
+		SQL:  "INSERT OR IGNORE INTO seen_messages (id,seen_at) VALUES (?,CAST(strftime('%s','now') AS INTEGER))",
+		Args: []any{record.ID}})
+	results, err := d.conn.Transaction(d.ctx, statements)
 	if err != nil {
 		return false, err
 	}
@@ -191,6 +209,9 @@ func (d *Database) History(user, local string, limit, offset uint32) ([]Record, 
 	for i, j := 0, len(records)-1; i < j; i, j = i+1, j-1 {
 		records[i], records[j] = records[j], records[i]
 	}
+	if err := d.hydrateFiles(records); err != nil {
+		return nil, err
+	}
 	return records, nil
 }
 
@@ -204,7 +225,14 @@ func (d *Database) Recent(local string, limit uint32) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	return rowsToRecords(rows)
+	records, err := rowsToRecords(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.hydrateFiles(records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 // Search 关键字做 LIKE 转义；user 为 nil 时全局搜索。
@@ -222,7 +250,14 @@ func (d *Database) Search(keyword string, user *string, local string) ([]Record,
 	if err != nil {
 		return nil, err
 	}
-	return rowsToRecords(rows)
+	records, err := rowsToRecords(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.hydrateFiles(records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 // Clear 删除指定会话（或全部）消息，返回被删 ID 列表；迟到事件凭这份名单判断去重边界。
