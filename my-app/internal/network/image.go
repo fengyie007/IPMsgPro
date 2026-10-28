@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"my-app/internal/ipmsg"
@@ -230,7 +229,7 @@ func (h *Hub) processImageJob(job imageJob) {
 	}
 }
 
-// expireImageLoop 定期排空引用-only/收集超时。
+// expireImageLoop 定期排空引用-only/收集超时，并完成已取消/超时的发送任务。
 func (h *Hub) expireImageLoop() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -244,7 +243,6 @@ func (h *Hub) expireImageLoop() {
 		for _, failure := range failures {
 			h.imageFailure(failure.Key, failure.Reason)
 		}
+		h.expireImageSends()
 	}
 }
-
-var _ = sync.Mutex{}

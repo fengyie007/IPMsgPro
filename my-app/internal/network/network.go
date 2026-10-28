@@ -94,17 +94,23 @@ type Hub struct {
 
 	nextPktNo atomic.Uint32
 
-	imagesMu  sync.Mutex
-	images    *media.Assembler
-	assets    *media.AssetStore
-	imageJobs chan imageJob
+	imagesMu      sync.Mutex
+	images        *media.Assembler
+	assets        *media.AssetStore
+	imageJobs     chan imageJob
+	imageSendsMu  sync.Mutex
+	imageSends    map[string]*imageSendJob
+	imageSendGate sync.Mutex
+	imageSequence atomic.Uint32
 
-	UsersChanged    func()
-	MessageAcked    func(peerKey, messageID string)
-	MessageFailed   func(peerKey, messageID, reason string)
-	MessageReceived func(ReceivedEvent)
-	ImageFailed     func(peerID, imageID, reason string)
-	ImageReceived   func(ReceivedEvent, media.ImageMetadata)
+	UsersChanged      func()
+	MessageAcked      func(peerKey, messageID string)
+	MessageFailed     func(peerKey, messageID, reason string)
+	MessageReceived   func(ReceivedEvent)
+	ImageFailed       func(peerID, imageID, reason string)
+	ImageReceived     func(ReceivedEvent, media.ImageMetadata)
+	ImageSendProgress func(messageID, target string, progress int, stage string, image media.ImageMetadata)
+	ImageSendFinished func(messageID, target string, success bool, err error, cancelled bool)
 }
 
 // ReceivedEvent 是去重后的一条入站文本。
@@ -132,6 +138,7 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 	}
 	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
 	h.imageJobs = make(chan imageJob, 4)
+	h.imageSends = map[string]*imageSendJob{}
 	h.prof.Store(&profile{nick: nick, group: group, avatar: 0, wireVer: ipmsg.FeiqCompatVersion(instanceID, port, 0), hostname: host})
 
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
@@ -399,7 +406,7 @@ func (h *Hub) ListUsers() []User {
 func (h *Hub) Run() {
 	go h.retryLoop()
 	go h.imageWorker()
-	go h.expireImageLoop()
+
 	go func() {
 		buf := make([]byte, ipmsg.MaxPacketBytes)
 		for {
@@ -518,7 +525,14 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		if err := h.handleImageFragment(pkt, src, key); err != nil {
 			log.Printf("图片分片处理失败: %v", err)
 		}
+	case ipmsg.CmdReportImage:
+		// 分片确认：认领属于某个在途图片发送
+		h.imageSendAck(pkt, key)
 	case ipmsg.CmdRecvMsg:
+		// 图片引用回执优先由发送链路认领（RECVMSG body=包号）
+		if h.imageSendAck(pkt, key) {
+			return
+		}
 		pktNo64, err := strconv.ParseUint(strings.TrimSpace(pkt.Body), 10, 32)
 		if err != nil {
 			return

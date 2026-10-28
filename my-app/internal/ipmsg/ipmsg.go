@@ -313,3 +313,16 @@ func EncodeImagePacket(wireVersion string, packetNo uint32, username, hostname s
 	}
 	return data.Bytes(), nil
 }
+
+// AllDigitsASCII 报告字符串是否为非空十进制数字。
+func AllDigitsASCII(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}

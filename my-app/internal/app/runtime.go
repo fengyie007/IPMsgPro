@@ -10,6 +10,10 @@ import (
 	"net"
 	"sync"
 
+	"encoding/base64"
+
+	"github.com/egoist/mygo"
+
 	"my-app/internal/media"
 	"my-app/internal/network"
 	"my-app/internal/store"
@@ -77,6 +81,25 @@ func (r *Runtime) WireEvents() {
 			"image": metadata, "timestamp": evt.Timestamp,
 			"command": 0xc0 | 0x200000,
 		})
+	}
+	r.Hub.ImageSendProgress = func(messageID, target string, progress int, stage string, image media.ImageMetadata) {
+		r.Emit("image.send_progress", map[string]any{
+			"messageId": messageID, "target": target,
+			"progress": progress, "stage": stage, "image": image,
+		})
+	}
+	r.Hub.ImageSendFinished = func(messageID, target string, success bool, err error, cancelled bool) {
+		event := "image.send_completed"
+		payload := map[string]any{"messageId": messageID, "target": target, "progress": 100}
+		if !success {
+			event = "image.send_failed"
+			payload["progress"] = 0
+			payload["cancelled"] = cancelled
+			if err != nil {
+				payload["error"] = err.Error()
+			}
+		}
+		r.Emit(event, payload)
 	}
 }
 
@@ -157,7 +180,7 @@ func marshal(v any) string {
 // capabilities 对应前端 types/index.ts Capabilities；M1 只交付文本/发现/历史。
 func (r *Runtime) capabilities() map[string]any {
 	return map[string]any{
-		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": false,
+		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": r.Hub.ImagesEnabled(),
 		"files": false, "screenshot": false, "scan": false, "notificationSound": false,
 	}
 }
@@ -339,8 +362,55 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 			query = "?t=1"
 		}
 		return ok(map[string]any{"url": fmt.Sprintf("ipmsg-image://localhost/%s%s", assetID, query)})
-	case "image.select", "image.send", "image.cancel", "image.discard",
-		"screenshot.start",
+	case "image.select":
+		if r.Hub == nil || !r.Hub.ImagesEnabled() {
+			return fail("图片服务未启用")
+		}
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:   "选择图片",
+			Filters: []mygo.FileFilter{{Name: "图片", Extensions: []string{"png", "jpg", "jpeg", "bmp"}}},
+		})
+		if err != nil {
+			return fail(err.Error())
+		}
+		if len(paths) == 0 {
+			return ok(map[string]any{"image": nil})
+		}
+		image, err := r.Hub.ImportImagePath(paths[0])
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"image": image})
+	case "image.send":
+		target, _ := args["target"].(string)
+		assetID, _ := args["assetId"].(string)
+		result, err := r.Hub.SendImage(target, assetID)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"messageId": result.MessageID, "imageId": result.ImageID, "image": result.Image})
+	case "image.cancel":
+		messageID, _ := args["messageId"].(string)
+		return ok(map[string]any{"cancelled": r.Hub.CancelImage(messageID)})
+	case "image.discard":
+		assetID, _ := args["assetId"].(string)
+		discarded, err := r.Hub.DiscardImage(assetID)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"discarded": discarded})
+	case "image.import_clipboard":
+		base64Data, _ := args["base64"].(string)
+		data, err := base64.StdEncoding.DecodeString(base64Data)
+		if err != nil {
+			return fail("剪贴板图片数据无效")
+		}
+		image, err := r.Hub.ImportClipboard(data)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"image": image})
+	case "screenshot.start",
 		"notification.test_sound", "notification.test_system", "notification.take_activation",
 		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel",
 		"network.scan_range", "network.scan_cancel",
