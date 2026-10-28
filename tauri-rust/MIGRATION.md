@@ -394,6 +394,7 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 - 结构：`ipmsg.go`（报文编解码 + `feiqCompatVersion`）、`network.go`（Hub：发现/收发/未读/回执，用户以来源IP:端口为键）、`main.go`（窗口/托盘/闪烁/`mygo.Bind`）、`src/main.ts`（聊天页面）；托盘 API 实测为 `mygo.NewTray` + `Tray.SetIcon`，与评估稿预期一致。
 - 验证：`go test` 通过（协议单测 + 双 Hub 回环"发现→文本→回执→已读"集成测试）、`go vet` 干净、`tsc --noEmit` 通过、`npm run build` 产出 `my-app.exe` 9.7 MB + NSIS 安装包 3.3 MB——证实"纯 Go 无 cgo、7 MB 级二进制、交叉编译"的评估结论；开发链路仅需 Go + Node，无需 MSVC/Rust 工具链。
 - 评估稿第 6 节"尚未验证"三项（WebView2 粘贴图片 File 对象、SQLite 插件兼容性、实际内存/多网卡行为）本 demo 未覆盖，仍待验证；demo 与真实飞秋的局域网互通由用户实机验收。
+- 完整迁移文档与分阶段计划见父目录 `MyGo迁移计划.md`（功能映射、M1–M6 阶段划分、风险登记与决策点）。
 
 ## 下一步验收
 
