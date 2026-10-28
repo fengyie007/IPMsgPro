@@ -140,4 +140,14 @@
 | 2026-10-28 | M0 | 最小闭环 demo：报文/发现/文本/回执/托盘闪烁，黑盒验证通过，提交 `6e4633c` | ✅ |
 | 2026-10-29 | 决策 | 用户确认启动迁移，6 项决策点全部落定（数据不迁移） | ✅ |
 | 2026-10-29 | M1-1 | 代码重构为 `internal/ipmsg`（协议，符号导出）+ `internal/network`（Hub）+ `internal/store`；SQLite 插件对拍通过：purego 无 cgo、WAL/foreign_keys/BusyTimeout/事务可用，但 **`Execute` 不允许手动 BEGIN/COMMIT（SQLITE_AUTH）**，条件写入必须用 `INSERT...SELECT...WHERE NOT EXISTS` 在插件 `Transaction`（BEGIN IMMEDIATE）内表达；配置层（JSON 单一来源、严格类型、null 拒绝、原子替换）与数据库层（schema 6 全量建表、去重/分页/搜索/清空语义）逐条对拍 Rust 版用例；`go test ./...`（26 项）、`go vet`、`npm run build` 全部通过 | ✅ |
-| — | M1-2 | 会话持久化接入 Hub（落库/去重/重启状态迁移）+ 前端迁移（bridge.ts 重写、store/组件复制） | 待开始 |
+| 2026-10-29 | M1-2 | 会话持久化接入 Hub（先落库再发送、`rx:<ip:port>:<包号>` 去重、RECVMSG 置已送达、2s/4s 重发同包号三次后置失败）+ `internal/app` 统一命令分发（`Backend.Command`，M1 命令集：app.info/config/user/message/history/tray，未迁移能力明确报"后续阶段"）+ 用户变更差分事件 + 资料热更新（昵称/分组/头像进版本头）+ React 前端整树迁移（bridge.ts 仅换传输层：`Backend.Command` + 单一信封事件 `ipmsg-event`，mock 保留）；`go test`（含带库回环集成与重复报文重放）、`tsc`、`mygo build`（12.5 MB）通过；打包产物黑盒验证通过（ANSENTRY/RECVMSG + fakepeer 消息正确落库 schema 6） | ✅ |
+| 2026-10-29 | M1-3 | M1 收尾：`user.local` 补 success、README 重写、文档更新 | ✅ |
+| — | M1 验收 | 实机验收清单见下；通过后进入 M2（图片收发） | ⏳ 待用户验收 |
+
+### M1 实机验收清单（对齐 Rust 阶段一）
+
+1. 启动后联系人出现（真实飞秋/另一个实例 `--port=2435`），双实例互发中文/多行/表情符号文本。
+2. 重启后历史保留，发送中的消息置失败；同名联系人/同机多实例不串会话。
+3. 对端离线发送 → 约 14 秒后置失败并有提示；重复报文不产生重复消息。
+4. 设置页修改昵称/分组/头像并保存，重启后保留且对外公告使用新资料。
+5. 托盘闪烁/隐藏/恢复、清空会话历史、搜索关键字可用；图片/文件/截图按钮提示"将在后续阶段迁移"。

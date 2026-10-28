@@ -172,6 +172,7 @@ func (r *Runtime) localUser() map[string]any {
 		nick = r.Hub.Nick()
 	}
 	return map[string]any{
+		"success":  true,
 		"id":       r.Hub.LocalID(),
 		"nickname": nick,
 		"username": nick,
