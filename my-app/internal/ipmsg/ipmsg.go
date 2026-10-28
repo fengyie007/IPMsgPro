@@ -26,6 +26,7 @@ const (
 	CmdGetDirFiles = 0x62
 	CmdSendImage   = 0xc0
 	CmdReportImage = 0xc1
+	CmdKnock       = 0xd1
 	OptSendCheck   = 0x00000100
 	OptAbsence     = 0x00000100
 	OptFileAttach  = 0x00200000

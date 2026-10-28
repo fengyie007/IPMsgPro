@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"my-app/internal/ipmsg"
 	"my-app/internal/media"
 	"my-app/internal/network"
 	"my-app/internal/notification"
@@ -139,8 +140,11 @@ func (r *Runtime) WireEvents() {
 		payload := map[string]any{
 			"id": evt.ID, "from": evt.PeerID,
 			"fromUser": userToFrontend(*evt.User, r.Version),
-			"content":  evt.Content, "type": "text",
+			"content":  evt.Content, "type": evt.Type,
 			"timestamp": evt.Timestamp, "command": ipmsgCmdSend,
+		}
+		if payload["type"] == "" {
+			payload["type"] = "text"
 		}
 		r.notifyReceive(payload)
 		r.Emit("message.received", payload)
@@ -352,10 +356,21 @@ func userToFrontend(u network.User, version string) map[string]any {
 	if u.Online {
 		status = "online"
 	}
+	avatar := map[string]any{"kind": "unknown"}
+	switch u.Avatar {
+	case ipmsg.AvatarBuiltin:
+		avatar = map[string]any{"kind": "builtin", "id": u.AvatarID}
+	case ipmsg.AvatarCustom:
+		avatar = map[string]any{"kind": "custom"}
+	}
+	var mac any
+	if u.MAC != "" {
+		mac = u.MAC
+	}
 	return map[string]any{
 		"id": u.ID, "nickname": u.Nick, "username": u.Nick, "hostname": u.Host,
 		"group": u.Group, "ip": u.Addr, "port": u.Port, "status": status,
-		"version": "", "avatar": map[string]any{"kind": "unknown"}, "mac": nil,
+		"version": "", "avatar": avatar, "mac": mac,
 	}
 }
 
@@ -416,7 +431,14 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		avatars := map[string]any{}
 		for _, u := range users {
 			list = append(list, userToFrontend(u, r.Version))
-			avatars[u.ID] = map[string]any{"kind": "unknown"}
+			switch u.Avatar {
+			case ipmsg.AvatarBuiltin:
+				avatars[u.ID] = map[string]any{"kind": "builtin", "id": u.AvatarID}
+			case ipmsg.AvatarCustom:
+				avatars[u.ID] = map[string]any{"kind": "custom"}
+			default:
+				avatars[u.ID] = map[string]any{"kind": "unknown"}
+			}
 		}
 		return ok(map[string]any{"users": list, "count": len(list), "avatars": avatars})
 	case "user.discover":
@@ -435,7 +457,12 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		}
 		return ok(map[string]any{"messageId": messageID})
 	case "message.knock":
-		return fail("窗口振动将在后续阶段迁移")
+		target, _ := args["target"].(string)
+		record, err := r.Hub.SendKnock(target)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"message": record})
 
 	case "history.get":
 		userID, _ := args["userId"].(string)

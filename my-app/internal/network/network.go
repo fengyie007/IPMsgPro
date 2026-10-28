@@ -37,6 +37,9 @@ type User struct {
 	Port     int    `json:"port"`
 	Online   bool   `json:"online"`
 	LastSeen int64  `json:"-"`
+	Avatar   ipmsg.AvatarKind `json:"-"`
+	AvatarID int              `json:"-"` // 仅 AvatarBuiltin 时有效
+	MAC      string           `json:"-"` // 对端版本头自报 MAC（已归一化）
 }
 
 type WireFormat int
@@ -88,6 +91,7 @@ type Hub struct {
 
 	files *filetransfer.Transfers
 	scan  *scanner
+	knocks *knockState
 
 	localID string
 	localIP string
@@ -129,6 +133,7 @@ type ReceivedEvent struct {
 	User      *User
 	ID        string // 历史记录 ID（去重键）
 	Content   string
+	Type      string // "text"/"knock"（空视为 text）
 	Timestamp int64
 	Duplicate bool
 }
@@ -563,6 +568,10 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 			pkt.Body = "[收到文件：当前版本暂不支持，请使用原版接收]"
 		}
 		h.receiveText(key, pkt, src, !unsupportedFile)
+	case ipmsg.CmdKnock:
+		if err := h.receiveKnock(key, pkt, src); err != nil {
+			log.Printf("窗口振动处理失败: %v", err)
+		}
 	case ipmsg.CmdSendImage:
 		if err := h.handleImageFragment(pkt, src, key); err != nil {
 			log.Printf("图片分片处理失败: %v", err)
@@ -671,6 +680,13 @@ func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 	u.ID = fmt.Sprintf("%s@%s#%s", u.Nick, u.Host, key)
 	u.Online = true
 	u.LastSeen = time.Now().Unix()
+	// 头像与 MAC 只信版本头；解析失败保留上一次的值（对拍 Rust is_profile 语义）。
+	if kind, id := ipmsg.ParseAvatar(pkt.Version); kind != ipmsg.AvatarNone {
+		u.Avatar, u.AvatarID = kind, id
+	}
+	if mac := ipmsg.FeiqMac(pkt.Version); mac != "" {
+		u.MAC = mac
+	}
 	h.mu.Unlock()
 	if changed {
 		h.notifyUsersChanged()
