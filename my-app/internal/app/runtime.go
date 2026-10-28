@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"encoding/base64"
 
@@ -17,6 +19,7 @@ import (
 
 	"my-app/internal/media"
 	"my-app/internal/network"
+	"my-app/internal/notification"
 	"my-app/internal/store"
 )
 
@@ -41,6 +44,10 @@ type Runtime struct {
 	selecting          atomic.Bool // 文件/图片选择与截图共用互斥
 	accepting          atomic.Bool // 启动完成后置 true，等价 Rust accepting 标志
 
+	notifyMu   sync.Mutex
+	sound      *notification.NotificationSound
+	soundGate  notification.NotificationGate
+
 	shotMu     sync.Mutex
 	shot       *screenshotSession
 	shotBudget chan struct{}
@@ -48,9 +55,64 @@ type Runtime struct {
 }
 
 func New(hub *network.Hub, db *store.Database, config *store.ConfigStore, version, dataDir string) *Runtime {
-	return &Runtime{
+	r := &Runtime{
 		Hub: hub, DB: db, Config: config, Version: version, DataDir: dataDir, Port: hub.Port(),
 		shotBudget: make(chan struct{}, 1),
+	}
+	hub.SetLocalIP(r.localIP())
+	// 提示音：内置 MP3 经 MCI 播放；失败只记录，不阻塞主流程。
+	sound, err := notification.New(filepath.Join(dataDir, "sounds"), config.Get().NotificationSound,
+		func(msg string) { r.Emit("notification.sound_failed", map[string]any{"error": msg}) })
+	if err != nil {
+		log.Printf("提示音不可用: %v", err)
+	} else {
+		r.sound = sound
+	}
+	return r
+}
+
+// ShutdownNotification 退出前停止提示音工作线程。
+func (r *Runtime) ShutdownNotification() {
+	r.notifyMu.Lock()
+	sound := r.sound
+	r.sound = nil
+	r.notifyMu.Unlock()
+	if sound != nil {
+		_ = sound.Shutdown()
+	}
+}
+
+// notificationContext 汇总当前通知策略所需状态（对照 Rust 事件循环）。
+func (r *Runtime) notificationContext() notification.Context {
+	visible, focused, minimized := false, false, false
+	if r.mainWin != nil {
+		visible = r.mainWin.IsVisible()
+		focused = r.mainWin.IsFocused()
+		minimized = r.mainWin.IsMinimized()
+	}
+	return notification.Context{
+		Enabled:            r.sound != nil && r.sound.Enabled(),
+		Accepting:          r.accepting.Load(),
+		Visible:            visible,
+		Focused:            focused,
+		Minimized:          minimized,
+		ActiveConversation: r.activeConversation,
+		LocalID:            r.Hub.LocalID(),
+	}
+}
+
+// notifyReceive 对 message.received 事件应用通知闸门（提示音 + 系统通知文案）。
+func (r *Runtime) notifyReceive(payload map[string]any) {
+	event := notification.Event{Event: "message.received", Payload: payload}
+	r.notifyMu.Lock()
+	gate := r.soundGate
+	context := r.notificationContext()
+	shouldPlay := gate.ShouldPlay(event, context, time.Now())
+	r.soundGate = gate
+	sound := r.sound
+	r.notifyMu.Unlock()
+	if shouldPlay && sound != nil {
+		sound.Notify()
 	}
 }
 
@@ -74,12 +136,14 @@ func (r *Runtime) WireEvents() {
 		if evt.Duplicate || evt.User == nil {
 			return
 		}
-		r.Emit("message.received", map[string]any{
+		payload := map[string]any{
 			"id": evt.ID, "from": evt.PeerID,
 			"fromUser": userToFrontend(*evt.User, r.Version),
 			"content":  evt.Content, "type": "text",
 			"timestamp": evt.Timestamp, "command": ipmsgCmdSend,
-		})
+		}
+		r.notifyReceive(payload)
+		r.Emit("message.received", payload)
 	}
 	r.Hub.ImageFailed = func(peerID, imageID, reason string) {
 		r.Emit("image.receive_failed", map[string]any{"peerId": peerID, "imageId": imageID, "error": reason})
@@ -88,13 +152,15 @@ func (r *Runtime) WireEvents() {
 		if evt.User == nil {
 			return
 		}
-		r.Emit("message.received", map[string]any{
+		payload := map[string]any{
 			"id": evt.ID, "from": evt.PeerID,
 			"fromUser": userToFrontend(*evt.User, r.Version),
 			"content":  evt.Content, "type": "image",
 			"image": metadata, "timestamp": evt.Timestamp,
 			"command": 0xc0 | 0x200000,
-		})
+		}
+		r.notifyReceive(payload)
+		r.Emit("message.received", payload)
 	}
 	r.Hub.FileEvent = func(event string, payload any) {
 		m, ok := payload.(map[string]any)
@@ -108,8 +174,12 @@ func (r *Runtime) WireEvents() {
 					m["fromUser"] = userToFrontend(*u, r.Version)
 				}
 			}
+			r.notifyReceive(m)
 		}
 		r.Emit(event, m)
+	}
+	r.Hub.ScanEvent = func(event string, payload network.ScanStatus) {
+		r.Emit(event, statusToMap(payload))
 	}
 	r.Hub.ImageSendProgress = func(messageID, target string, progress int, stage string, image media.ImageMetadata) {
 		r.Emit("image.send_progress", map[string]any{
@@ -211,8 +281,28 @@ func (r *Runtime) capabilities() map[string]any {
 	files := r.Hub.FilesEnabled()
 	return map[string]any{
 		"images": r.Hub.ImagesEnabled(), "imageReceive": r.Hub.ImagesEnabled(), "imageSend": r.Hub.ImagesEnabled(),
-		"files": files, "screenshot": true, "scan": false, "notificationSound": false,
+		"files": files, "screenshot": true, "scan": true, "notificationSound": r.notificationSoundEnabled(),
 	}
+}
+
+// notificationSoundEnabled 提示音能力：有可用播放服务即为 true。
+func (r *Runtime) notificationSoundEnabled() bool {
+	r.notifyMu.Lock()
+	defer r.notifyMu.Unlock()
+	return r.sound != nil && r.sound.Available()
+}
+
+// statusToMap 把 ScanStatus 序列化为通用 map（事件载荷统一形状）。
+func statusToMap(v any) map[string]any {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
 }
 
 func (r *Runtime) localIP() string {
@@ -272,7 +362,8 @@ func userToFrontend(u network.User, version string) map[string]any {
 func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 	switch command {
 	case "app.info":
-		return ok(map[string]any{"version": r.Version, "dataDir": r.DataDir, "port": r.Port, "capabilities": r.capabilities()})
+		return ok(map[string]any{"version": r.Version, "dataDir": r.DataDir, "port": r.Port,
+			"systemNotifications": false, "capabilities": r.capabilities()})
 
 	case "config.get":
 		return ok(map[string]any{"config": r.Config.Get()})
@@ -286,9 +377,35 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 			return fail(err.Error())
 		}
 		r.applyIdentity(next)
+		r.notifyMu.Lock()
+		sound := r.sound
+		r.notifyMu.Unlock()
+		if sound != nil {
+			sound.SetEnabled(next.NotificationSound)
+		}
 		return ok(map[string]any{"config": next})
 	case "config.loaded":
 		r.applyIdentity(r.Config.Get())
+		r.notifyMu.Lock()
+		sound := r.sound
+		r.notifyMu.Unlock()
+		if sound != nil {
+			sound.SetEnabled(r.Config.Get().NotificationSound)
+		}
+		// 启动收尾：公告上线 + 自动 IP 段扫描（已有扫描时不重启），
+		// 对拍 Rust ui_ready；与 C++ 版约定一致：由后端在此触发，前端不得重复发起。
+		cfg := r.Config.Get()
+		if cfg.AnnounceOnStartup {
+			r.Hub.AnnounceEntry()
+		}
+		if cfg.ScanOnStartup && len(cfg.IPScanRanges) > 0 {
+			_, err := r.Hub.StartScan(store.ScanOptions{
+				Ranges: cfg.IPScanRanges, Port: cfg.ScanPort, DelayMs: cfg.ScanDelayMs,
+			}, true)
+			if err != nil {
+				log.Printf("启动扫描失败: %v", err)
+			}
+		}
 		return ok(nil)
 
 	case "user.local":
@@ -369,12 +486,6 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 	case "tray.start_blink", "tray.stop_blink":
 		// Go 侧托盘按未读总数与窗口焦点自动闪烁，命令保留以兼容前端流程。
 		return ok(nil)
-	case "network.scan_status":
-		return ok(map[string]any{"scan": map[string]any{
-			"scanId": 0, "revision": 0, "state": "idle", "current": 0, "total": 0,
-			"found": 0, "failedSends": 0, "skipped": 0, "port": 2425, "delayMs": 20,
-			"ranges": []any{}, "error": nil,
-		}})
 
 	// 以下能力按阶段迁移（M2 图片 / M3 截图 / M4 文件 / M5 通知扫描存储）
 	case "image.read":
@@ -450,10 +561,49 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		sessionID, _ := args["sessionId"].(string)
 		command, _ := args["command"].(string)
 		return r.screenshotEditorCommand(sessionID, command)
-	case "notification.test_sound", "notification.test_system", "notification.take_activation",
-		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel",
-		"network.scan_range", "network.scan_cancel":
+	case "notification.test_sound":
+		r.notifyMu.Lock()
+		sound := r.sound
+		r.notifyMu.Unlock()
+		if sound == nil {
+			return fail("提示音不可用")
+		}
+		if _, err := sound.Preview(); err != nil {
+			return fail(err.Error())
+		}
+		return ok(nil)
+	case "notification.test_system", "notification.take_activation":
+		return fail("系统通知需要 Windows 桌面版（MyGo 版已按迁移决策降级为应用内提示）")
+	case
+		"storage.info", "storage.select", "storage.default", "storage.apply", "storage.cancel":
 		return fail(fmt.Sprintf("%s 将在后续阶段迁移（见 MyGo迁移计划.md）", command))
+
+	case "network.scan_status":
+		return ok(map[string]any{"scan": statusToMap(r.Hub.ScanStatus())})
+	case "network.scan_range":
+		ranges, _ := args["ranges"].([]any)
+		var rangeList []string
+		for _, item := range ranges {
+			if s, ok := item.(string); ok {
+				rangeList = append(rangeList, s)
+			}
+		}
+		port := numberArg(args["port"], 2425)
+		delay := numberArg(args["delayMs"], 20)
+		status, err := r.Hub.StartScan(store.ScanOptions{
+			Ranges: rangeList, Port: uint16(port), DelayMs: delay,
+		}, false)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"scan": statusToMap(status)})
+	case "network.scan_cancel":
+		scanID := uint64(numberArg(args["scanId"], 0))
+		status, err := r.Hub.CancelScan(scanID)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return ok(map[string]any{"scan": statusToMap(status)})
 
 	case "file.select":
 		return r.SelectFileOrFolder(false)

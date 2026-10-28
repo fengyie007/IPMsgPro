@@ -87,8 +87,12 @@ type Hub struct {
 	db   *store.Database
 
 	files *filetransfer.Transfers
+	scan  *scanner
 
 	localID string
+	localIP string
+
+	stopped atomic.Bool
 
 	mu      sync.Mutex
 	users   map[string]*User
@@ -111,6 +115,7 @@ type Hub struct {
 	MessageFailed     func(peerKey, messageID, reason string)
 	MessageReceived   func(ReceivedEvent)
 	FileEvent         func(event string, payload any)
+	ScanEvent         ScanEvent
 	ImageFailed       func(peerID, imageID, reason string)
 	ImageReceived     func(ReceivedEvent, media.ImageMetadata)
 	ImageSendProgress func(messageID, target string, progress int, stage string, image media.ImageMetadata)
@@ -139,6 +144,7 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 		users:      map[string]*User{},
 		unread:     map[string]int{},
 		pending:    map[uint32]*pendingSend{},
+		scan:       newScanner(),
 	}
 	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
 	h.imageJobs = make(chan imageJob, 4)
@@ -155,6 +161,10 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 		return nil, err
 	}
 	h.conn = conn
+	// 请求端口为 0 时记录实际绑定端口（本地跳过判断依赖它）。
+	if h.port == 0 {
+		h.port = uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+	}
 	return h, nil
 }
 
@@ -179,6 +189,11 @@ func (h *Hub) AttachDatabase(db *store.Database, localID string) {
 	h.db = db
 	h.localID = localID
 }
+
+// SetLocalIP 记录本机出口 IP（扫描跳过自身用）。
+func (h *Hub) SetLocalIP(ip string) { h.localIP = ip }
+
+func (h *Hub) localIPString() string { return h.localIP }
 
 // SetProfile 热更新对外资料；wireVer 随头像编号刷新，下个报文生效。
 func (h *Hub) SetProfile(nick string, group string, avatar int) {
@@ -209,6 +224,8 @@ func (h *Hub) LocalID() string {
 }
 
 func (h *Hub) Close() {
+	h.stopped.Store(true)
+	h.ShutdownScan()
 	if h.conn != nil {
 		h.conn.Close()
 	}
@@ -517,11 +534,13 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 	switch mode {
 	case ipmsg.CmdBrEntry:
 		h.upsertUser(key, pkt, src)
+		h.scanResponse(src)
 		if _, err := h.buildWireAndSend(src, ipmsg.CmdAnsEntry, h.Nick(), &h.prof.Load().group); err != nil {
 			log.Printf("ANSENTRY 发送失败: %v", err)
 		}
 	case ipmsg.CmdAnsEntry:
 		h.upsertUser(key, pkt, src)
+		h.scanResponse(src)
 	case ipmsg.CmdBrExit:
 		h.mu.Lock()
 		if u, ok := h.users[key]; ok {
