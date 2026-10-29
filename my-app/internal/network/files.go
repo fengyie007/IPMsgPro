@@ -70,7 +70,7 @@ func (h *Hub) UserByID(id string) *User {
 // peerOf 把网络用户转成文件引擎的对端视图。
 func (h *Hub) peerOf(u *User) filetransfer.Peer {
 	return filetransfer.Peer{
-		ID: u.ID, Key: u.Key, Nick: u.Nick, Host: u.Host,
+		ID: u.ID, Key: u.Key, Nick: u.Nick, UserName: u.UserName, Host: u.Host,
 		Group: u.Group, Addr: u.Addr, Port: u.Port, Online: u.Online,
 	}
 }

@@ -144,9 +144,9 @@ func newEnginePair(t *testing.T, localNick string) *enginePair {
 	p := &enginePair{
 		rootA: tempA,
 		rootB: tempB,
-		peerA: Peer{ID: fmt.Sprintf("alice@h1#127.0.0.1:%d", portA), Nick: "alice", Host: "h1",
+		peerA: Peer{ID: fmt.Sprintf("alice@h1#127.0.0.1:%d", portA), Nick: "alice", UserName: "alice", Host: "h1",
 			Addr: "127.0.0.1", Port: portA, Online: true, Key: "alice-key"},
-		peerB: Peer{ID: fmt.Sprintf("%s@h2#127.0.0.1:%d", localNick, portB), Nick: localNick, Host: "h2",
+		peerB: Peer{ID: fmt.Sprintf("%s@h2#127.0.0.1:%d", localNick, portB), Nick: localNick, UserName: localNick, Host: "h2",
 			Addr: "127.0.0.1", Port: portB, Online: true, Key: "bob-key"},
 	}
 	var err error

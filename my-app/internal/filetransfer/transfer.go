@@ -31,14 +31,15 @@ import (
 // Peer 是文件任务里对端的最小视图（JSON 字段与前端 User 对齐，
 // message.received/file.updated 事件直接序列化）。
 type Peer struct {
-	ID     string `json:"id"`
-	Key    string `json:"key"`
-	Nick   string `json:"nickname"`
-	Host   string `json:"hostname"`
-	Group  string `json:"group"`
-	Addr   string `json:"ip"`
-	Port   int    `json:"port"`
-	Online bool   `json:"online"`
+	ID       string `json:"id"`
+	Key      string `json:"key"`
+	Nick     string `json:"nickname"`
+	UserName string `json:"username"` // 协议 user 字段，来源校验用它（昵称可改，登录名是身份）
+	Host     string `json:"hostname"`
+	Group    string `json:"group"`
+	Addr     string `json:"ip"`
+	Port     int    `json:"port"`
+	Online   bool   `json:"online"`
 }
 
 // Link 是 Hub 提供的 UDP/包号能力，避免与 network 包互相依赖。
@@ -544,7 +545,7 @@ func (m *Transfers) Receipt(pkt ipmsg.Packet, addr *net.UDPAddr) {
 	}
 	for _, t := range m.list() {
 		if t.source == nil || t.packet != uint32(number) ||
-			t.peer.Nick != pkt.Username || t.peer.Host != pkt.Hostname {
+			t.peer.UserName != pkt.Username || t.peer.Host != pkt.Hostname {
 			continue
 		}
 		peerAddr, err := m.address(&t.peer)
@@ -1749,7 +1750,7 @@ func (m *Transfers) serve(conn net.Conn, address net.Addr) error {
 			continue
 		}
 		if candidate.peer.Addr != remoteIP(address) ||
-			candidate.peer.Nick != pkt.Username || candidate.peer.Host != pkt.Hostname {
+			candidate.peer.UserName != pkt.Username || candidate.peer.Host != pkt.Hostname {
 			continue
 		}
 		t = candidate

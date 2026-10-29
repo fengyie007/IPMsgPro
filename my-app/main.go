@@ -17,7 +17,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -39,6 +42,9 @@ var (
 	hub     *network.Hub
 	tray    *mygo.Tray
 	backend *app.Runtime
+	// exiting 为真时放行窗口关闭：mygo 的 App.Quit 会依次询问各窗口的
+	// OnClose，若主窗口仍无条件 PreventDefault，整个退出流程会被取消。
+	exiting atomic.Bool
 )
 
 // Backend 是暴露给前端的绑定：统一命令分发（对应 Rust 的 ipmsg_command）。
@@ -53,7 +59,7 @@ func resolveDataDir(port uint16) string {
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatal(err)
+			fatal("定位用户目录失败: %v", err)
 		}
 		base = filepath.Join(home, "AppData", "Local")
 	}
@@ -120,37 +126,50 @@ func runBlink(win *mygo.Window, tray *mygo.Tray) {
 }
 
 func main() {
+	// 打包后没有控制台：任何 panic 都要落日志并弹框，否则表现为“双击没反应”。
+	defer func() {
+		if r := recover(); r != nil {
+			fatal("程序异常退出: %v\n%s", r, debug.Stack())
+		}
+	}()
+
 	port := flag.Uint("port", ipmsg.DefaultPort, "UDP 端口（默认 2425，与飞秋一致）")
 	name := flag.String("name", "迅秋Go", "对外昵称（可被设置覆盖）")
 	group := flag.String("group", "", "分组名")
 	flag.Parse()
 
 	dataDir := resolveDataDir(uint16(*port))
+	setupLog(dataDir)
+	exePath, _ := os.Executable()
+	log.Printf("启动: version=%s port=%d arch=%s exe=%s", appVersion, *port, runtime.GOARCH, exePath)
+	if err := requireWebView(); err != nil {
+		fatal("%v", err)
+	}
 	// 存储管理：bootstrap 记录活动数据集；迁移只发生在启动时机（对拍 storage.rs）。
 	var storageErr string
 	boot, err := storage.Open(dataDir, uint16(*port))
 	if err != nil {
-		log.Fatalf("解析数据目录失败: %v", err)
+		fatal("解析数据目录失败: %v", err)
 	}
 	dataDir = boot.Active
 	storageErr = boot.OpenError()
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Fatalf("创建数据目录失败: %v", err)
+		fatal("创建数据目录失败: %v", err)
 	}
 	db, err := store.Open(filepath.Join(dataDir, "ipmsg.db"))
 	if err != nil {
-		log.Fatalf("打开数据库失败: %v", err)
+		fatal("打开数据库失败: %v\n（打包运行时 mygo-sqlite3.dll 必须与 exe 在同一目录）", err)
 	}
 	defer db.Close()
 	configStore, err := store.OpenConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
-		log.Fatalf("打开配置失败: %v", err)
+		fatal("打开配置失败: %v", err)
 	}
 
 	hostname, _ := os.Hostname()
 	hub, err = network.NewHub(uint16(*port), *name, *group, "mygo@"+hostname)
 	if err != nil {
-		log.Fatal(err)
+		fatal("启动网络失败: %v", err)
 	}
 	defer hub.Close()
 	hub.AttachDatabase(db, "local@"+hostname)
@@ -160,12 +179,12 @@ func main() {
 	if downloads == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatalf("定位接收目录失败: %v", err)
+			fatal("定位接收目录失败: %v", err)
 		}
 		downloads = home
 	}
 	if err := hub.StartFiles(filepath.Join(downloads, "Downloads", "SpeedIpMsgGo")); err != nil {
-		log.Fatalf("启动文件服务失败: %v", err)
+		fatal("启动文件服务失败: %v", err)
 	}
 
 	backend = app.New(hub, db, configStore, appVersion, dataDir)
@@ -178,7 +197,7 @@ func main() {
 	// 必须在窗口创建前注册。
 	assetStore, err := media.NewAssetStore(filepath.Join(dataDir, "images"))
 	if err != nil {
-		log.Fatalf("初始化图片目录失败: %v", err)
+		fatal("初始化图片目录失败: %v", err)
 	}
 	hub.AttachAssets(assetStore)
 	mygo.Protocol.HandleFunc("ipmsg-image", func(w http.ResponseWriter, req *http.Request) {
@@ -205,6 +224,9 @@ func main() {
 
 	log.Printf("迅秋 MyGo 启动: port=%d dataDir=%s wire=%s", hub.Port(), dataDir, hub.WireVersion())
 
+	// 任何退出入口（含系统会话结束）都先置位，否则主窗口的“关闭即隐藏”
+	// 逻辑会取消整个退出流程。
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { exiting.Store(true) })
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:  "迅秋 (MyGo)",
@@ -212,8 +234,16 @@ func main() {
 			Height: 680,
 			URL:    "/",
 		})
+		if win == nil {
+			fatal("创建主窗口失败：WebView2 运行时不可用或初始化失败，详见日志")
+		}
 		backend.SetMainWindow(win)
 		win.OnClose(func(e *mygo.CloseEvent) {
+			// mygo 的 App.Quit 会依次关闭窗口并询问 OnClose；无条件
+			// PreventDefault 会取消整个退出流程。退出中放行关闭。
+			if exiting.Load() {
+				return
+			}
 			e.PreventDefault()
 			win.Hide()
 		})
@@ -230,12 +260,18 @@ func main() {
 				{Label: "打开主窗口", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show() }},
 				mygo.Separator(),
 				{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) {
-					if transfers, err := hub.Files(); err == nil {
-						transfers.Shutdown()
-					}
-					hub.AnnounceExit()
-					time.Sleep(100 * time.Millisecond)
-					mygo.App.Quit()
+					exiting.Store(true)
+					// 关闭传输/提示音要等后台工作线程，最多约 2 秒；放到后台执行，
+					// 避免阻塞托盘菜单所在的消息循环。
+					go func() {
+						if transfers, err := hub.Files(); err == nil {
+							transfers.Shutdown()
+						}
+						backend.ShutdownNotification()
+						hub.AnnounceExit()
+						time.Sleep(100 * time.Millisecond)
+						mygo.App.Quit()
+					}()
 				}},
 			}),
 		})
@@ -255,6 +291,6 @@ func main() {
 	})
 
 	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
+		fatal("运行失败: %v", err)
 	}
 }

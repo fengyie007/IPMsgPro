@@ -379,13 +379,13 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 **验证**：`张三→zs`、`郭敬明→gjm`、`吕良→ll`、`曾志伟→zzw`、`覃辉→qh`、`单田芳→stf`、`长沙→cs`、`Zhang San→zhang san`；`npx tsc -b` 与 `npm run tauri -- build` 通过。已知限制：非姓氏多音字按常见读音（`重庆→zq`），且只支持首字母不匹配全拼。
 
-## MyGo 框架评估（未迁移）
+## MyGo 框架评估与迁移
 
-用户要求考察 https://mygo.egoist.dev/ 并形成记录，完整评估稿在父目录 `MyGo框架评估.md`；随后按"低成本试水"路径落地最小闭环 demo，`my-app/` 已随本轮提交版本控制。
+用户要求考察 https://mygo.egoist.dev/ 并形成记录，完整评估稿在父目录 `MyGo框架评估.md`；随后按"低成本试水"路径落地最小闭环 demo，并演进为正式迁移工程 `my-app/`。迁移阶段、风险与验收清单见父目录 `MyGo迁移计划.md`。
 
 - 结论：痛点若是构建链（VS Build Tools、Rust 工具链），MyGo 收益直接（纯 Go 无 cgo、可交叉编译、7 MB 级二进制、托盘 `SetIcon` 可直接平移本次闪烁方案）；但迁移本质是重写 `ipmsg-core`（Rust → Go），常规功能迭代阶段不建议中途迁移。
 - 现有 API 映射已逐项核对：剪贴板图片走 WebView2 粘贴事件 + raw IPC（`image.rs:11`）；拖拽用 `DragDropEvent::Drop { paths }`（`lib.rs:137`）→ `files::dropped`；文件/图片选择用 `tauri-plugin-dialog`；截图为 GDI `BitBlt` + `DwmFlush`（`capture/platform.rs`），MyGo 无截图 API，是最大移植缺口。
-- 迁移注意：`import_clipboard_image` 的 raw body 要改为 JSON 参数（base64 或临时文件）；自定义协议 origin 由 `http://ipmsg.localhost` 变为 `mygo.localhost` 形态，前端 IndexedDB 配置需迁移；SQLite 依赖官方插件是否满足现有查询仍需验证。
+- 迁移注意：`import_clipboard_image` 的 raw body 要改为 JSON 参数（base64 或临时文件）；自定义协议 origin 由 `http://ipmsg.localhost` 变为 `mygo.localhost` 形态——**已规避**，配置随 M1 改存 Go 侧 JSON，前端不再用 IndexedDB；SQLite 插件兼容性已在 M1 对拍通过。
 
 ### 最小闭环 demo 已落地（2026-10-28）
 
@@ -393,12 +393,12 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 - 结构：`ipmsg.go`（报文编解码 + `feiqCompatVersion`）、`network.go`（Hub：发现/收发/未读/回执，用户以来源IP:端口为键）、`main.go`（窗口/托盘/闪烁/`mygo.Bind`）、`src/main.ts`（聊天页面）；托盘 API 实测为 `mygo.NewTray` + `Tray.SetIcon`，与评估稿预期一致。
 - 验证：`go test` 通过（协议单测 + 双 Hub 回环"发现→文本→回执→已读"集成测试）、`go vet` 干净、`tsc --noEmit` 通过、`npm run build` 产出 `my-app.exe` 9.7 MB + NSIS 安装包 3.3 MB——证实"纯 Go 无 cgo、7 MB 级二进制、交叉编译"的评估结论；开发链路仅需 Go + Node，无需 MSVC/Rust 工具链。
-- 评估稿第 6 节"尚未验证"三项（WebView2 粘贴图片 File 对象、SQLite 插件兼容性、实际内存/多网卡行为）本 demo 未覆盖，仍待验证；demo 与真实飞秋的局域网互通由用户实机验收。
+- 评估稿第 6 节"尚未验证"三项：SQLite 插件兼容性与 WebView2 粘贴 `File` 对象已分别在 M1、M2 验证通过；实际内存占用与多网卡行为仍未测（仅实测包体：exe 13.7 MB、NSIS 5.4 MB）。
 - 完整迁移文档与分阶段计划见父目录 `MyGo迁移计划.md`（功能映射、M1–M6 阶段划分、风险登记与决策点）。
 
 ### MyGo 迁移进度（2026-10-29，见 MyGo迁移计划.md §9）
 
-用户确认除历史数据不迁移外按方案全部执行，并授权每阶段完成后自动进入下一阶段。进度：M0 最小闭环 demo ✅；M1 文本/发现/持久化/命令分发 ✅；M2 图片收发（LZW/DIB/分片/资产库/发图队列）✅；M3 截图标注（GDI 捕获 + 编辑器窗口）✅；M4 文件传输 ✅（协议层 + 传输引擎 + 断点续传/并行分块/目录流 + Hub 接线 + 拖放/选择器命令，回环集成测试与打包 exe 黑盒验证通过）；M5 ✅（IP 段扫描 + 提示音 MCI 播放 + 通知闸门；系统通知按预定降级预案降为应用内提示，能力位关闭）；M6 ✅（窗口振动 0xD1、头像/MAC 解析、存储目录管理与重启迁移；旧版目录兼容导入按"历史数据不迁移"决策不移植；自动更新维持可选项）。**全部 M0–M6 阶段代码完成，M1–M6 实机验收（与真实飞秋互通）待用户执行**。
+用户确认除历史数据不迁移外按方案全部执行，并授权每阶段完成后自动进入下一阶段。进度：M0 最小闭环 demo ✅；M1 文本/发现/持久化/命令分发 ✅；M2 图片收发（LZW/DIB/分片/资产库/发图队列）✅；M3 截图标注（GDI 捕获 + 编辑器窗口）✅；M4 文件传输 ✅（协议层 + 传输引擎 + 断点续传/并行分块/目录流 + Hub 接线 + 拖放/选择器命令，回环集成测试与打包 exe 黑盒验证通过）；M5 ✅（IP 段扫描 + 提示音 MCI 播放 + 通知闸门；系统通知按预定降级预案降为应用内提示，能力位关闭）；M6 ✅（窗口振动 0xD1、头像/MAC 解析、存储目录管理与重启迁移；旧版目录兼容导入按"历史数据不迁移"决策不移植；自动更新维持可选项）。**全部 M0–M6 阶段代码完成，M1–M6 实机验收（与真实飞秋互通）待用户执行**。后续提交 `ee152bf` 补 app 层命令分发回归测试（`storage.*` 接线）；全量 `go test ./...` 8 个包全绿、`go vet` 干净，产物 exe 13.7 MB + NSIS 5.4 MB。M6 后按实机问题加固三处：协议 `username` 字段改用稳定登录名（对拍 Rust `local_names`，修"改名后被当成两个人"）、扫描残留写超时污染共享 UDP 连接（修"扫描后发消息必报 `i/o timeout`"）、启动失败可见化（`fatal()` 落日志 + MessageBoxW + WebView2 运行时检查）。Rust 版仍是当前发布形态；MyGo 版剩余实机验收与发布决策（见计划 §10）。
 
 ## 下一步验收
 

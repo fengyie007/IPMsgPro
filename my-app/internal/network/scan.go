@@ -6,7 +6,6 @@ package network
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -256,38 +255,30 @@ func (h *Hub) scanWorker(id uint64, plan store.ScanPlan, cancel chan struct{}) {
 				h.finishScan(id, scanCancelled, "")
 				return
 			}
-			localIP := h.localIPString()
-			skip := int(h.port) == int(plan.Port) && localIP == ipv4Text(ip)
-			{
-				h.scan.mu.Lock()
-				if h.scan.data.status.ScanID != id {
-					h.scan.mu.Unlock()
-					return
-				}
-				h.scan.data.status.Current++
-				h.scan.data.status.Revision++
-				if skip {
-					h.scan.data.status.Skipped++
-				} else {
-					h.scan.data.probed[ip] = true
-				}
+			// 刻意不跳过本机（C++/Rust 版会跳过）：探测本机地址能顺带验证
+			// 本机回环是否正常；自身回环报文由接收侧 isSelf 丢弃，不会变成联系人。
+			h.scan.mu.Lock()
+			if h.scan.data.status.ScanID != id {
 				h.scan.mu.Unlock()
+				return
 			}
-			if !skip {
-				wire, err := h.buildWire(ipmsg.CmdBrEntry|ipmsg.OptCapUTF8, h.nextPktNo.Add(1), h.Nick(), &h.prof.Load().group)
-				if err != nil {
-					h.finishScan(id, scanFailed, err.Error())
-					return
-				}
-				target := &net.UDPAddr{IP: net.IPv4(byte(ip>>24), byte(ip>>16), byte(ip>>8), byte(ip)), Port: int(plan.Port)}
-				if err := h.sendProbe(target, wire, cancel); err != nil {
-					h.scan.mu.Lock()
-					h.scan.data.status.FailedSends++
-					text := err.Error()
-					h.scan.data.status.Error = &text
-					h.scan.data.status.Revision++
-					h.scan.mu.Unlock()
-				}
+			h.scan.data.status.Current++
+			h.scan.data.status.Revision++
+			h.scan.data.probed[ip] = true
+			h.scan.mu.Unlock()
+			wire, err := h.buildWire(ipmsg.CmdBrEntry|ipmsg.OptCapUTF8, h.nextPktNo.Add(1), h.Nick(), &h.prof.Load().group)
+			if err != nil {
+				h.finishScan(id, scanFailed, err.Error())
+				return
+			}
+			target := &net.UDPAddr{IP: net.IPv4(byte(ip>>24), byte(ip>>16), byte(ip>>8), byte(ip)), Port: int(plan.Port)}
+			if err := h.sendProbe(target, wire, cancel); err != nil {
+				h.scan.mu.Lock()
+				h.scan.data.status.FailedSends++
+				text := err.Error()
+				h.scan.data.status.Error = &text
+				h.scan.data.status.Revision++
+				h.scan.mu.Unlock()
 			}
 			if time.Since(lastEvent) >= 100*time.Millisecond {
 				h.scanEvent(false)
@@ -331,7 +322,7 @@ func (h *Hub) scanWorker(id uint64, plan store.ScanPlan, cancel chan struct{}) {
 	case <-time.After(time.Second):
 	}
 	status := h.ScanStatus()
-	failed := status.FailedSends > 0 && status.FailedSends+status.Skipped == status.Current
+	failed := status.FailedSends > 0 && status.FailedSends == status.Current
 	phase := scanCompleted
 	if failed {
 		phase = scanFailed
@@ -339,12 +330,14 @@ func (h *Hub) scanWorker(id uint64, plan store.ScanPlan, cancel chan struct{}) {
 	h.finishScan(id, phase, "")
 }
 
-// sendProbe 单次 UDP 探测：1 秒写超时，取消随时打断。
+// sendProbe 单次 UDP 探测：1 秒写超时，用完立刻清除。连接与普通发送共用，
+// 残留的过期 deadline 会让之后所有发送报 "write udp4 ... i/o timeout"。
 func (h *Hub) sendProbe(target *net.UDPAddr, wire []byte, cancel chan struct{}) error {
 	done := make(chan error, 1)
 	go func() {
 		_ = h.conn.SetWriteDeadline(time.Now().Add(time.Second))
 		_, err := h.conn.WriteToUDP(wire, target)
+		_ = h.conn.SetWriteDeadline(time.Time{})
 		done <- err
 	}()
 	select {
@@ -391,9 +384,4 @@ func (h *Hub) stopScan(expected *uint64) (ScanStatus, error) {
 	h.waitWorker()
 	h.finishScan(status.ScanID, scanCancelled, "")
 	return h.ScanStatus(), nil
-}
-
-func ipv4Text(ip uint32) string {
-	return strconv.Itoa(int(ip>>24)) + "." + strconv.Itoa(int(ip>>16&0xff)) + "." +
-		strconv.Itoa(int(ip>>8&0xff)) + "." + strconv.Itoa(int(ip&0xff))
 }

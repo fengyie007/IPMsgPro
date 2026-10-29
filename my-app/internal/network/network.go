@@ -30,7 +30,8 @@ import (
 type User struct {
 	ID       string           `json:"id"` // username@hostname#ip:port，作为会话键
 	Key      string           `json:"key"`
-	Nick     string           `json:"nickname"`
+	Nick     string           `json:"nickname"` // 显示名：profile 报文 body
+	UserName string           `json:"username"` // 协议 user 字段（登录名），仅用于身份比对
 	Host     string           `json:"hostname"`
 	Group    string           `json:"group"`
 	Addr     string           `json:"ip"`
@@ -66,6 +67,7 @@ func encodeFor(command uint32, text string) ([]byte, error) {
 
 type profile struct {
 	nick     string
+	login    string // 协议 username 字段：稳定登录名，改名不影响身份（对拍 Rust local_names）
 	group    string
 	avatar   int
 	wireVer  string
@@ -94,7 +96,6 @@ type Hub struct {
 	knocks *knockState
 
 	localID string
-	localIP string
 
 	stopped atomic.Bool
 
@@ -154,8 +155,6 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 	h.nextPktNo.Store(uint32(time.Now().UnixNano()) & 0x3fffffff)
 	h.imageJobs = make(chan imageJob, 4)
 	h.imageSends = map[string]*imageSendJob{}
-	h.prof.Store(&profile{nick: nick, group: group, avatar: 0, wireVer: ipmsg.FeiqCompatVersion(instanceID, port, 0), hostname: host})
-
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: int(port)}
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
@@ -170,7 +169,25 @@ func NewHub(port uint16, nick, group, instanceID string) (*Hub, error) {
 	if h.port == 0 {
 		h.port = uint16(conn.LocalAddr().(*net.UDPAddr).Port)
 	}
+	// 协议 username 字段用稳定登录名，昵称只进 profile 报文 body——改名不能让
+	// 对端把它当成新联系人（对拍 Rust local_names）。
+	h.prof.Store(&profile{nick: nick, login: localLogin(h.port), group: group, avatar: 0,
+		wireVer: ipmsg.FeiqCompatVersion(instanceID, h.port, 0), hostname: host})
 	return h, nil
+}
+
+// localLogin 生成协议 username 字段的稳定登录名（对拍 Rust local_names）：系统账户名，
+// 非默认端口加后缀以区分同机多实例。对端按 username@hostname#ip:port 建联系人，
+// 因此该值必须在改昵称后保持不变。
+func localLogin(port uint16) string {
+	account := os.Getenv("USERNAME")
+	if account == "" {
+		account = "user"
+	}
+	if port == ipmsg.DefaultPort {
+		return account
+	}
+	return fmt.Sprintf("%s-%d", account, port)
 }
 
 // setBroadcast 打开 SO_BROADCAST；Go 的 net 包不会自动设置，直接 WriteToUDP 广播地址会 EACCES。
@@ -195,11 +212,6 @@ func (h *Hub) AttachDatabase(db *store.Database, localID string) {
 	h.localID = localID
 }
 
-// SetLocalIP 记录本机出口 IP（扫描跳过自身用）。
-func (h *Hub) SetLocalIP(ip string) { h.localIP = ip }
-
-func (h *Hub) localIPString() string { return h.localIP }
-
 // SetProfile 热更新对外资料；wireVer 随头像编号刷新，下个报文生效。
 func (h *Hub) SetProfile(nick string, group string, avatar int) {
 	p := *h.prof.Load()
@@ -216,6 +228,7 @@ func (h *Hub) SetProfile(nick string, group string, avatar int) {
 
 func (h *Hub) Port() uint16        { return h.port }
 func (h *Hub) Nick() string        { return h.prof.Load().nick }
+func (h *Hub) Login() string       { return h.prof.Load().login }
 func (h *Hub) Group() string       { return h.prof.Load().group }
 func (h *Hub) Hostname() string    { return h.prof.Load().hostname }
 func (h *Hub) WireVersion() string { return h.prof.Load().wireVer }
@@ -251,7 +264,7 @@ func (h *Hub) buildWire(command uint32, pktNo uint32, body string, extra *string
 	}
 	var data bytes.Buffer
 	fmt.Fprintf(&data, "%s:%d:%s:%s:%d:", p.wireVer, pktNo,
-		gbkOrRaw(command, p.nick), gbkOrRaw(command, p.hostname), command)
+		gbkOrRaw(command, p.login), gbkOrRaw(command, p.hostname), command)
 	data.Write(wireBody)
 	data.WriteByte(0)
 	if extra != nil {
@@ -266,6 +279,9 @@ func (h *Hub) buildWire(command uint32, pktNo uint32, body string, extra *string
 }
 
 func (h *Hub) sendWire(addr *net.UDPAddr, wire []byte) error {
+	// 扫描的探测会给这条共享连接设 1 秒写超时；这里兜底清一次，
+	// 保证任何路径下普通发送都不会撞在过期的 deadline 上。
+	_ = h.conn.SetWriteDeadline(time.Time{})
 	_, err := h.conn.WriteToUDP(wire, addr)
 	return err
 }
@@ -669,15 +685,26 @@ func (h *Hub) upsertUser(key string, pkt ipmsg.Packet, src *net.UDPAddr) {
 		h.users[key] = u
 		changed = true
 	}
-	if u.Nick != pkt.Username || u.Group != pkt.Extra || u.Host != pkt.Hostname || !u.Online {
+	// 飞秋/IPMsg 约定：只有 BR_ENTRY/ANSENTRY（profile 报文）把昵称放在 body、
+	// 分组放在 extra；username 字段是登录名（C++ 版与飞秋这里可能是机器名），
+	// 直接当显示名就会看到机器名。其余报文沿用已记录的昵称。
+	nick, group := u.Nick, u.Group
+	if mode := ipmsg.CommandMode(pkt.Command); mode == ipmsg.CmdBrEntry || mode == ipmsg.CmdAnsEntry || mode == ipmsg.CmdBrAbsence {
+		nick, group = pkt.Body, pkt.Extra
+	}
+	if nick == "" {
+		nick = pkt.Username
+	}
+	if u.Nick != nick || u.Group != group || u.Host != pkt.Hostname || u.UserName != pkt.Username || !u.Online {
 		changed = true
 	}
-	u.Nick = pkt.Username
+	u.Nick = nick
+	u.UserName = pkt.Username
 	u.Host = pkt.Hostname
-	u.Group = pkt.Extra
+	u.Group = group
 	u.Addr = src.IP.String()
 	u.Port = src.Port
-	u.ID = fmt.Sprintf("%s@%s#%s", u.Nick, u.Host, key)
+	u.ID = fmt.Sprintf("%s@%s#%s", u.UserName, u.Host, key)
 	u.Online = true
 	u.LastSeen = time.Now().Unix()
 	// 头像与 MAC 只信版本头；解析失败保留上一次的值（对拍 Rust is_profile 语义）。

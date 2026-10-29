@@ -63,7 +63,7 @@ export default function ScanSettings({ draft, setDraft, disabled, input, onInput
     {status.scanId > 0 && <div className="bg-gray-50 rounded p-3 space-y-2 text-xs text-gray-600" aria-live="polite">
       <div className="flex justify-between"><span>{labels[status.state]}</span><span>{status.current} / {status.total} · {percent}%</span></div>
       <div className="h-1.5 bg-gray-200 rounded overflow-hidden"><div className="h-full bg-primary-500" style={{ width: `${percent}%` }} /></div>
-      <p>响应地址 {status.found} · 发送失败 {status.failedSends} · 跳过本机 {status.skipped}</p>
+      <p>响应地址 {status.found} · 发送失败 {status.failedSends}</p>
       <p className="text-gray-400">当前任务目标端口 {status.port} · 间隔 {status.delayMs} ms</p>
       <p className="text-gray-400 break-all">当前任务范围：{status.ranges.join('，')}</p>
       {status.error && <p className="text-red-500">{status.error}</p>}

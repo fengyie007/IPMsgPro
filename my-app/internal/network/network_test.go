@@ -214,6 +214,47 @@ func TestSetProfileUpdatesWireVersion(t *testing.T) {
 	}
 }
 
+// 改名只改 body 里的昵称，协议 username 字段（对端建联系人的键）必须保持稳定，
+// 否则对端会把同一个人当成两个。对拍 Rust：username=稳定登录名，昵称在 body。
+func TestRenameKeepsWireIdentity(t *testing.T) {
+	h, err := NewHub(0, "旧名", "组A", "inst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if h.Login() == "" || h.Login() == "旧名" {
+		t.Fatalf("登录名应为稳定账户名而非昵称: %q", h.Login())
+	}
+
+	before, err := h.buildWire(ipmsg.CmdBrEntry, 1, h.Nick(), &h.prof.Load().group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetProfile("新名", "组A", 0)
+	after, err := h.buildWire(ipmsg.CmdBrEntry, 2, h.Nick(), &h.prof.Load().group)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parse := func(wire []byte) ipmsg.Packet {
+		pkt, err := ipmsg.ParsePacket(wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkt
+	}
+	oldPkt, newPkt := parse(before), parse(after)
+	if oldPkt.Username != newPkt.Username {
+		t.Fatalf("改名后 username 变了（对端会当成两个人）: %q -> %q", oldPkt.Username, newPkt.Username)
+	}
+	if newPkt.Body != "新名" {
+		t.Fatalf("昵称应随改名更新到 body: %q", newPkt.Body)
+	}
+	if oldPkt.Body != "旧名" {
+		t.Fatalf("改名前 body 应为旧昵称: %q", oldPkt.Body)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

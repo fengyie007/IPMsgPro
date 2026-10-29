@@ -63,7 +63,6 @@ func New(hub *network.Hub, db *store.Database, config *store.ConfigStore, versio
 		Hub: hub, DB: db, Config: config, Version: version, DataDir: dataDir, Port: hub.Port(),
 		shotBudget: make(chan struct{}, 1),
 	}
-	hub.SetLocalIP(r.localIP())
 	// 提示音：内置 MP3 经 MCI 播放；失败只记录，不阻塞主流程。
 	sound, err := notification.New(filepath.Join(dataDir, "sounds"), config.Get().NotificationSound,
 		func(msg string) { r.Emit("notification.sound_failed", map[string]any{"error": msg}) })
@@ -349,7 +348,7 @@ func (r *Runtime) localUser() map[string]any {
 		"success":  true,
 		"id":       r.Hub.LocalID(),
 		"nickname": nick,
-		"username": nick,
+		"username": r.Hub.Login(),
 		"hostname": r.Hub.Hostname(),
 		"group":    cfg.Group,
 		"ip":       r.localIP(),
@@ -379,7 +378,7 @@ func userToFrontend(u network.User, version string) map[string]any {
 		mac = u.MAC
 	}
 	return map[string]any{
-		"id": u.ID, "nickname": u.Nick, "username": u.Nick, "hostname": u.Host,
+		"id": u.ID, "nickname": u.Nick, "username": u.UserName, "hostname": u.Host,
 		"group": u.Group, "ip": u.Addr, "port": u.Port, "status": status,
 		"version": "", "avatar": avatar, "mac": mac,
 	}

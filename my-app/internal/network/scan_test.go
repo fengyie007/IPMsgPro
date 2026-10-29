@@ -47,7 +47,6 @@ func TestScanDiscoversPeerAndCompletes(t *testing.T) {
 	port := localPort(b)
 	log := &scanLog{}
 	a.ScanEvent = log.record
-	a.SetLocalIP("127.0.0.1")
 
 	status, err := a.StartScan(store.ScanOptions{
 		Ranges:  []string{"127.0.0.1-127.0.0.3"},
@@ -81,10 +80,9 @@ func TestScanDiscoversPeerAndCompletes(t *testing.T) {
 	}
 }
 
-func TestScanSelfIsSkippedAndCancelIsMutex(t *testing.T) {
+func TestScanCancelIsMutex(t *testing.T) {
 	a := newScanHub(t, "Alice")
 	port := localPort(a)
-	a.SetLocalIP("127.0.0.1")
 
 	status, err := a.StartScan(store.ScanOptions{
 		Ranges:  []string{"127.0.0.1-127.0.0.9"},
@@ -133,11 +131,10 @@ func TestScanInvalidRangeIsRejected(t *testing.T) {
 	}
 }
 
-func TestScanSkipSelfCountsSkipped(t *testing.T) {
+// 扫描不再跳过本机：本机地址照常探测，自身报文由接收侧 isSelf 丢弃。
+func TestScanProbesOwnAddress(t *testing.T) {
 	a := newScanHub(t, "Alice")
 	port := localPort(a)
-	a.SetLocalIP("127.0.0.1")
-	// 全部是自身：范围仅 127.0.0.1，探测端口与本机相同 → skipped。
 	status, err := a.StartScan(store.ScanOptions{
 		Ranges: []string{"127.0.0.1"}, Port: uint16(port), DelayMs: 10,
 	}, false)
@@ -152,7 +149,13 @@ func TestScanSkipSelfCountsSkipped(t *testing.T) {
 	if final.ScanID != status.ScanID {
 		t.Fatalf("scanId 应保持: %+v", final)
 	}
-	if final.Skipped != 1 || final.Current != 1 {
-		t.Fatalf("自身应记 skipped: %+v", final)
+	if final.Current != 1 || final.Skipped != 0 || final.FailedSends != 0 {
+		t.Fatalf("本机应正常探测: %+v", final)
+	}
+	if final.State != "completed" {
+		t.Fatalf("扫描应完成: %+v", final)
+	}
+	if n := len(a.ListUsers()); n != 0 {
+		t.Fatalf("本机回环报文不应变成联系人，实际 %d 个", n)
 	}
 }

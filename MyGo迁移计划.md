@@ -3,6 +3,7 @@
 > 编写日期：2026-10-29
 > 前置文档：[MyGo框架评估.md](./MyGo框架评估.md)（可行性评估）、[tauri-rust/MIGRATION.md](./tauri-rust/MIGRATION.md)（Rust 版全部功能与验收记录）
 > 已落地验证：`my-app/` 最小闭环 demo（提交 `6e4633c`）：UDP 发现（飞秋兼容头）→ 联系人列表 → 文本收发（GBK + RECVMSG 回执）→ 未读托盘闪烁，`go test` 回环集成测试通过，产物 9.7 MB exe。
+> **当前状态（2026-10-29）**：M0–M6 阶段代码全部完成（最新提交 `ee152bf`）；全量 `go test ./...` 8 个包全绿、`go vet` 干净；产物 exe 13.7 MB + NSIS 5.4 MB。M6 后又修了三处实机问题（身份语义对齐 Rust、扫描写超时、启动失败可见化），见 §9、§10。剩余为 M1–M6 实机验收与发布决策，见 §10。
 
 ## 1. 目标
 
@@ -20,6 +21,7 @@
 | `src-tauri`（平台层） | ≈ 5.5k 行 | storage 885+584 / capture 663+217 / system_notification 480+282 / runtime 473 / notification 346 / commands 320 / image 191 / files 129 / platform 172 |
 | 前端 `src/` | ≈ 4.6k 行 | 21 组件 + 7 store + 6 services + 10 utils；IPC 层 `services/bridge.ts` 294 行是唯一需要重写的部分 |
 | 测试基线 | — | 核心单测+集成 135 项、桌面 43 项、前端 78 组 |
+| **Go 版实际（2026-10-29）** | ≈ 10.4k 行 + 4.1k 行测试 | `internal/` 9 个包 63 个 `.go` 文件；`main.go` 为 MyGo 框架层；前端沿用 Rust 版 `src/` 整树 |
 
 ### 2.2 功能清单（全部需迁移）
 
@@ -73,6 +75,8 @@
 | 5 | 单人维护框架（v0.7.1）、API 演进 | 中 | 锁定 mygo 版本；核心包不依赖 mygo，框架层薄 |
 | 6 | IndexedDB 配置 origin 变化 | 低 | 一次性导入脚本或引导用户重配（配置项少，成本低） |
 | 7 | 与 Rust 版同机共存：同名同端口冲突 | 低 | 迁移期 MyGo 版用独立名称/端口开发，验收后再定发布形态 |
+
+**风险现状（2026-10-29 收尾时）**：#1 已按预案降级（应用内提示，能力位 `systemNotifications:false`）；#2 已对拍通过并记录插件限制（手动 `BEGIN/COMMIT` 禁用，条件写入走 `Transaction`）；#3 已验证 WebView2 透传 `clipboardData.files`（改传 base64）；#4 代码完成，多屏混合 DPI 待实机验收；#6 已消除（配置移到 Go 侧 JSON，前端无 IndexedDB）；#7 已隔离（`%LOCALAPPDATA%\SpeedIpMsgGo`，非默认端口追加 `_<端口>`）。
 
 ## 6. 分阶段计划
 
@@ -153,7 +157,7 @@
 | 2026-10-29 | M4-2 | 传输引擎移植（transfer.rs 795 行 + streams.rs 686 行 + directory.rs + storage.rs）：TCP 与 UDP 同端口、来源身份五元组校验、发送邀请重试（2s×3）与 600s 过期、接受→下载队列（4 并发）、≥4MiB 并行分块按序回填、断点续传（file_receives 检查点 + 重启恢复）、暂停/取消/拒绝 + RELEASEFILES 通知、发送端 60s 空闲判失败、不覆盖发布（MoveFileExW flags=0）/重名绕行、目录流（4096 项/32 层/GBK 头/防穿越）；Go 结构差异：tokio→goroutine、watch→可重置取消通道、RAII Busy→显式 defer；store 层补 `FileMetadata`/message_files/file_receives 读写与 kind==2 历史水合；回环集成测试 5 项（普通/空文件/5MiB 并行/断点续传/拒绝通知）全绿 | ✅ |
 | 2026-10-29 | M4-3 | 应用接线：Hub 实现 `filetransfer.Link`（复用 UDP socket/包号/线缆编码），`SENDMSG|FILEATTACH` 路由进引擎（服务未启动时占位文本且不回执）、RECVMSG/RELEASEFILES 先给引擎认领；`file.select/select_folder`（Dialog.Open，与图片选择共用互斥）/`send`/`discard`/`accept`/`resume`/`pause`/`reject`/`cancel`/`open_folder`（explorer /select + CREATE_NO_WINDOW）命令；`file.updated`/`message.received`/`file.receive_failed` 事件（fromUser 换前端 User 形状）；`Window.OnFileDrop` 拖放→当前会话预览（≤8 项，file.selected 事件）；接收目录 `<Downloads>/SpeedIpMsgGo`；退出前引擎 Shutdown；能力位 files 放开。打包 exe 黑盒验证：fakepeer 发现+文本回执通过、文件邀请落库（camelCase 元数据、incoming=true、RECVMSG 确认） | ✅ |
 | — | M4 验收 | 实机验收：与真实飞秋/双实例互发文件与文件夹（大文件并行、暂停续传、拒绝、重名发布核对） | ⏳ 待用户验收（已授权继续 M5） |
-| 2026-10-29 | M5-1 | IP 段扫描移植（scan.rs + network/scan.rs）：`internal/network/scan.go` 状态机（idle/running/waiting/cancelling/completed/cancelled/failed）、范围合并与 65536 上限（复用 store 层 ParseRange/Plan）、探测 1s 写超时、进度事件 100ms 限频（network.scan_progress/scan_complete）、scanId 互斥 + skipExisting（启动期自动扫描）、取消随时打断、自身探测记 skipped、退出 ShutdownScan；`config.loaded` 收尾触发 AnnounceOnStartup 公告 + ScanOnStartup 自动扫描（对拍 Rust ui_ready）；`network.scan_range/cancel/status` 命令、能力位 scan 放开；Hub 端口 0 时回填实际绑定端口。集成测试 4 项（发现对端完成/自身跳过+取消互斥/非法范围/自跳计数）全绿 | ✅ |
+| 2026-10-29 | M5-1 | IP 段扫描移植（scan.rs + network/scan.rs）：`internal/network/scan.go` 状态机（idle/running/waiting/cancelling/completed/cancelled/failed）、范围合并与 65536 上限（复用 store 层 ParseRange/Plan）、探测 1s 写超时、进度事件 100ms 限频（network.scan_progress/scan_complete）、scanId 互斥 + skipExisting（启动期自动扫描）、取消随时打断、本机地址照常探测（偏离 C++/Rust：**不跳过本机**；自身回环由接收侧 isSelf 过滤）、退出 ShutdownScan；`config.loaded` 收尾触发 AnnounceOnStartup 公告 + ScanOnStartup 自动扫描（对拍 Rust ui_ready）；`network.scan_range/cancel/status` 命令、能力位 scan 放开；Hub 端口 0 时回填实际绑定端口。集成测试 4 项（发现对端完成/取消互斥/非法范围/本机照常探测且不成联系人）全绿 | ✅ |
 | 2026-10-29 | M5-2 | 提示音移植（notification.rs + native.rs）：`internal/notification`（内置 notification.mp3 资源、临时缓存文件唯一不覆盖、MCI mciSendStringW/mciGetErrorStringW 播放、15s 时长上限）；策略闸门 NotificationGate（去重 256 条 5 分钟 TTL、1s 冷却、正在阅读会话静音且登记、事件/类型/来源过滤）；单一有界播放工作线程（epoch 作废在途请求、试听 3s 超时只作废当代、队列 1、错误 60s 节流上报 notification.sound_failed）；对拍测试 11 项全绿；`notification.test_sound` 试听命令、config 同步 SetEnabled、message.received 三处入口（文本/图片/文件）接闸门；能力位 notificationSound 放开 | ✅ |
 | 2026-10-29 | M5-3 | 系统通知：**按迁移决策 4（用户已确认的降级预案）降级**——WinRT Toast（AUMID 快捷方式注册 + ToastNotifier + 激活回调）需纯 Go 手写整套 COM/WinRT 接口，成本超预期；已移植可移植部分（Notice 文案构造：默认不泄露内容、预览开关、控制字符过滤、8 类文案，2 项对拍测试），能力位 `systemNotifications:false`，前端设置页自动灰置并显示说明（前端已有该降级 UI），`notification.test_system` 返回明确错误；后续如需真系统通知只需补 `native_windows.go` 后端 | ✅（降级） |
 | 2026-10-29 | M5 收尾 | 全量 `go test ./...` 全绿；打包 exe 黑盒验证：启动正常（提示音服务初始化）、fakepeer 发现+文本回执通过 | ✅ |
@@ -162,6 +166,12 @@
 | 2026-10-29 | M6-3 | 存储目录管理（storage.rs + layout.rs 对拍）：`internal/storage`（bootstrap 定位文件 data-location.json、数据集身份标记 .speedipmsg-dataset.json、写探针/权限校验、copyTree 20 万项/64 层上限拒绝链接并校验完整性、createDataset/migrate/freshDefault、重启时机迁移 pending 选择 Apply/Cancel、失效自动回退新默认位置并备份原定位记录）；storage.info/select/default/apply/cancel 命令、app.info 增加 storageError；**刻意不移植**旧版目录兼容导入（open_default/open_compatible）——"历史数据不迁移"决策的直接推论。对拍测试 5 项（bootstrap 直用/标记校验与回退/重启迁移/非法目标/命名）；修掉一处 Rust drop 语义差异导致的句柄泄漏（os.Open 未 Close 锁住标记文件）。M6 其余项（表情数据、拼音、托盘细节）随前端整树迁移已可用 | ✅ |
 | 2026-10-29 | M6 收尾 | 全量 `go test ./...` 8 个包全绿、`go vet` 干净；自动更新维持 M6 可选项待用户决定 | ✅ |
 | — | M6 验收 | 实机验收：振动特效与冷却提示、联系人头像/MAC 展示、存储设置页切换数据目录（重启生效、失败回退） | ⏳ 待用户验收 |
+| 2026-10-29 | M6 回归 | app 层命令分发回归测试：`storage.*` 已接线（含默认位置拒绝语义），提交 `ee152bf` | ✅ |
+| 2026-10-29 | 收尾状态 | 全部 M0–M6 阶段代码完成；全量 `go test ./...` 8 个包全绿、`go vet` 干净；产物 exe 13.7 MB + NSIS 5.4 MB | ✅ |
+| 2026-10-29 | 行为调整 | **扫描不再跳过本机**（按用户要求，刻意偏离 C++/Rust 版 `MsgMng::StartScan`/`scan_worker` 的"跳过自身 IP"）：去掉 `scanWorker` 的 `skip` 分支与 `localIP` 记账（`Hub.localIP`、`SetLocalIP`、`ipv4Text`、`Runtime.New` 里的注入一并删除）；自身回环报文仍由接收侧 `isSelf` 丢弃，不会把自己加进联系人。`ScanStatus.skipped` 字段保留（恒 0）以维持与 Rust 版前端类型/校验的一致，前端进度行不再显示"跳过本机"。`scan_test.go` 的跳过用例改为 `TestScanProbesOwnAddress`（断言 Current=1、Skipped=0、联系人仍为 0） | ✅ |
+| 2026-10-29 | 缺陷修复 | **改名后被当成两个人**：协议 `username` 字段旧实现塞的是**昵称**（`buildWire`/图片报文都取 `p.nick`/`h.Nick()`）。对端（含 Rust 版）按 `endpoint_id(packet.username, hostname, addr)` 建联系人，改名即换身份 → 通讯录里多出一个人。修法：`profile` 新增 `login`（稳定登录名，`localLogin(port)` = 系统 `USERNAME`，非默认端口加 `-<port>`，**对拍 Rust `local_names`**），`buildWire`/`buildImageWire`/图片引用报文改用它，昵称只留在 profile 报文 body；`localUser` 的 `username` 输出稳定登录名。新增回归测试 `TestRenameKeepsWireIdentity`（改名前后 `username` 不变、body 跟着变；已确认改前会复现 `旧名 -> 新名`） | ✅ |
+| 2026-10-29 | 缺陷修复 | **发送报 `write udp4 ... i/o timeout`**：`scan.go` 的 `sendProbe` 给**共享的** UDP 连接设了 1 秒写超时却从不清除，扫描跑过之后（含启动期自动扫描）所有 `conn.WriteToUDP` 都撞在已过期的 deadline 上立即失败——表现为"扫描后发消息必失败"。修法：`sendProbe` 写完立即 `SetWriteDeadline(time.Time{})` 还原，`sendWire` 再兜底清一次。新增回归测试 `TestScanRestoresWriteDeadline`（先复现失败，再验证修复；Rust 版用 `tokio::time::timeout` 不碰 socket 超时，故此为 Go 移植特有） | ✅ |
+| 2026-10-29 | 缺陷修复 | **Win10 双击无反应**：GUI 子系统（无控制台）下 `log.Fatalf`/panic 全部静默丢失，`NewWindow` 返回 nil 也被静默使用。新增 `fatal.go`/`fatal_windows.go`/`fatal_other.go`：日志写 `<数据目录>\my-app.log`（每次启动截断）+ `MessageBoxW` 弹框 + 启动早期 `mygo.WebViewAvailable()` 检查（缺 WebView2 直接提示下载地址，NSIS 不捆绑该运行时）；`main` 加 recover。故障注入验证（库文件不可用 → 日志 + 模态框）。**联系人显示机器名**：飞秋/C++ 版把登录名（常为机器名）放 `username`、昵称放 profile 报文 body，旧实现直接取 `username` 当显示名。`User` 拆分 `Nick`(body)/`UserName`(协议字段)，文件/图片来源校验改用 `UserName`，ID 仍由 `username@hostname#ip:port` 构造；新增回归测试 `TestProfileBodyIsNicknameNotUsername` | ✅ |
 
 ### M1 实机验收清单（对齐 Rust 阶段一）
 
@@ -169,4 +179,22 @@
 2. 重启后历史保留，发送中的消息置失败；同名联系人/同机多实例不串会话。
 3. 对端离线发送 → 约 14 秒后置失败并有提示；重复报文不产生重复消息。
 4. 设置页修改昵称/分组/头像并保存，重启后保留且对外公告使用新资料。
-5. 托盘闪烁/隐藏/恢复、清空会话历史、搜索关键字可用；图片/文件/截图按钮提示"将在后续阶段迁移"。
+5. 托盘闪烁/隐藏/恢复、清空会话历史、搜索关键字可用；图片/文件/截图按钮提示"将在后续阶段迁移"（M1 时点；M2–M5 完成后已全部可用）。
+
+## 10. 当前状态与剩余事项（2026-10-29）
+
+**已完成**：M0 最小闭环 + M1–M6 全部阶段代码。Go 非测试代码约 10.4k 行、测试约 4.1k 行（`internal/` 9 个包），`go test ./...` 8 个包全绿；产物 `my-app/build/windows-amd64/my-app.exe` 13.7 MB + NSIS 安装包 5.4 MB。
+
+**剩余事项**：
+
+1. **实机验收 M1–M6**（发布前必须完成）：真实飞秋互通、图片像素对拍、多屏/150% 缩放截图、大文件并行与断点续传及文件夹收发、扫描与提示音、振动/头像/MAC、数据目录切换。清单见 §9 各阶段「验收」行。
+2. **系统通知维持降级**（能力位 `systemNotifications:false`）；如需真 Toast，补 `native_windows.go`（COM/WinRT 全手写）。
+3. **发布决策未定**：自动更新是否启用；MyGo 版与 Rust 版是替换还是并存（Rust 版目前仍是发布形态）。
+4. `my-app/README.md` 仍停在 M1 描述，验收前需按实际能力重写。
+5. **已知差异/限制**：缩略图用最近邻缩放、无 EXIF 方向解析、BMP 仅 24/32 位 BI_RGB；截图编辑器窗口按 DIP 定位，多屏混合 DPI 待实机核对；IP 段扫描**不跳过本机**（按用户要求偏离 C++/Rust 版；自身回环由接收侧 `isSelf` 过滤，不会把自己加进联系人）；旧版目录兼容导入刻意不移植（数据不迁移决策）。
+
+**M6 后加固（2026-10-29，均为 M6 完成后的实机问题修复）**：
+
+- 身份语义对齐 Rust：协议 `username` 字段改为稳定登录名（`localLogin`），昵称只走 profile 报文 body；此前把昵称写进 `username`，导致改昵称后对端（含 Rust 版）按 `username@hostname#ip:port` 建键时把同一个人当成两个。
+- 修掉扫描残留写超时污染共享 UDP 连接（"扫描后发消息必报 `i/o timeout`"）。
+- 启动失败可见化：GUI 子系统无控制台，`fatal()` 落日志到 `<数据目录>\my-app.log` + `MessageBoxW` 弹框，启动早期检查 WebView2 运行时（Win10 可能未装）。

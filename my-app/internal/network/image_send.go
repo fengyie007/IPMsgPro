@@ -456,7 +456,7 @@ func (h *Hub) transmitPayload(job *imageSendJob, payload []byte, overall time.Ti
 	job.mu.Unlock()
 	reference := fmt.Sprintf("/~#>%s<B~{/font;-8 0 0 0 400 0 0 0 134 0 0 2 32 微软雅黑 8404992;}", job.result.ImageID)
 	extra := ""
-	wire, err := ipmsg.EncodePacket(h.WireVersion(), number, h.Nick(), h.Hostname(),
+	wire, err := ipmsg.EncodePacket(h.WireVersion(), number, h.Login(), h.Hostname(),
 		ipmsg.CmdSendMsg|ipmsg.OptSendCheck, reference, &extra)
 	if err != nil {
 		return err
@@ -488,7 +488,7 @@ func (h *Hub) transmitPayload(job *imageSendJob, payload []byte, overall time.Ti
 func (h *Hub) buildImageWire(fragment []byte, header string) ([]byte, error) {
 	pktNo := h.nextPktNo.Add(1)
 	p := h.prof.Load()
-	encUser := gbkOrRaw(0, p.nick)
+	encUser := gbkOrRaw(0, p.login)
 	encHost := gbkOrRaw(0, p.hostname)
 	var data bytes.Buffer
 	fmt.Fprintf(&data, "%s:%d:", p.wireVer, pktNo)
@@ -519,7 +519,7 @@ func (h *Hub) imageSendAck(pkt ipmsg.Packet, key string) bool {
 	h.imageSendsMu.Unlock()
 	for _, job := range jobs {
 		// 严格来源匹配：用户名/主机名/IP/端口
-		if job.peer.Nick != pkt.Username || job.peer.Host != pkt.Hostname || job.peer.Key != key {
+		if job.peer.UserName != pkt.Username || job.peer.Host != pkt.Hostname || job.peer.Key != key {
 			continue
 		}
 		job.mu.Lock()
