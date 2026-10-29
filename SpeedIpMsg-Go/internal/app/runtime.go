@@ -135,6 +135,14 @@ func (r *Runtime) notifyReceive(payload map[string]any) {
 	}
 }
 
+// AnnounceExit 退出前按配置发送下线公告（对照 Rust shutdown 的 announce_on_exit 分支）。
+// 与启动公告同在 app 层判断，避免某个退出入口漏读配置。
+func (r *Runtime) AnnounceExit() {
+	if r.Config.Get().AnnounceOnExit {
+		r.Hub.AnnounceExit()
+	}
+}
+
 func (r *Runtime) SetEmit(fn func(Envelope)) {
 	r.emit = fn
 	r.accepting.Store(true)

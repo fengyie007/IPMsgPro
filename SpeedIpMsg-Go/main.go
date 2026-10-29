@@ -281,7 +281,7 @@ func main() {
 							transfers.Shutdown()
 						}
 						backend.ShutdownNotification()
-						hub.AnnounceExit()
+						backend.AnnounceExit()
 						time.Sleep(100 * time.Millisecond)
 						mygo.App.Quit()
 					}()
@@ -300,7 +300,7 @@ func main() {
 		})
 
 		hub.Run()
-		hub.AnnounceEntry()
+		// 上线公告不在这里发：config.loaded 里按 AnnounceOnStartup 判断（对拍 Rust ui_ready）。
 	})
 
 	if err := mygo.App.Run(); err != nil {
