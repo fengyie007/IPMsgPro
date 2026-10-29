@@ -67,6 +67,7 @@ type Runtime struct {
 	shot       *screenshotSession
 	shotBudget chan struct{}
 	mainWin    *mygo.Window
+	mainHwnd   uintptr
 }
 
 func New(hub *network.Hub, db *store.Database, config *store.ConfigStore, version, dataDir string) *Runtime {
@@ -119,7 +120,7 @@ func (r *Runtime) notificationContext() notification.Context {
 func (r *Runtime) notifyReceive(payload map[string]any) {
 	// 未聚焦时闪烁任务栏按钮请求注意（对照 Rust request_user_attention）。
 	if r.mainWin != nil && !r.mainWin.IsFocused() {
-		r.mainWin.FlashFrame(true)
+		flashTaskbar(r.mainHwnd)
 	}
 	event := notification.Event{Event: "message.received", Payload: payload}
 	r.notifyMu.Lock()

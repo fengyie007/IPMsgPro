@@ -30,6 +30,8 @@ npm run build          # mygo build → build/windows-amd64/SpeedIpMsg-Go.exe + 
 - 启动即广播 BR_ENTRY，收到 ANSENTRY 的对端进入联系人列表；
   点击联系人发消息，收到的消息自动落库并回执。
 - 关闭窗口隐藏到托盘；有未读且窗口未聚焦时托盘图标灰/彩交替。
+- 窗口在任务栏时收到消息，任务栏按钮闪 4 次（Win32 `FlashWindowEx` + `FLASHW_TRAY`，
+  与 Rust 版 tao `UserAttentionType::Informational` 一致；隐藏到托盘时无任务栏按钮，不闪）。
 - 托盘菜单：打开主窗口 / 退出（广播 BR_EXIT）。
 
 ## 结构

@@ -41,6 +41,8 @@ type screenshotSession struct {
 // SetMainWindow 注册主窗口（截图时隐藏/恢复）。
 func (r *Runtime) SetMainWindow(win *mygo.Window) {
 	r.mainWin = win
+	// 句柄在创建窗口的主线程取一次，闪烁时不占 UI 线程。
+	r.mainHwnd = win.NativeHandle()
 }
 
 func (r *Runtime) randomSessionID() string {
