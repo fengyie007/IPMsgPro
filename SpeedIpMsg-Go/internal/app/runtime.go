@@ -117,6 +117,10 @@ func (r *Runtime) notificationContext() notification.Context {
 
 // notifyReceive 对 message.received 事件应用通知闸门（提示音 + 系统通知文案）。
 func (r *Runtime) notifyReceive(payload map[string]any) {
+	// 未聚焦时闪烁任务栏按钮请求注意（对照 Rust request_user_attention）。
+	if r.mainWin != nil && !r.mainWin.IsFocused() {
+		r.mainWin.FlashFrame(true)
+	}
 	event := notification.Event{Event: "message.received", Payload: payload}
 	r.notifyMu.Lock()
 	gate := r.soundGate
