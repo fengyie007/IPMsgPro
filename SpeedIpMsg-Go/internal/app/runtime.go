@@ -624,10 +624,11 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		if sound == nil {
 			return fail("提示音不可用")
 		}
-		if _, err := sound.Preview(); err != nil {
+		duration, err := sound.Preview()
+		if err != nil {
 			return fail(err.Error())
 		}
-		return ok(nil)
+		return ok(map[string]any{"durationMs": duration})
 	case "notification.test_system", "notification.take_activation":
 		return fail("系统通知需要 Windows 桌面版（MyGo 版已按迁移决策降级为应用内提示）")
 	case "storage.info":

@@ -165,6 +165,10 @@ func withPlayer(player Player, enabled bool, onError func(string)) (*Notificatio
 	sound.worker.Add(1)
 	go func() {
 		defer sound.worker.Done()
+		// MCI 设备句柄绑定打开它的线程，Go 调度器一旦把工作协程搬到别的线程，
+		// stop/close 就报 263（设备未打开）、重复 open 报 289（别名被占用）。
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		run(player, sound.sender, s, onError)
 	}()
 	return sound, nil
