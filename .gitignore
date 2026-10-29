@@ -121,4 +121,4 @@ Testing/
 /frontend/tsconfig.tsbuildinfo
 /build_x64
 /build_x86
-!my-app/go.mod
+!SpeedIpMsg-Go/go.mod

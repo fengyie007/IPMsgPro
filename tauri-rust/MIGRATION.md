@@ -381,7 +381,7 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 ## MyGo 框架评估与迁移
 
-用户要求考察 https://mygo.egoist.dev/ 并形成记录，完整评估稿在父目录 `MyGo框架评估.md`；随后按"低成本试水"路径落地最小闭环 demo，并演进为正式迁移工程 `my-app/`。迁移阶段、风险与验收清单见父目录 `MyGo迁移计划.md`。
+用户要求考察 https://mygo.egoist.dev/ 并形成记录，完整评估稿在父目录 `MyGo框架评估.md`；随后按"低成本试水"路径落地最小闭环 demo，并演进为正式迁移工程 `SpeedIpMsg-Go/`。迁移阶段、风险与验收清单见父目录 `MyGo迁移计划.md`。
 
 - 结论：痛点若是构建链（VS Build Tools、Rust 工具链），MyGo 收益直接（纯 Go 无 cgo、可交叉编译、7 MB 级二进制、托盘 `SetIcon` 可直接平移本次闪烁方案）；但迁移本质是重写 `ipmsg-core`（Rust → Go），常规功能迭代阶段不建议中途迁移。
 - 现有 API 映射已逐项核对：剪贴板图片走 WebView2 粘贴事件 + raw IPC（`image.rs:11`）；拖拽用 `DragDropEvent::Drop { paths }`（`lib.rs:137`）→ `files::dropped`；文件/图片选择用 `tauri-plugin-dialog`；截图为 GDI `BitBlt` + `DwmFlush`（`capture/platform.rs`），MyGo 无截图 API，是最大移植缺口。
@@ -389,10 +389,10 @@ npm --prefix tauri-rust install --offline --ignore-scripts --no-audit --no-fund
 
 ### 最小闭环 demo 已落地（2026-10-28）
 
-按评估稿"低成本试水"路径，在 `my-app/` 脚手架上实现最小闭环：UDP 发现（飞秋兼容版本头与 Rust 版逐项对齐）→ 联系人列表 → 单会话文本收发（GBK 默认、UTF8OPT 可选、RECVMSG 回执）→ 未读托盘彩色/灰度交替（复用迅秋闪烁方案，改为程序内绘制 PNG）。改动全部在 `my-app/`，随本轮纳入版本控制；说明见 `my-app/README.md`，黑盒验证工具见 `my-app/tools/fakepeer`。
+按评估稿"低成本试水"路径，在 `SpeedIpMsg-Go/` 脚手架上实现最小闭环：UDP 发现（飞秋兼容版本头与 Rust 版逐项对齐）→ 联系人列表 → 单会话文本收发（GBK 默认、UTF8OPT 可选、RECVMSG 回执）→ 未读托盘彩色/灰度交替（复用迅秋闪烁方案，改为程序内绘制 PNG）。改动全部在 `SpeedIpMsg-Go/`，随本轮纳入版本控制；说明见 `SpeedIpMsg-Go/README.md`，黑盒验证工具见 `SpeedIpMsg-Go/tools/fakepeer`。
 
 - 结构：`ipmsg.go`（报文编解码 + `feiqCompatVersion`）、`network.go`（Hub：发现/收发/未读/回执，用户以来源IP:端口为键）、`main.go`（窗口/托盘/闪烁/`mygo.Bind`）、`src/main.ts`（聊天页面）；托盘 API 实测为 `mygo.NewTray` + `Tray.SetIcon`，与评估稿预期一致。
-- 验证：`go test` 通过（协议单测 + 双 Hub 回环"发现→文本→回执→已读"集成测试）、`go vet` 干净、`tsc --noEmit` 通过、`npm run build` 产出 `my-app.exe` 9.7 MB + NSIS 安装包 3.3 MB——证实"纯 Go 无 cgo、7 MB 级二进制、交叉编译"的评估结论；开发链路仅需 Go + Node，无需 MSVC/Rust 工具链。
+- 验证：`go test` 通过（协议单测 + 双 Hub 回环"发现→文本→回执→已读"集成测试）、`go vet` 干净、`tsc --noEmit` 通过、`npm run build` 产出 `SpeedIpMsg-Go.exe` 9.7 MB + NSIS 安装包 3.3 MB——证实"纯 Go 无 cgo、7 MB 级二进制、交叉编译"的评估结论；开发链路仅需 Go + Node，无需 MSVC/Rust 工具链。
 - 评估稿第 6 节"尚未验证"三项：SQLite 插件兼容性与 WebView2 粘贴 `File` 对象已分别在 M1、M2 验证通过；实际内存占用与多网卡行为仍未测（仅实测包体：exe 13.7 MB、NSIS 5.4 MB）。
 - 完整迁移文档与分阶段计划见父目录 `MyGo迁移计划.md`（功能映射、M1–M6 阶段划分、风险登记与决策点）。
 

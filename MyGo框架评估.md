@@ -65,16 +65,16 @@
 
 1. **v0.7.1，单人维护（egoist）**，API 仍在演进，出问题只能看源码。
 2. 生态小，没有 Tauri 那样的插件市场与社区存量。
-3. Windows 自定义协议为 `http://<scheme>.localhost`，IndexedDB/localStorage 的 origin 与 Tauri 不同，前端本地配置（`ipmsg-config`）需迁移。—— **已消除**：配置改由 Go 侧 JSON 保存（`internal/store`），`my-app/src/` 内已无 IndexedDB/localStorage 引用。
+3. Windows 自定义协议为 `http://<scheme>.localhost`，IndexedDB/localStorage 的 origin 与 Tauri 不同，前端本地配置（`ipmsg-config`）需迁移。—— **已消除**：配置改由 Go 侧 JSON 保存（`internal/store`），`SpeedIpMsg-Go/src/` 内已无 IndexedDB/localStorage 引用。
 4. 迁移本质是**重写 `ipmsg-core`（Rust → Go）**，前端基本不动，工作量约等于现有 Rust 内核全部代码。
 
 ## 5. 结论
 
 - 痛点若是**构建链**（VS Build Tools、Rust 工具链、签名流程），MyGo 收益直接：`go build` 出 7 MB 级 exe，且可交叉编译。
 - 若只是常规功能迭代，**不建议中途迁移**：现有 Tauri 版本可运行，重写内核的收益不足以覆盖成本。
-- 低成本试水路径：用仓库里已生成的 `my-app/` 脚手架跑通最小闭环（UDP 发现 + 一个会话 + 托盘闪烁），再决定是否整体迁移。
+- 低成本试水路径：用仓库里已生成的 `SpeedIpMsg-Go/` 脚手架跑通最小闭环（UDP 发现 + 一个会话 + 托盘闪烁），再决定是否整体迁移。
 
-**后续（2026-10-29）**：用户已决定启动迁移，工程在 `my-app/` 上演进（不另起目录）。M0–M6 阶段代码全部完成：Go 非测试代码约 10.4k 行、测试约 4.1k 行（`internal/` 9 个包），产物 `my-app.exe` 13.7 MB + NSIS 安装包 5.4 MB。Rust 版仍是当前发布形态；MyGo 版剩余实机验收与发布决策。
+**后续（2026-10-29）**：用户已决定启动迁移，工程在 `SpeedIpMsg-Go/` 上演进（不另起目录）。M0–M6 阶段代码全部完成：Go 非测试代码约 10.4k 行、测试约 4.1k 行（`internal/` 9 个包），产物 `SpeedIpMsg-Go.exe` 13.7 MB + NSIS 安装包 5.4 MB。Rust 版仍是当前发布形态；MyGo 版剩余实机验收与发布决策。
 
 ## 6. 尚未验证
 
