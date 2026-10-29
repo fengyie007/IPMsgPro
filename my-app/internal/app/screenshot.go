@@ -174,7 +174,7 @@ func (r *Runtime) screenshotEditorCommand(sessionID, command string) map[string]
 		if finished {
 			return fail("截图会话已结束")
 		}
-		return ok(map[string]any{"url": "ipmsg-capture://localhost/" + sessionID})
+		return ok(map[string]any{"url": schemeURL("ipmsg-capture", sessionID)})
 	case "ready":
 		return ok(nil)
 	case "cancel":

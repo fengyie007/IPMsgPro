@@ -580,6 +580,23 @@ func (h *Hub) handle(data []byte, src *net.UDPAddr) {
 		}
 		// 文件服务未启动时按占位文本展示；绝不把文件邀请回执为已接受。
 		unsupportedFile := pkt.Command&ipmsg.OptFileAttach != 0
+		// 纯图片引用不产生文本消息（对拍 Rust parse_reference 分支）：
+		// 引用可先于/后于分片到达，登记后直接返回，绝不能把
+		// "/~#>id<B~" 原样当聊天文本显示出来。
+		if !unsupportedFile {
+			if imageID := media.ParseReference(pkt.Body); imageID != "" {
+				peerID := fmt.Sprintf("%s@%s#%s", pkt.Username, pkt.Hostname, key)
+				if err := h.registerImageReference(peerID, imageID); err != nil {
+					log.Printf("图片引用登记失败: %v", err)
+				}
+				if pkt.Command&ipmsg.OptSendCheck != 0 {
+					if _, err := h.buildWireAndSend(src, ipmsg.CmdRecvMsg, strconv.FormatUint(uint64(pkt.PacketNo), 10), nil); err != nil {
+						log.Printf("RECVMSG 回执发送失败: %v", err)
+					}
+				}
+				return
+			}
+		}
 		if unsupportedFile {
 			pkt.Body = "[收到文件：当前版本暂不支持，请使用原版接收]"
 		}
@@ -667,12 +684,6 @@ func (h *Hub) receiveText(key string, pkt ipmsg.Packet, src *net.UDPAddr, ack bo
 			Key: key, PeerID: peerID, User: user, ID: recordID,
 			Content: pkt.Body, Timestamp: ts, Duplicate: duplicate,
 		})
-	}
-	// 文本中的图片引用：引用可先于/后于分片到达，只登记不产生新消息
-	if imageID := media.ParseReference(pkt.Body); imageID != "" {
-		if err := h.registerImageReference(peerID, imageID); err != nil {
-			log.Printf("图片引用登记失败: %v", err)
-		}
 	}
 }
 

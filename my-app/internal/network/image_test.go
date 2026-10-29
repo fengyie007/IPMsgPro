@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,13 +169,17 @@ func TestLoopbackImageReceive(t *testing.T) {
 		if err != nil || decoded.Width != 40 {
 			t.Fatalf("原图解码异常: %v", err)
 		}
-		// 数据库已登记：引用文本（kind 0）+ 图片记录（kind 1）
+		// 数据库只登记图片记录（kind 1）；纯图片引用不得落成一条
+		// "/~#>id<B~" 的文本消息（对拍 Rust parse_reference 分支）。
 		rows, err := dbB.History(evt.PeerID, "local@b", 10, 0)
-		if err != nil || len(rows) != 2 {
-			t.Fatalf("历史应含引用与图片: %+v %v", rows, err)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("历史应只含图片记录: %+v %v", rows, err)
 		}
 		foundImage := false
 		for _, row := range rows {
+			if row.Kind == 0 || strings.Contains(row.Content, "/~#>") {
+				t.Fatalf("图片引用不应落成文本消息: %+v", row)
+			}
 			if row.Kind == 1 && row.ID == evt.ID {
 				foundImage = true
 			}
@@ -211,5 +216,43 @@ func TestImagePacketRoundTripBinarySafe(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(pkt.Body), body) {
 		t.Fatal("二进制载荷应逐字节保留")
+	}
+}
+
+// 纯图片引用（含飞秋字体尾标）不得产生文本消息或未读，只登记引用并回执；
+// 曾把 "/~#>id<B~" 原样显示成聊天文本（对拍 Rust parse_reference 分支）。
+func TestPureImageReferenceCreatesNoTextMessage(t *testing.T) {
+	h, err := NewHub(0, "Bob", "组B", "inst-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	var events collected
+	events.wire(h)
+
+	// 对端先"认识"：直接注入 BR_ENTRY
+	entry, err := ipmsg.EncodePacket(h.WireVersion(), 1, "Alice", "hosta", ipmsg.CmdBrEntry, "Alice", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 45678}
+	h.handle(entry, peerAddr)
+
+	reference := "/~#>abcdef01<B~{/font;-8 0 0 0 400 0 0 0 134 0 0 2 32 微软雅黑 8404992;}"
+	wire, err := ipmsg.EncodePacket(h.WireVersion(), 42, "Alice", "hosta", ipmsg.CmdSendMsg|ipmsg.OptSendCheck, reference, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.handle(wire, peerAddr)
+	time.Sleep(100 * time.Millisecond)
+
+	if n := events.receivedCount(); n != 0 {
+		events.mu.Lock()
+		got := events.received
+		events.mu.Unlock()
+		t.Fatalf("纯引用不应产生文本消息，得到 %d 条: %+v", n, got)
+	}
+	if got := h.Unread(peerAddr.String()); got != 0 {
+		t.Fatalf("纯引用不应累计未读: %d", got)
 	}
 }

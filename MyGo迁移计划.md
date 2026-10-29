@@ -198,3 +198,5 @@
 - 身份语义对齐 Rust：协议 `username` 字段改为稳定登录名（`localLogin`），昵称只走 profile 报文 body；此前把昵称写进 `username`，导致改昵称后对端（含 Rust 版）按 `username@hostname#ip:port` 建键时把同一个人当成两个。
 - 修掉扫描残留写超时污染共享 UDP 连接（"扫描后发消息必报 `i/o timeout`"）。
 - 启动失败可见化：GUI 子系统无控制台，`fatal()` 落日志到 `<数据目录>\my-app.log` + `MessageBoxW` 弹框，启动早期检查 WebView2 运行时（Win10 可能未装）。
+- **收图失败修复**（Go 专用，Rust 无此问题）：`image.read` 曾返回裸 `ipmsg-image://localhost/<id>`，而 WebView2 不认自定义 scheme（mygo 内部把自定义 scheme 映射到 `http://<scheme>.localhost/` 才可加载），导致资产已落盘、气泡有尺寸但 `<img>` 一律加载失败。新增 `schemeURL()`：Windows 返回 `http://<scheme>.localhost/<path>`，其它平台返回 `<scheme>://localhost/<path>`（对拍 Rust `asset_url` 的 `cfg!(windows)` 分支）；`image.read` 与截图 `read` 两条地址均改用它。
+- **纯图片引用不再当文本显示**：`CmdSendMsg` 曾先 `receiveText` 再查 `ParseReference`，把 `/~#>id<B~{/font;…}` 原样落成一条聊天文本 + 未读。改为引用判定在前（对拍 Rust `parse_reference` 分支）：命中即登记引用、按 `SENDCHECKOPT` 回 RECVMSG 后 `return`，不产生文本消息也不计未读。回归测试 `TestPureImageReferenceCreatesNoTextMessage`、`TestLoopbackImageReceive`（历史应只含图片记录）。

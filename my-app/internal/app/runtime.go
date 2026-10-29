@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,16 @@ import (
 type Envelope struct {
 	Event   string         `json:"event"`
 	Payload map[string]any `json:"payload"`
+}
+
+// schemeURL 把自定义 scheme + 路径拼成前端（<img src>）可加载的地址。
+// WebView2 不认自定义 scheme，mygo 把它映射到 http://<scheme>.localhost/；
+// 其它平台 WebKit/WebView 直接加载 <scheme>://localhost/。对拍 Rust asset_url。
+func schemeURL(scheme, path string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("http://%s.localhost/%s", scheme, path)
+	}
+	return fmt.Sprintf("%s://localhost/%s", scheme, path)
 }
 
 type Runtime struct {
@@ -535,12 +546,14 @@ func (r *Runtime) dispatch(command string, args map[string]any) map[string]any {
 		if _, _, err := r.Hub.ImageRead(assetID, thumbnail); err != nil {
 			return fail(err.Error())
 		}
-		// URL 由 ipmsg-image 协议处理器服务；数据库登记校验已在 ImageRead 内完成
+		// URL 由 ipmsg-image 协议处理器服务；数据库登记校验已在 ImageRead 内完成。
+		// WebView2 不能直接加载自定义 scheme，Windows 上必须用 mygo 映射的
+		// http://<scheme>.localhost 形式（对拍 Rust asset_url）。
 		query := ""
 		if thumbnail {
 			query = "?t=1"
 		}
-		return ok(map[string]any{"url": fmt.Sprintf("ipmsg-image://localhost/%s%s", assetID, query)})
+		return ok(map[string]any{"url": schemeURL("ipmsg-image", assetID+query)})
 	case "image.select":
 		if r.Hub == nil || !r.Hub.ImagesEnabled() {
 			return fail("图片服务未启用")

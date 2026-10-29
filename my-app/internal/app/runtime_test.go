@@ -6,6 +6,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -116,4 +117,18 @@ func TestStorageDefaultPreparesReset(t *testing.T) {
 
 func samePath(a, b string) bool {
 	return strings.EqualFold(a, b)
+}
+
+// image.read 返回的地址必须是前端（WebView2）能直接加载的形式：Windows 用
+// mygo 映射的 http://<scheme>.localhost/，其它平台用 <scheme>://localhost/。
+// 曾返回裸 ipmsg-image://localhost/…，WebView2 不认，图片一律加载失败。
+func TestSchemeURLLoadableForm(t *testing.T) {
+	got := schemeURL("ipmsg-image", "rx-1-2-3")
+	if runtime.GOOS == "windows" {
+		if got != "http://ipmsg-image.localhost/rx-1-2-3" {
+			t.Fatalf("Windows 上应返回 http://<scheme>.localhost：%s", got)
+		}
+	} else if got != "ipmsg-image://localhost/rx-1-2-3" {
+		t.Fatalf("非 Windows 应返回 <scheme>://localhost：%s", got)
+	}
 }
