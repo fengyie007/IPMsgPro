@@ -91,18 +91,26 @@ func (r *Runtime) StartScreenshot() map[string]any {
 	r.shot = session
 	r.shotMu.Unlock()
 
+	// mygo 的 WindowOptions 把 X/Y/Width/Height 当 DIP（placeInitially 用 toPx
+	// 乘显示器 DPI），而 bounds 是物理像素：200% 缩放下窗口只有一半宽高
+	// （面积 1/4）。对拍 Rust 的 set_fullscreen(true) 让 mygo 按物理像素铺满
+	// 显示器；X/Y 换算成 DIP 只是为了让窗口初始落在同一块屏上。
+	// shortcut: mygo 用 DIP 的 X/Y 直接调 MonitorFromPoint 选屏，多显示器且
+	// 各屏 DPI 不同时可能选到相邻屏，届时需要 mygo 提供物理像素定位接口。
+	dpi := capture.DPIOfWindow(r.mainWin.NativeHandle())
+	dip := func(v int32) int { return int(int64(v) * 96 / int64(dpi)) }
 	editor := mygo.NewWindow(mygo.WindowOptions{
-		Title:          "迅秋截图",
-		URL:            "/?capture=" + session.id,
-		X:              int(bounds.X),
-		Y:              int(bounds.Y),
-		Width:          int(bounds.Width),
-		Height:         int(bounds.Height),
-		UseContentSize: true,
-		Frameless:      true,
-		AlwaysOnTop:    true,
-		SkipTaskbar:    true,
-		DisableResize:  true,
+		Title:         "迅秋截图",
+		URL:           "/?capture=" + session.id,
+		X:             dip(bounds.X),
+		Y:             dip(bounds.Y),
+		Width:         dip(int32(bounds.Width)),
+		Height:        dip(int32(bounds.Height)),
+		FullScreen:    true,
+		Frameless:     true,
+		AlwaysOnTop:   true,
+		SkipTaskbar:   true,
+		DisableResize: true,
 	})
 	if editor == nil {
 		r.finishScreenshot(session, fmt.Errorf("无法创建截图窗口"))

@@ -45,6 +45,7 @@ var (
 	procSetThreadDpi    = user32.NewProc("SetThreadDpiAwarenessContext")
 	procMonitorFromWin  = user32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW = user32.NewProc("GetMonitorInfoW")
+	procGetDpiForWin    = user32.NewProc("GetDpiForWindow")
 
 	gdi32               = syscall.NewLazyDLL("gdi32.dll")
 	procCreateCompatDC  = gdi32.NewProc("CreateCompatibleDC")
@@ -98,6 +99,15 @@ func MonitorOfWindow(hwnd uintptr) (Bounds, error) {
 	return bounds, nil
 }
 
+// DPIOfWindow 返回窗口所在显示器的 DPI（96=100%，192=200%）。
+// mygo 把窗口位置/尺寸当 DIP，物理像素坐标要用它换算。
+func DPIOfWindow(hwnd uintptr) int {
+	if d, _, _ := procGetDpiForWin.Call(hwnd); d != 0 {
+		return int(d)
+	}
+	return 96
+}
+
 // Capture 截取 bounds 区域，返回 PNG（GDI BGRA → 不透明 RGBA）。
 func Capture(bounds Bounds) ([]byte, error) {
 	if err := bounds.Validate(); err != nil {
@@ -145,20 +155,7 @@ func Capture(bounds Bounds) ([]byte, error) {
 	procSelectObject.Call(memory, old)
 	old = 0
 
-	// BITMAPINFOHEADER，biHeight 取负 = 自上而下
-	var bmi [40]byte
-	putU32 := func(at int, v uint32) {
-		bmi[at] = byte(v)
-		bmi[at+1] = byte(v >> 8)
-		bmi[at+2] = byte(v >> 16)
-		bmi[at+3] = byte(v >> 24)
-	}
-	putU32(0, 40)
-	putU32(4, uint32(bounds.Width))
-	putU32(8, uint32(bounds.Height))
-	bmi[12] = 1
-	bmi[14] = 32
-	putU32(16, biRGB)
+	bmi := bitmapInfoHeader(bounds)
 
 	pixels := make([]byte, int(bounds.Width)*int(bounds.Height)*4)
 	got, _, err := procGetDIBits.Call(memory, bitmap, 0, uintptr(bounds.Height),
@@ -168,6 +165,25 @@ func Capture(bounds Bounds) ([]byte, error) {
 	}
 	success = true
 	return encodeBGRA(bounds, pixels)
+}
+
+// bitmapInfoHeader 构造 BITMAPINFOHEADER。biHeight 取负 = 自上而下：
+// 正的 biHeight 让 GetDIBits 返回自下而上的行，画面会倒过来。
+func bitmapInfoHeader(bounds Bounds) [40]byte {
+	var bmi [40]byte
+	putU32 := func(at int, v uint32) {
+		bmi[at] = byte(v)
+		bmi[at+1] = byte(v >> 8)
+		bmi[at+2] = byte(v >> 16)
+		bmi[at+3] = byte(v >> 24)
+	}
+	putU32(0, 40)
+	putU32(4, bounds.Width)
+	putU32(8, uint32(-int32(bounds.Height)))
+	bmi[12] = 1
+	bmi[14] = 32
+	putU32(16, biRGB)
+	return bmi
 }
 
 func releaseHandles(screen, memory, bitmap, old uintptr) {

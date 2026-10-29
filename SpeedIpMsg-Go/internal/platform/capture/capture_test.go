@@ -6,6 +6,7 @@ package capture
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
 	"image/png"
 	"testing"
@@ -22,6 +23,19 @@ func TestNegativeMonitorCoordinatesAndSizeLimits(t *testing.T) {
 	}
 	if err := (Bounds{X: int32(^uint32(0) >> 1), Width: 2, Height: 2}).Validate(); err == nil {
 		t.Error("溢出坐标应被拒绝")
+	}
+}
+
+func TestBitmapInfoHeaderIsTopDown(t *testing.T) {
+	bmi := bitmapInfoHeader(Bounds{Width: 100, Height: 40})
+	if h := int32(binary.LittleEndian.Uint32(bmi[8:12])); h != -40 {
+		t.Fatalf("biHeight 应为负（自上而下），实际 %d", h)
+	}
+	if w := binary.LittleEndian.Uint32(bmi[4:8]); w != 100 {
+		t.Fatalf("biWidth 应为 100，实际 %d", w)
+	}
+	if bits := binary.LittleEndian.Uint16(bmi[14:16]); bits != 32 {
+		t.Fatalf("biBitCount 应为 32，实际 %d", bits)
 	}
 }
 

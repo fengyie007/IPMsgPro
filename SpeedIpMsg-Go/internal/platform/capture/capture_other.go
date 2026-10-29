@@ -18,6 +18,8 @@ func MonitorOfWindow(uintptr) (Bounds, error) {
 	return Bounds{}, fmt.Errorf("当前平台暂不支持截图")
 }
 
+func DPIOfWindow(uintptr) int { return 96 }
+
 func Capture(Bounds) ([]byte, error) {
 	return nil, fmt.Errorf("当前平台暂不支持截图")
 }
